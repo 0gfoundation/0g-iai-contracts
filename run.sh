@@ -5,6 +5,7 @@
 #   ./run.sh              deploy (mock collateral first, on any chain but mainnet)
 #   ./run.sh accounts     derive and fund the testnet account set
 #   ./run.sh status       read the live deployment
+#   ./run.sh check        re-check the recorded addresses against the chain
 #   ./run.sh unpause      open issuance
 #   ./run.sh pause        close issuance
 #   ./run.sh harvest      sweep accrued yield to the foundation
@@ -34,6 +35,9 @@ case "${1:-deploy}" in
       send script/deploy/Mock.s.sol
     fi
     send script/deploy/IAI.s.sol
+    # The record is written during simulation, so an interrupted run leaves a file naming
+    # contracts that were never deployed. Check it before anyone builds on it.
+    read_only script/deploy/IAI.s.sol --sig "checkDeployment()"
     echo
     echo "Deployed and PAUSED. Review 'run.sh status', then 'run.sh unpause' to open issuance."
     echo "DEFAULT_ADMIN, PAUSER and beacon ownership are all on the deployer -- hand them to"
@@ -41,6 +45,7 @@ case "${1:-deploy}" in
     ;;
   accounts) send script/deploy/Accounts.s.sol ;;
   status)   read_only script/deploy/IAI.s.sol --sig "status()" ;;
+  check)    read_only script/deploy/IAI.s.sol --sig "checkDeployment()" ;;
   unpause)  send script/deploy/IAI.s.sol --sig "unpause()" ;;
   pause)    send script/deploy/IAI.s.sol --sig "pause()" ;;
   harvest)  send script/deploy/IAI.s.sol --sig "harvest()" ;;

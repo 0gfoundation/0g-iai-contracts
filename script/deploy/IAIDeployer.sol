@@ -169,6 +169,42 @@ abstract contract IAIDeployer {
      *      surfaces in CI rather than on a network.
      */
     function _assertDeploymentSane(Config memory c, Deployment memory d, address operator) internal view {
+        _assertWiring(c, d);
+
+        IAIVault vault_ = IAIVault(d.vault);
+        CreditRegistry registry_ = CreditRegistry(d.registry);
+
+        // Issuance must come up closed; opening it is an explicit governance action. The
+        // registry needs no such gate -- nobody can stake before iAI exists.
+        require(vault_.paused(), "vault must deploy paused");
+        // Someone must actually be able to open it, or the deployment is bricked.
+        require(vault_.hasRole(vault_.PAUSER_ROLE(), operator), "nobody can unpause the vault");
+        require(registry_.hasRole(registry_.PAUSER_ROLE(), operator), "nobody can unpause the registry");
+        require(vault_.hasRole(0x00, operator), "deployer is not the vault admin");
+    }
+
+    /**
+     * @param c The parameters the deployment was asked for.
+     * @param d The addresses it produced.
+     *
+     * @dev The half that stays true for the life of the deployment, so it can be re-run against
+     *      a live system. Every address is checked to actually hold code first: a run that is
+     *      interrupted still writes its deployment file, because the file is written during
+     *      simulation, so the record can name a contract that was never deployed. Reading a
+     *      value back from such an address returns nothing and would otherwise pass unnoticed.
+     */
+    function _assertWiring(Config memory c, Deployment memory d) internal view {
+        _assertHasCode(d.iai, "IAI");
+        _assertHasCode(d.iaiImpl, "IAIImpl");
+        _assertHasCode(d.iaiBeacon, "IAIBeacon");
+        _assertHasCode(d.vault, "IAIVault");
+        _assertHasCode(d.vaultImpl, "IAIVaultImpl");
+        _assertHasCode(d.vaultBeacon, "IAIVaultBeacon");
+        _assertHasCode(d.registry, "CreditRegistry");
+        _assertHasCode(d.registryImpl, "CreditRegistryImpl");
+        _assertHasCode(d.registryBeacon, "CreditRegistryBeacon");
+        _assertHasCode(c.a0G, "A0G");
+
         IAI token = IAI(d.iai);
         IAIVault vault_ = IAIVault(d.vault);
         CreditRegistry registry_ = CreditRegistry(d.registry);
@@ -185,13 +221,14 @@ abstract contract IAIDeployer {
         // Full supply must lock the intended collateral, up to the flooring of the slope.
         uint256 atCap = vault_.lockedAt(c.cap);
         require(atCap <= c.target && c.target - atCap < 1e12, "curve does not reach the target");
+    }
 
-        // Issuance must come up closed; opening it is an explicit governance action. The
-        // registry needs no such gate -- nobody can stake before iAI exists.
-        require(vault_.paused(), "vault must deploy paused");
-        // Someone must actually be able to open it, or the deployment is bricked.
-        require(vault_.hasRole(vault_.PAUSER_ROLE(), operator), "nobody can unpause the vault");
-        require(registry_.hasRole(registry_.PAUSER_ROLE(), operator), "nobody can unpause the registry");
-        require(vault_.hasRole(0x00, operator), "deployer is not the vault admin");
+    /**
+     * @param a    Address that must be a contract.
+     * @param name Key it was read from, so a failure names the entry to fix.
+     */
+    function _assertHasCode(address a, string memory name) private view {
+        require(a != address(0), string.concat("no address recorded for ", name));
+        require(a.code.length != 0, string.concat("no code at the recorded ", name));
     }
 }

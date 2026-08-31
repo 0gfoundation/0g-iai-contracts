@@ -16,6 +16,11 @@ fs_permissions = [
     { access = "read", path = "./out" },
 ]
 gas_reports = ["IAI", "IAIVault", "CreditRegistry"]
+# 0G's public RPCs intermittently answer eth_getTransactionReceipt with null for a transaction
+# that has already been mined. Forge retries a few times and then aborts the run. Raising the
+# wait does not remove the failure -- the retry budget is what runs out -- but it removes the
+# cases that are only slow. `run.sh check` is what makes the remaining ones safe.
+transaction_timeout = 300
 # Maxed so the long deterministic simulations do not run out of gas.
 gas_limit = "18446744073709551615"
 # Each external call in the simulation loop parks its returndata in memory and never frees
