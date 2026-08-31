@@ -4,6 +4,8 @@ pragma solidity 0.8.25;
 import {BaseTest} from "../Base.t.sol";
 import {Prng} from "./Prng.sol";
 import {ICreditRegistry} from "../../src/interfaces/ICreditRegistry.sol";
+import {IIAIVault} from "../../src/interfaces/IIAIVault.sol";
+import {IAccessControl} from "@openzeppelin/contracts/access/IAccessControl.sol";
 
 /**
  * @title RandomSimTest
@@ -49,6 +51,7 @@ contract RandomSimTest is BaseTest {
     uint256 internal mTotalStaked;
 
     uint256 internal mHarvested;
+    bool internal mPaused;
 
     // --- coverage counters, asserted at the end so a silently degenerate run is caught ---
     uint256 internal nMints;
@@ -57,6 +60,9 @@ contract RandomSimTest is BaseTest {
     uint256 internal nHarvests;
     uint256 internal nStakes;
     uint256 internal nUnstakes;
+    uint256 internal nPauseToggles;
+    uint256 internal nBurnsWhilePaused;
+    uint256 internal nRejections;
 
     function setUp() public override {
         super.setUp();
@@ -116,24 +122,28 @@ contract RandomSimTest is BaseTest {
     function _step() internal {
         uint256 roll = rng.next() % 100;
 
-        if (roll < 30) {
+        if (roll < 27) {
             _opMint();
-        } else if (roll < 52) {
+        } else if (roll < 47) {
             _opBurn();
-        } else if (roll < 58) {
+        } else if (roll < 53) {
             _opRescue();
-        } else if (roll < 66) {
+        } else if (roll < 60) {
             _opHarvest();
-        } else if (roll < 76) {
+        } else if (roll < 69) {
             _opStake();
-        } else if (roll < 84) {
+        } else if (roll < 76) {
             _opInitiateUnstake();
-        } else if (roll < 90) {
+        } else if (roll < 81) {
             _opUnstake();
-        } else if (roll < 96) {
+        } else if (roll < 86) {
             _opWarp();
-        } else {
+        } else if (roll < 90) {
             _opTransfer();
+        } else if (roll < 93) {
+            _opTogglePause();
+        } else {
+            _opRejection();
         }
     }
 
@@ -155,9 +165,23 @@ contract RandomSimTest is BaseTest {
         uint256 er = vault.exchangeRate();
         uint256 expectedIn = _shadowCeilDiv(expectedDelta * WAD, er);
 
+        if (mPaused) {
+            a0g.mint(a, expectedIn);
+            vm.expectRevert(abi.encodeWithSignature("EnforcedPause()"));
+            vm.prank(a);
+            vault.mint(d, expectedIn, block.timestamp);
+            nRejections++;
+            return;
+        }
+
+        // Funded with exactly the shadow's price, so the balance must come back to where it
+        // started: a wei more and the transfer fails, a wei less and this assertion does.
+        uint256 heldBefore = a0g.balanceOf(a);
         a0g.mint(a, expectedIn);
         vm.prank(a);
         vault.mint(d, expectedIn, block.timestamp);
+
+        assertEq(a0g.balanceOf(a), heldBefore, "mint took exactly what the shadow priced");
 
         mLocked[a] += expectedDelta;
         mOutstanding[a] += d;
@@ -186,6 +210,9 @@ contract RandomSimTest is BaseTest {
         vault.burn(b, block.timestamp);
 
         assertEq(a0g.balanceOf(a) - heldBefore, expectedOut, "burn payout matches the shadow");
+        // The promise that redemption is never gated, held as a running property rather than
+        // a single test: this line executes with the vault paused many times per run.
+        if (mPaused) nBurnsWhilePaused++;
 
         mLocked[a] -= expectedUnlock;
         mOutstanding[a] -= b;
@@ -231,6 +258,13 @@ contract RandomSimTest is BaseTest {
     }
 
     function _opHarvest() internal {
+        if (mPaused) {
+            vm.expectRevert(abi.encodeWithSignature("EnforcedPause()"));
+            vault.harvest();
+            nRejections++;
+            return;
+        }
+
         uint256 held = a0g.balanceOf(address(vault));
         uint256 owed = _shadowCeilDiv(mTotalLocked * WAD, vault.exchangeRate());
         uint256 expected = held > owed ? held - owed : 0;
@@ -247,6 +281,14 @@ contract RandomSimTest is BaseTest {
         if (bal == 0) return;
         uint256 amount = rng.magnitude(1, bal);
         if (amount == 0) return;
+
+        if (mPaused) {
+            vm.expectRevert(abi.encodeWithSignature("EnforcedPause()"));
+            vm.prank(a);
+            registry.stake(amount);
+            nRejections++;
+            return;
+        }
 
         vm.prank(a);
         registry.stake(amount);
@@ -303,6 +345,117 @@ contract RandomSimTest is BaseTest {
         if (amount == 0) return;
         vm.prank(from);
         iai.transfer(to, amount);
+    }
+
+    /**
+     * @dev Opens and closes issuance mid-run. Pausing is an operational reality, not a phase
+     *      the tests visit once, and putting it in the mix is what turns "redemption is never
+     *      gated" into a property held across the whole run instead of a single assertion.
+     */
+    function _opTogglePause() internal {
+        if (mPaused) {
+            vault.unpause();
+            registry.unpause();
+        } else {
+            vault.pause();
+            registry.pause();
+        }
+        mPaused = !mPaused;
+        nPauseToggles++;
+    }
+
+    /**
+     * @dev Attempts an operation that must fail, from whatever state the run has reached, and
+     *      asserts **which** error comes back rather than merely that something did.
+     *
+     *      There is no before/after snapshot here on purpose. The EVM already rolls back a
+     *      reverted frame, so asserting "state did not change" would be testing the EVM; and
+     *      the shadow is not advanced for a rejected operation, so the `_assertState()` that
+     *      runs after every step already fails if the contract kept anything.
+     */
+    function _opRejection() internal {
+        uint256 pick = rng.next() % 8;
+        address a = _actor();
+
+        // `whenNotPaused` is a modifier, so while issuance is closed every mint reverts with
+        // `EnforcedPause` before the body's own checks are reached. That case is already
+        // asserted in `_opMint`; here it would just mask the guard under test.
+        if (mPaused && pick <= 3) return;
+
+        if (pick == 0) {
+            vm.expectRevert(IIAIVault.ZeroAmount.selector);
+            vm.prank(a);
+            vault.mint(0, type(uint256).max, block.timestamp);
+        } else if (pick == 1) {
+            // One wei past the cap, priced from the live supply.
+            uint256 tooMuch = CAP - mSupply + 1;
+            vm.expectRevert(abi.encodeWithSelector(IIAIVault.CapExceeded.selector, CAP + 1, CAP));
+            vm.prank(a);
+            vault.mint(tooMuch, type(uint256).max, block.timestamp);
+        } else if (pick == 2) {
+            // A deadline in the past, whatever the amount.
+            if (block.timestamp == 0) return;
+            vm.expectRevert(
+                abi.encodeWithSelector(IIAIVault.Expired.selector, block.timestamp - 1, block.timestamp)
+            );
+            vm.prank(a);
+            vault.mint(1e18, type(uint256).max, block.timestamp - 1);
+        } else if (pick == 3) {
+            // Offering one wei less than the curve asks for.
+            if (mSupply >= CAP) return;
+            uint256 needs = _shadowCeilDiv(_shadowCost(mSupply, 1e18) * WAD, vault.exchangeRate());
+            if (needs == 0) return;
+            a0g.mint(a, needs);
+            vm.expectRevert(abi.encodeWithSelector(IIAIVault.ExcessiveInput.selector, needs, needs - 1));
+            vm.prank(a);
+            vault.mint(1e18, needs - 1, block.timestamp);
+        } else if (pick == 4) {
+            // Redeeming more than the position holds -- the case a market buyer walks into.
+            address owner = _pickWithPosition();
+            if (owner == address(0)) return;
+            uint256 outstanding = mOutstanding[owner];
+            vm.expectRevert(
+                abi.encodeWithSelector(IIAIVault.BurnExceedsPosition.selector, outstanding + 1, outstanding)
+            );
+            vm.prank(owner);
+            vault.burn(outstanding + 1, block.timestamp);
+        } else if (pick == 5) {
+            // The rescue path is role-gated; an ordinary actor must not reach it.
+            address owner = _pickWithPosition();
+            if (owner == address(0) || a == address(this)) return;
+            vm.expectRevert(
+                abi.encodeWithSelector(
+                    IAccessControl.AccessControlUnauthorizedAccount.selector, a, vault.RESCUE_ROLE()
+                )
+            );
+            vm.prank(a);
+            vault.burnFor(owner, 1, block.timestamp);
+        } else if (pick == 6) {
+            // Withdrawing more than is staked.
+            uint256 staked = mStaked[a];
+            vm.expectRevert(
+                abi.encodeWithSelector(ICreditRegistry.InsufficientStake.selector, staked + 1, staked)
+            );
+            vm.prank(a);
+            registry.initiateUnstake(staked + 1);
+        } else {
+            // Claiming before the cooldown has run, or with nothing pending at all.
+            if (mCooling[a] == 0) {
+                vm.expectRevert(ICreditRegistry.NothingInCooldown.selector);
+            } else if (block.timestamp < mCoolEnd[a]) {
+                vm.expectRevert(
+                    abi.encodeWithSelector(
+                        ICreditRegistry.CooldownNotOver.selector, mCoolEnd[a], block.timestamp
+                    )
+                );
+            } else {
+                return; // it would legitimately succeed
+            }
+            vm.prank(a);
+            registry.unstake();
+        }
+
+        nRejections++;
     }
 
     function _pickWithPosition() internal returns (address) {
@@ -366,6 +519,8 @@ contract RandomSimTest is BaseTest {
         assertEq(sumRegistry, registry.totalStaked(), "I: buckets sum to totalStaked");
         assertEq(registry.totalStaked(), mTotalStaked, "I: total matches the model");
         assertEq(registry.totalStaked(), iai.balanceOf(address(registry)), "I: total equals holdings");
+        assertEq(vault.paused(), mPaused, "pause state matches the model");
+        assertEq(registry.paused(), mPaused, "registry pause state matches the model");
     }
 
     /// @dev A run that quietly stopped exercising an operation would still pass every
@@ -378,5 +533,8 @@ contract RandomSimTest is BaseTest {
         assertGt(nStakes, 100, "coverage: stakes");
         assertGt(nUnstakes, 10, "coverage: unstakes");
         assertGt(mHarvested, 0, "coverage: yield was actually swept");
+        assertGt(nPauseToggles, 20, "coverage: pausing");
+        assertGt(nBurnsWhilePaused, 10, "coverage: redemption while issuance is closed");
+        assertGt(nRejections, 100, "coverage: rejected operations");
     }
 }
