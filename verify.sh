@@ -13,7 +13,7 @@ case "$CHAIN_ID" in
   *) echo "no explorer for chain $CHAIN_ID"; exit 1 ;;
 esac
 
-JSON="deployments/iai-${CHAIN_ID}.json"
+JSON="${DEPLOYMENT_PATH:-deployments}/iai-${CHAIN_ID}.json"
 [ -f "$JSON" ] || { echo "missing $JSON"; exit 1; }
 
 addr() { jq -r --arg k "$1" '.[$k] // empty' "$JSON"; }

@@ -18,7 +18,9 @@ set -a; source .env; set +a
 # cannot overwrite a deployment record. Writing those records is this script's job.
 export FOUNDRY_PROFILE=deploy
 
-CONFIG="deployments/iai-${CHAIN_ID}.json"
+# Honour DEPLOYMENT_PATH the same way the scripts do, or this guard checks a different file
+# from the one they will actually read.
+CONFIG="${DEPLOYMENT_PATH:-deployments}/iai-${CHAIN_ID}.json"
 [ -f "$CONFIG" ] || { echo "missing $CONFIG -- copy deployments/iai-example.json and fill it in"; exit 1; }
 
 send() { forge script "$1" --rpc-url "$RPC" --broadcast $GAS_FLAGS "${@:2}"; }

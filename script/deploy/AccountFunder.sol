@@ -13,9 +13,8 @@ import {MockA0G} from "../../src/mocks/MockA0G.sol";
  *      Writing the key file is the caller's job.
  */
 abstract contract AccountFunder is Script {
-    /// @dev Native transfers are ~21k each; 200 sits well inside a block at any 0G gas limit.
-    uint256 internal constant GAS_BATCH = 200;
-    /// @dev Minting only writes a balance slot, so batches can be larger.
+    /// @dev How many accounts one `batchMint` covers. Native transfers need no equivalent:
+    ///      under `vm.startBroadcast` each is its own transaction already.
     uint256 internal constant MINT_BATCH = 500;
 
     /**
@@ -49,10 +48,10 @@ abstract contract AccountFunder is Script {
      * @param gasEach Native balance each account is topped **up to**, in wei.
      * @param a0GEach Mock a0G minted to each account, in wei.
      *
-     * @dev Native gas has to be transferred one account at a time out of the caller's own
-     *      balance, while a0G can be minted in batches; both are chunked, because a thousand
-     *      transfers do not fit in one block. Accounts already at `gasEach` are skipped, so a
-     *      rerun after a partial failure costs only what it still needs to send.
+     * @dev Native gas comes one transfer at a time out of the caller's own balance; a0G is
+     *      minted in batches, chunked so a single call stays inside the block gas limit.
+     *      Accounts already at `gasEach` are skipped, so a rerun after a partial failure costs
+     *      only what it still needs to send.
      */
     function _fundAccounts(MockA0G a0g, address[] memory addrs, uint256 gasEach, uint256 a0GEach)
         internal

@@ -53,9 +53,9 @@ contract AccountsScript is Script, JsonUtils, Constants, AccountFunder {
     function run() public {
         require(usesMockCollateral(), "refusing to write test keys for mainnet");
 
-        uint256 count = countOverride != 0 ? countOverride : vm.envOr("ACCOUNT_COUNT", uint256(1000));
-        uint256 gasEach = gasOverride != 0 ? gasOverride : vm.envOr("ACCOUNT_GAS", uint256(1 ether));
-        uint256 a0GEach = a0GOverride != 0 ? a0GOverride : vm.envOr("ACCOUNT_A0G", uint256(1_000_000 ether));
+        uint256 count = countOverride != 0 ? countOverride : vm.envOr("ACCOUNT_COUNT", uint256(50));
+        uint256 gasEach = gasOverride != 0 ? gasOverride : vm.envOr("ACCOUNT_GAS", uint256(10 ether));
+        uint256 a0GEach = a0GOverride != 0 ? a0GOverride : vm.envOr("ACCOUNT_A0G", uint256(100_000 ether));
         string memory mnemonic =
             bytes(mnemonicOverride).length != 0 ? mnemonicOverride : vm.envString("TEST_MNEMONIC");
 
@@ -65,6 +65,7 @@ contract AccountsScript is Script, JsonUtils, Constants, AccountFunder {
 
         uint256 pk = vm.envUint("PRIVATE_KEY");
         address deployer = vm.addr(pk);
+        // Fails before deriving anything, rather than halfway through funding.
         require(deployer.balance >= count * gasEach, "deployer cannot fund that many accounts");
 
         (address[] memory addrs, uint256[] memory keys) = _deriveAccounts(mnemonic, count, deployer);
