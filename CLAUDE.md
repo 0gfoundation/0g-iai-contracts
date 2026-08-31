@@ -39,8 +39,14 @@ assertion; if you add a shared modifier, check it did not sweep redemption in wi
 **5. Roles, not owners.** `AccessControlUpgradeable` with one role per responsibility:
 `DEFAULT_ADMIN_ROLE` (grant/revoke, `setFoundation`), `PAUSER_ROLE` (pause/unpause only),
 `RESCUE_ROLE` (`burnFor` only), `MINTER_BURNER_ROLE` (held solely by the vault), and beacon
-ownership (upgrades). Deployment puts the first three and the beacons on the deploying account;
-they are handed to the multisig before launch.
+ownership (upgrades). Deployment puts admin, pauser and the beacons on the deploying account and
+`RESCUE_ROLE` on nobody, so the rescue path opens as an explicit act of governance.
+
+`./handover.sh grant` then `./handover.sh renounce` moves them, in two transactions on purpose:
+`grant` leaves the deployer in place so the targets can be confirmed to respond, and `renounce`
+re-reads governance from the chain and refuses unless they already hold everything. Beacon
+ownership is one-step `Ownable` with no acceptance step, so that precondition is its only safety
+net. Never collapse the two steps.
 
 **6. `SafeERC20` for every external token.**
 
@@ -83,7 +89,8 @@ Every script splits in two, and the split is load-bearing:
 
 - The part that touches a chain is an `internal` function on an abstract contract —
   `IAIDeployer` (system wiring, mock collateral), `AccountFunder` (deriving and funding),
-  `UpgradeChecker` (capture, compare, point a beacon). No file access, no environment reads.
+  `UpgradeChecker` (capture, compare, point a beacon), `RoleHandover` (moving governance off the
+  deployer). No file access, no environment reads.
 - The `*.s.sol` script is a thin shell around it: read the parameters, call the function, write
   the result back.
 
@@ -146,6 +153,11 @@ Two Foundry behaviours worth knowing before writing tests here:
   contract run **in parallel** (measured: three tests entered in the same millisecond, 4.8s wall
   against 14.5s CPU). So any test that writes files needs a path of its own, or two of them race
   over the same file and the suite goes flaky rather than failing honestly.
+- **An argument is evaluated before the call it belongs to**, so anything that makes an external
+  call in an argument position steals the `vm.prank` or `vm.expectRevert` intended for the outer
+  call. `vault.grantRole(vault.PAUSER_ROLE(), x)` pranks `PAUSER_ROLE()`; `beacon.upgradeTo(address(
+  new Impl()))` pranks the deployment. This has cost time three times in this repo. Hoist role
+  constants and freshly deployed addresses into locals first.
 - **`setUp()` runs once**, and every test starts from a snapshot of the state it left. A value
   computed there is therefore identical in every test — including `vm.randomUint()`, which does vary
   when called from a test body but not from `setUp`. That is why the script tests take the directory
