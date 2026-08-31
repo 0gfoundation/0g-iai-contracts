@@ -114,11 +114,76 @@ contract IAIScript is Script, JsonUtils, Constants, IAIDeployer {
         console.log("swept a0G      ", swept);
     }
 
+    /**
+     * @notice Changes the unstaking delay on a live deployment. `DEFAULT_ADMIN_ROLE`.
+     * @param newDuration New delay in seconds.
+     *
+     * @dev Also rewrites `CooldownDuration` in the deployment record, so the file keeps
+     *      describing the chain. Applies to withdrawals started after this call; anything
+     *      already cooling down keeps the end time it was given.
+     */
+    function setCooldownDuration(uint256 newDuration) public {
+        (string memory json, string memory path) = loadOrInitJson("iai");
+        vm.startBroadcast(vm.envUint("PRIVATE_KEY"));
+        CreditRegistry(vm.parseJsonAddress(json, ".CreditRegistry")).setCooldownDuration(newDuration);
+        vm.stopBroadcast();
+
+        string memory o = "iai";
+        vm.serializeJson(o, json);
+        vm.writeJson(vm.serializeString(o, "CooldownDuration", vm.toString(newDuration)), path);
+        console.log("cooldownDuration", newDuration);
+    }
+
     function setFoundation(address newFoundation) public {
         (string memory json,) = loadOrInitJson("iai");
         vm.startBroadcast(vm.envUint("PRIVATE_KEY"));
         IAIVault(vm.parseJsonAddress(json, ".IAIVault")).setFoundation(newFoundation);
         vm.stopBroadcast();
+    }
+
+    /**
+     * @notice Re-checks the recorded deployment against the chain. Read-only.
+     *
+     * @dev Worth running after every deployment, because the record is written during
+     *      simulation: a run interrupted partway -- this chain's RPC intermittently answers
+     *      `eth_getTransactionReceipt` with null and forge gives up after a few retries --
+     *      still leaves a file naming contracts that were never deployed. Nothing later
+     *      notices, because reading from an address with no code simply returns nothing.
+     */
+    function checkDeployment() public view {
+        (string memory json,) = loadOrInitJsonView("iai");
+
+        Config memory c = Config({
+            a0G: vm.parseJsonAddress(json, ".A0G"),
+            foundation: vm.parseJsonAddress(json, ".Foundation"),
+            r0: vm.parseJsonUint(json, ".R0"),
+            cap: vm.parseJsonUint(json, ".Cap"),
+            target: vm.parseJsonUint(json, ".Target"),
+            cooldownDuration: vm.parseJsonUint(json, ".CooldownDuration"),
+            name: vm.parseJsonString(json, ".Name"),
+            symbol: vm.parseJsonString(json, ".Symbol")
+        });
+        Deployment memory d = Deployment({
+            iai: vm.parseJsonAddress(json, ".IAI"),
+            iaiImpl: vm.parseJsonAddress(json, ".IAIImpl"),
+            iaiBeacon: vm.parseJsonAddress(json, ".IAIBeacon"),
+            vault: vm.parseJsonAddress(json, ".IAIVault"),
+            vaultImpl: vm.parseJsonAddress(json, ".IAIVaultImpl"),
+            vaultBeacon: vm.parseJsonAddress(json, ".IAIVaultBeacon"),
+            registry: vm.parseJsonAddress(json, ".CreditRegistry"),
+            registryImpl: vm.parseJsonAddress(json, ".CreditRegistryImpl"),
+            registryBeacon: vm.parseJsonAddress(json, ".CreditRegistryBeacon"),
+            slope: 0
+        });
+
+        _assertWiring(c, d);
+        require(
+            IAIVault(d.vault).slope() == vm.parseJsonUint(json, ".Slope"),
+            "recorded Slope does not match the chain"
+        );
+
+        console.log("network        ", networkName());
+        console.log("every recorded address holds code and the wiring matches the file.");
     }
 
     /// @notice Read-only snapshot. Run without `--broadcast`.
