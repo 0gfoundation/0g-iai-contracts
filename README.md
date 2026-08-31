@@ -82,6 +82,8 @@ deployments/    per-network parameters *and* the addresses a run produced
 test/unit/      per-function behaviour, golden vectors, revert and permission matrices
 test/sim/       seeded randomized simulation against an independent shadow model
 test/script/    the deployment, upgrade and account scripts, run as an operator would
+docs/           frontend integration guide
+run.sh upgrade.sh faucet.sh verify.sh   operator wrappers
 ```
 
 `deployments/iai-<chainId>.json` is both the input and the record: hand-written parameters go in, the
@@ -102,30 +104,22 @@ against a topology the script no longer produces.
 
 ## Deploy
 
-All 0G networks need `--slow --with-gas-price 3gwei --priority-gas-price 3gwei` (0G's EIP-1559
-requires both pinned).
-
 ```bash
-cp .env.example .env            # PRIVATE_KEY, TEST_MNEMONIC
-export $(grep -v '^#' .env | xargs)
+cp .env.example .env                  # PRIVATE_KEY, TEST_MNEMONIC
+cp config.example.sh config.sh        # CHAIN_ID and RPC; gitignored
+$EDITOR deployments/iai-<chainid>.json   # start from iai-example.json
 
-# 1. testnet only: mock collateral and its oracle (refuses to run on mainnet)
-forge script script/deploy/Mock.s.sol --rpc-url $RPC --broadcast --slow \
-    --with-gas-price 3gwei --priority-gas-price 3gwei
-
-# 2. the system itself
-forge script script/deploy/IAI.s.sol --rpc-url $RPC --broadcast --slow \
-    --with-gas-price 3gwei --priority-gas-price 3gwei
-
-# 3. testnet only: derive and fund test accounts
-forge script script/deploy/Accounts.s.sol --rpc-url $RPC --broadcast --slow \
-    --with-gas-price 3gwei --priority-gas-price 3gwei
-
-# 4. read back, then open issuance when ready
-forge script script/deploy/IAI.s.sol --sig "status()" --rpc-url $RPC
-forge script script/deploy/IAI.s.sol --sig "unpause()" --rpc-url $RPC --broadcast --slow \
-    --with-gas-price 3gwei --priority-gas-price 3gwei
+./run.sh              # mock collateral (off mainnet), then the system
+./run.sh accounts     # testnet: derive and fund the account set
+./run.sh status       # read it back
+./run.sh unpause      # open issuance
+./verify.sh           # publish sources to the 0G explorer
 ```
+
+`config.sh` carries the gas flags every 0G transaction needs — `--slow --with-gas-price 3gwei
+--priority-gas-price 3gwei`, since 0G's EIP-1559 wants both pinned and `--slow` stops a nonce gap
+from stranding the rest of a deployment. Running `forge script` by hand works too; see `run.sh` for
+the exact invocations.
 
 **The vault deploys paused.** Opening issuance is a separate, explicit transaction — that is the only
 launch-timing control the system has, and it is deliberately manual. The `CreditRegistry` deploys
@@ -134,7 +128,8 @@ open; nobody can stake before iAI exists.
 Deployment grants `DEFAULT_ADMIN_ROLE`, `PAUSER_ROLE` and beacon ownership to the deploying account.
 **Hand them to the multisig before launch.**
 
-Other operator entrypoints: `pause()`, `harvest()`, `setFoundation(address)`.
+Other operator entrypoints: `./run.sh pause`, `./run.sh harvest`, and
+`forge script script/deploy/IAI.s.sol --sig "setFoundation(address)" <addr>`.
 
 ## Upgrades
 
@@ -144,40 +139,12 @@ contract computes about itself is only sound while it reads the right storage sl
 what is in doubt when a layout has shifted.
 
 ```bash
-anvil --fork-url https://evmrpc.0g.ai --chain-id 16661 &
-export CHECK_ACCOUNTS=0xLargestHolder,0xNextOne     # optional but recommended
+export CHECK_ACCOUNTS=0xLargestHolder,0xNextOne   # optional but recommended
 
-forge script script/Upgrade.s.sol --sig "snapshot()"         --rpc-url http://127.0.0.1:8545
-forge script script/Upgrade.s.sol --sig "upgradeVault()"     --rpc-url http://127.0.0.1:8545 --broadcast
-forge script script/Upgrade.s.sol --sig "postUpgradeCheck()" --rpc-url http://127.0.0.1:8545
-forge inspect IAIVault storageLayout > /tmp/new.json && diff /tmp/old.json /tmp/new.json
+./upgrade.sh rehearse vault    # forks the chain, upgrades there, compares state, diffs layout
+./upgrade.sh vault             # only after the rehearsal passes
 ```
 
-Only after the rehearsal passes should the same `upgradeVault()` go to mainnet.
-
-## Secrets
-
-`deployments/test-accounts-*.json` contains **private keys** and is gitignored. `Accounts.s.sol`
-refuses to run on mainnet, and refuses to enumerate the deployer's own key — publishing that would
-hand over `DEFAULT_ADMIN_ROLE` and the beacons along with the test accounts.
-
-Nothing else in `deployments/` is secret; those files are meant to be committed and shared.
-
-## Known accepted risks
-
-These are decisions, not oversights. They are here so a reader does not have to rediscover them.
-
-1. **The a0G oracle's write key can drain the vault.** `setValue` has no bounds, no monotonicity, no
-   rate limit and no timelock. Setting the rate absurdly high, minting to the cap for dust, then
-   restoring it drains the collateral. iAI does not defend against this. **Operational requirement:**
-   monitor the oracle's `ValueSet` events and `pause()` on any move beyond the expected daily band.
-   Note `pause()` stops minting but not redemption, so the window between alert and human response is
-   the exposure.
-2. **A mint and an immediate full burn costs 1 wei.** Round-trips are effectively free, so a large
-   mint can be front-run. Accepted; slippage protection is the only defence, and the contracts are
-   upgradeable if a holding period ever becomes necessary.
-3. **If the a0G oracle stops updating for 21 days, `mint`, `burn` and `harvest` all revert.** An
-   external dependency, accepted. Setting the upstream `maxAge` to zero would freeze it permanently
-   rather than temporarily.
-4. **A falling exchange rate leaves late redeemers short.** The sweep goes quiet and redemption is
-   first come, first served. Accepted, on the premise that a0G does not depreciate.
+The rehearsal forks the configured chain, snapshots every curve constant, every balance and the
+positions named in `CHECK_ACCOUNTS`, upgrades, and reverts if anything moved. `iai` and `registry`
+are the other two targets.
