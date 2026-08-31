@@ -49,7 +49,7 @@ contract IAIScript is Script, JsonUtils, Constants, IAIDeployer {
         console.log("CreditRegistry ", d.registry);
         console.log("slope          ", d.slope);
         console.log("");
-        console.log("Both contracts are PAUSED. Open them with --sig 'unpause()' when ready.");
+        console.log("Issuance is PAUSED. Open it with --sig 'unpause()' when ready.");
         console.log("DEFAULT_ADMIN and the beacon owner are the deployer; hand them to the");
         console.log("multisig before launch.");
 
