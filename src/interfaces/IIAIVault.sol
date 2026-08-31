@@ -127,7 +127,8 @@ interface IIAIVault {
 
     /**
      * @notice Prices minting `d` iAI at the current supply and exchange rate.
-     * @param d Amount of iAI to price, in wei-iAI.
+     * @param d Amount of iAI to price, in wei-iAI. Beyond the remaining headroom this reverts
+     *          with `CapExceeded` -- the same error `mint` gives.
      * @return delta0G 0G value the curve charges, in wei-0G. Rounded up.
      * @return a0GIn   a0G that would be taken, in wei-a0G. Rounded up. Use it, widened by
      *                 a tolerance, as `maxA0GIn`.
@@ -137,7 +138,9 @@ interface IIAIVault {
     /**
      * @notice Prices burning `b` of `minter`'s iAI at the current exchange rate.
      * @param minter Position owner whose average rate applies.
-     * @param b      Amount of iAI to burn, in wei-iAI.
+     * @param b      Amount of iAI to burn, in wei-iAI. Above the position, this reverts with
+     *               `BurnExceedsPosition` -- the same error `burn` gives, so a caller sees the
+     *               same failure whether it quotes or executes.
      * @return unlocked0G 0G value released from the position, in wei-0G. Rounded down.
      * @return a0GOut     a0G that would be sent, in wei-a0G. Rounded down.
      */
@@ -147,7 +150,11 @@ interface IIAIVault {
      * @notice Inverts the curve: how much iAI a given amount of a0G buys right now.
      * @param a0GAmount Amount the caller intends to spend, in wei-a0G.
      * @return d Amount of iAI mintable, in wei-iAI. Rounded down, so minting `d` never costs
-     *           more than `a0GAmount` at an unchanged rate. Capped at the remaining headroom.
+     *           more than `a0GAmount` at an unchanged rate.
+     *
+     * @dev Unlike `quoteMint`, more a0G than the curve has room for is **not** an error here:
+     *      the caller asked what a given spend buys, and the remaining headroom is a true and
+     *      mintable answer to that. It is returned clamped.
      */
     function quoteMintForA0G(uint256 a0GAmount) external view returns (uint256 d);
 

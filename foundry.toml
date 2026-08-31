@@ -26,11 +26,6 @@ memory_limit = 8589934592
 runs = 1024
 max_test_rejects = 262144
 
-[profile.default.invariant]
-runs = 256
-depth = 256
-fail_on_revert = false
-
 [fmt]
 bracket_spacing = false
 int_types = "long"

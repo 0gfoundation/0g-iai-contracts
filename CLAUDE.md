@@ -110,11 +110,24 @@ Three layers, all required to stay green:
   grep -rnE "vm\.(readFile|writeFile|readJson|writeJson|createDir|readDir|projectRoot|setEnv)" \
       test/unit test/sim test/Base.t.sol && echo "unit tests must not touch files"
   ```
-- **`test/sim/`** — a seeded randomized simulation against a shadow model. The shadow **recomputes
-  the curve independently**, with plain checked arithmetic instead of `Math.mulDiv`; a shadow that
-  called the same helper would only prove the code equals itself. State is compared after *every*
+- **`test/sim/`** — a seeded randomized simulation against a shadow model. The shadow recomputes the
+  curve with plain checked arithmetic instead of `Math.mulDiv`, so a rounding regression shows up as
+  a disagreement; it evaluates the same algebraic expansion the contract does, and the algebra is
+  pinned separately by golden vectors computed outside this codebase. State is compared after *every*
   step so a mismatch names the operation that caused it. Coverage counters are asserted at the end,
   so a run that degenerates into no-ops fails instead of passing vacuously.
+
+  Pausing and rejected operations are part of the operation mix. That makes "redemption is never
+  gated" a property held across the whole run (a 10k-operation run redeems ~830 times while issuance
+  is closed) rather than one assertion, and it checks **which** error each guard raises from whatever
+  state the run has reached. Rejected operations deliberately take no state snapshot: the EVM already
+  rolls back a reverted frame, and the shadow is not advanced for a rejected operation, so the
+  per-step comparison already fails if the contract kept anything.
+There is deliberately **no Foundry `invariant_` layer**. It was considered and dropped: the seeded
+simulation already runs the same invariants over 100k operations, and an empty `test/invariant/`
+directory beside a dead `[profile.default.invariant]` block is worse than neither. If it is ever
+added back, add the tests and the config together.
+
 - **`test/script/`** — the only place that touches disk, and only for what genuinely needs it:
   reading the parameter file, writing the addresses back, and the artifact the account script
   produces. Real bugs were found here (`vm.writeJson`'s silent no-op on a missing key), so it
