@@ -75,7 +75,10 @@ contract MockA0GOracle is IA0GOracle, Ownable {
         return value();
     }
 
-    /// @notice Pins the rate and stops accrual, mirroring a production oracle write.
+    /**
+     * @notice Pins the rate and stops accrual, mirroring a production oracle write.
+     * @param newValue New exchange rate, 0G per a0G scaled by 1e18.
+     */
     function setValue(uint256 newValue) external onlyOwner {
         baseValue = newValue;
         startTime = block.timestamp;
@@ -83,6 +86,10 @@ contract MockA0GOracle is IA0GOracle, Ownable {
         emit ValueSet(newValue, block.timestamp);
     }
 
+    /**
+     * @notice Changes the accrual rate.
+     * @param newApr Simple annual rate, scaled by 1e18 (1e18 == 100%/year).
+     */
     function setApr(uint256 newApr) external onlyOwner {
         // Re-anchor so changing the rate does not retroactively rewrite past accrual.
         baseValue = value();

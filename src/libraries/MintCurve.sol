@@ -68,6 +68,12 @@ library MintCurve {
 
     /**
      * @notice Collateral required to move supply from `s` to `s + d`.
+     * @param  r0    Marginal price at supply zero, in wei-0G per iAI.
+     * @param  slope Rise of the marginal price per unit of supply, scaled by 1e18.
+     * @param  s     Supply before the mint, in wei-iAI.
+     * @param  d     Amount being minted, in wei-iAI.
+     * @return 0G value to lock, in wei-0G.
+     *
      * @dev    cost = R0*d/WAD + slope*d*(2s+d)/(2*WAD^2), each term rounded **up**.
      *
      *         Two independent ceilings mean the result can sit up to 2 wei above the
@@ -86,6 +92,11 @@ library MintCurve {
 
     /**
      * @notice Total collateral the curve accounts for at supply `s` (the area under `rate`).
+     * @param  r0    Marginal price at supply zero, in wei-0G per iAI.
+     * @param  slope Rise of the marginal price per unit of supply, scaled by 1e18.
+     * @param  s     Supply to evaluate at, in wei-iAI.
+     * @return 0G value, in wei-0G.
+     *
      * @dev    Floored. **Views and invariant checks only** — never the write path.
      *         `lockedAt(cap)` is deliberately a hair under `target`; asserting equality
      *         will fail.
@@ -96,6 +107,12 @@ library MintCurve {
 
     /**
      * @notice Inverse of `cost`: how much iAI a given amount of 0G value buys at supply `s`.
+     * @param  r0    Marginal price at supply zero, in wei-0G per iAI.
+     * @param  slope Rise of the marginal price per unit of supply, scaled by 1e18.
+     * @param  s     Current supply, in wei-iAI.
+     * @param  delta 0G value the caller intends to spend, in wei-0G.
+     * @return d     Amount mintable, in wei-iAI. Never quotes more than `delta` can pay for.
+     *
      * @dev    Solves `slope/2*D^2 + (R0 + slope*s)*D = delta` for D:
      *
      *             K = (R0 + slope*s/WAD) * WAD / slope

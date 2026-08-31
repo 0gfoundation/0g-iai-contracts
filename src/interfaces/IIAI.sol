@@ -20,7 +20,18 @@ interface IIAI is IERC20 {
     /// @notice Role held only by the vault; there is no other issuance path.
     function MINTER_BURNER_ROLE() external view returns (bytes32);
 
+    /**
+     * @notice Issues new iAI. `MINTER_BURNER_ROLE`.
+     * @param to     Recipient of the newly minted tokens.
+     * @param amount Amount to mint, in wei-iAI. Reverts if it would breach `cap`.
+     */
     function mint(address to, uint256 amount) external;
 
+    /**
+     * @notice Destroys iAI. `MINTER_BURNER_ROLE`.
+     * @param from   Holder whose balance is reduced. Needs no allowance: the role, not an
+     *               approval, is what authorises this.
+     * @param amount Amount to burn, in wei-iAI.
+     */
     function burn(address from, uint256 amount) external;
 }

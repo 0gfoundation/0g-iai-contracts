@@ -68,7 +68,14 @@ contract CreditRegistry is
         _disableInitializers();
     }
 
-    /// @dev Starts paused, matching the vault: staking opens on an explicit governance call.
+    /**
+     * @notice Wires the registry to its token and sets the unstaking delay.
+     * @param iai_              The iAI token accepted for staking. Must be non-zero.
+     * @param cooldownDuration_ Delay between `initiateUnstake` and `unstake`, in seconds.
+     *
+     * @dev Starts open. There is nothing to gate: staking cannot begin before the vault is
+     *      unpaused and iAI exists, and `PAUSER_ROLE` can close it at any time.
+     */
     function initialize(address iai_, uint256 cooldownDuration_) external initializer {
         if (iai_ == address(0)) revert ZeroAddress();
 
@@ -80,11 +87,9 @@ contract CreditRegistry is
         RegistryStorage storage $ = _s();
         $.iai = IIAI(iai_);
         $.cooldownDuration = cooldownDuration_;
-
-        _pause();
     }
 
-    /// @notice Deposits `amount` iAI and begins earning immediately.
+    /// @inheritdoc ICreditRegistry
     function stake(uint256 amount) external nonReentrant whenNotPaused {
         if (amount == 0) revert ZeroAmount();
 
@@ -102,7 +107,7 @@ contract CreditRegistry is
     }
 
     /**
-     * @notice Starts withdrawing `amount`, which stops earning at once.
+     * @inheritdoc ICreditRegistry
      * @dev Not pausable. `totalStaked` is unchanged here — the tokens are still held by this
      *      contract, just no longer earning — so it stays equal to the contract's iAI balance.
      */
@@ -144,8 +149,7 @@ contract CreditRegistry is
         emit Unstaked(_msgSender(), amount, totalAfter);
     }
 
-    /// @dev Applies to withdrawals started after this call; those already in flight keep
-    ///      the end time they were given.
+    /// @inheritdoc ICreditRegistry
     function setCooldownDuration(uint256 newDuration) external onlyRole(DEFAULT_ADMIN_ROLE) {
         RegistryStorage storage $ = _s();
         emit CooldownDurationUpdated($.cooldownDuration, newDuration);
@@ -160,7 +164,7 @@ contract CreditRegistry is
         _unpause();
     }
 
-    /// @notice The amount currently earning. This is the number the off-chain meter reads.
+    /// @inheritdoc ICreditRegistry
     function stakedOf(address account) external view returns (uint256) {
         return _s().stakedInfos[account].amountStaked;
     }

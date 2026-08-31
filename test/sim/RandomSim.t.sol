@@ -153,7 +153,7 @@ contract RandomSimTest is BaseTest {
 
         a0g.mint(a, expectedIn);
         vm.prank(a);
-        vault.mint(d, expectedDelta, expectedIn, block.timestamp);
+        vault.mint(d, expectedIn, block.timestamp);
 
         mLocked[a] += expectedDelta;
         mOutstanding[a] += d;
@@ -173,10 +173,15 @@ contract RandomSimTest is BaseTest {
         if (b == 0 || iai.balanceOf(a) < b) return;
 
         uint256 expectedUnlock = (mLocked[a] * b) / outstanding;
+        // Redemption no longer takes a minimum-output bound, so the shadow checks the payout
+        // instead of merely bounding it.
         uint256 expectedOut = (expectedUnlock * WAD) / vault.exchangeRate();
+        uint256 heldBefore = a0g.balanceOf(a);
 
         vm.prank(a);
-        vault.burn(b, expectedOut, block.timestamp);
+        vault.burn(b, block.timestamp);
+
+        assertEq(a0g.balanceOf(a) - heldBefore, expectedOut, "burn payout matches the shadow");
 
         mLocked[a] -= expectedUnlock;
         mOutstanding[a] -= b;
@@ -208,7 +213,7 @@ contract RandomSimTest is BaseTest {
         uint256 rescuerBefore = a0g.balanceOf(address(this));
         uint256 ownerBefore = a0g.balanceOf(owner);
 
-        vault.burnFor(owner, b, expectedOut, block.timestamp);
+        vault.burnFor(owner, b, block.timestamp);
 
         assertEq(a0g.balanceOf(address(this)), rescuerBefore, "rescuer must never receive collateral");
         assertEq(a0g.balanceOf(owner) - ownerBefore, expectedOut, "collateral goes to the position owner");
