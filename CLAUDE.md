@@ -148,6 +148,12 @@ Two Foundry behaviours worth knowing before writing tests here:
 `deployments/iai-<chainId>.json` is both the input and the output: hand-written parameters go in, and
 the addresses a run produced come back to the same file. Start from `iai-example.json`.
 
+**Tests cannot write into `deployments/`.** The default profile grants read-write only on
+`./cache`, so a test that forgets to redirect a script fails with a permission error rather than
+overwriting a deployment record. `run.sh` and `upgrade.sh` set `FOUNDRY_PROFILE=deploy`, which
+differs from the default in `fs_permissions` alone — same solc, same `via_ir`, same optimizer, so
+it cannot produce different bytecode. Run `forge script` by hand with that profile set.
+
 **Write the whole document, never a single key.** Foundry's three-argument
 `vm.writeJson(value, path, ".Key")` **silently does nothing** when the key does not already exist —
 no error, no warning. Seed the output object from the current file and write it in one go:
