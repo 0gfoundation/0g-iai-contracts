@@ -76,8 +76,13 @@ contract MockA0GOracle is IA0GOracle, Ownable {
     }
 
     /**
-     * @notice Pins the rate and stops accrual, mirroring a production oracle write.
+     * @notice Sets the rate, mirroring a production oracle write.
      * @param newValue New exchange rate, 0G per a0G scaled by 1e18.
+     *
+     * @dev Re-anchors accrual on the new value; it does **not** stop it. Use
+     *      `setAutoAccrue(false)` to hold the rate still, which is also how the stale path is
+     *      reached: with accrual off, `lastUpdated` stops moving and `getValue` eventually
+     *      reverts.
      */
     function setValue(uint256 newValue) external onlyOwner {
         baseValue = newValue;

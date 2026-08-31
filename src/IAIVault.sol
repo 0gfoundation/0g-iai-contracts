@@ -166,10 +166,14 @@ contract IAIVault is IIAIVault, AccessControlUpgradeable, PausableUpgradeable, R
         uint256 totalAfter = $.totalLocked0G + delta0G;
         $.totalLocked0G = totalAfter;
 
-        $.iai.mint(_msgSender(), d);
-        // a0G is an ERC-4626 share token with a plain ERC-20 transfer; `SafeERC20` already
-        // reverts unless the full amount moves.
+        // Payment first, then issuance. Both calls are in the same transaction, so ordering
+        // cannot change the outcome of an honest mint -- but it decides who is exposed if a
+        // future a0G upgrade ever calls back into this contract: taking the collateral first
+        // means the vault is already paid at the moment any such callback could run.
+        // a0G is an ERC-4626 share with a plain ERC-20 transfer; `SafeERC20` already reverts
+        // unless the full amount moves.
         $.a0G.safeTransferFrom(_msgSender(), address(this), a0GIn);
+        $.iai.mint(_msgSender(), d);
 
         emit Minted(_msgSender(), d, delta0G, a0GIn, er, supplyAfter, totalAfter);
     }
@@ -314,7 +318,12 @@ contract IAIVault is IIAIVault, AccessControlUpgradeable, PausableUpgradeable, R
     /// @inheritdoc IIAIVault
     function quoteMint(uint256 d) external view returns (uint256 delta0G, uint256 a0GIn) {
         VaultStorage storage $ = _s();
-        delta0G = MintCurve.cost($.r0, $.slope, $.iai.totalSupply(), d);
+        uint256 s = $.iai.totalSupply();
+        // Fails exactly where `mint` would, with the same error, so a caller cannot be handed
+        // a price for an amount that can never be issued.
+        uint256 supplyAfter = s + d;
+        if (supplyAfter > $.cap) revert CapExceeded(supplyAfter, $.cap);
+        delta0G = MintCurve.cost($.r0, $.slope, s, d);
         a0GIn = Math.mulDiv(delta0G, WAD, $.oracle.getValue(), Math.Rounding.Ceil);
     }
 
@@ -322,8 +331,14 @@ contract IAIVault is IIAIVault, AccessControlUpgradeable, PausableUpgradeable, R
     function quoteBurn(address minter, uint256 b) external view returns (uint256 unlocked0G, uint256 a0GOut) {
         VaultStorage storage $ = _s();
         Position storage pos = $.positions[minter];
-        if (pos.iaiOutstanding == 0) return (0, 0);
-        unlocked0G = Math.mulDiv(pos.locked0G, b, pos.iaiOutstanding, Math.Rounding.Floor);
+        uint256 outstanding = pos.iaiOutstanding;
+        // Fails exactly where `burn` would, with the same error. Left unguarded the ratio
+        // exceeds one and the quote reports releasing more 0G than the position ever locked --
+        // a number no `burn` can produce, handed to a caller with no way to tell it is
+        // impossible. Clamping instead would answer a question that was not asked.
+        if (b > outstanding) revert BurnExceedsPosition(b, outstanding);
+        if (outstanding == 0) return (0, 0);
+        unlocked0G = Math.mulDiv(pos.locked0G, b, outstanding, Math.Rounding.Floor);
         a0GOut = Math.mulDiv(unlocked0G, WAD, $.oracle.getValue(), Math.Rounding.Floor);
     }
 

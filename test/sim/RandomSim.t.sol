@@ -12,10 +12,14 @@ import {ICreditRegistry} from "../../src/interfaces/ICreditRegistry.sol";
  *
  * @dev Three deliberate choices:
  *
- *      1. **The shadow recomputes the curve independently.** It uses plain checked
- *         arithmetic with hand-written ceilings rather than the library's `Math.mulDiv`
- *         path. A shadow that called the same helper would only prove the code equals
- *         itself; this one can disagree, which is the entire point.
+ *      1. **The shadow recomputes the curve, but only partly independently.** It uses plain
+ *         checked arithmetic with hand-written ceilings instead of the library's `Math.mulDiv`
+ *         path, so it catches a rounding or overflow regression -- which is what the
+ *         simulation is for. It does **not** catch an algebraic one: it evaluates the same
+ *         expansion the contract does, `R0*d + slope*d*(2s+d)/2`, rather than the equivalent
+ *         `lockedAt(s+d) - lockedAt(s)`. The algebra is pinned elsewhere, by golden vectors
+ *         computed outside this codebase and asserted in `test/unit/MintCurve.t.sol`. Stating
+ *         this plainly because "independent shadow" would overclaim what these steps prove.
  *
  *      2. **State is compared after every operation, not at the end.** A mismatch then
  *         names the operation that caused it instead of the thousandth one after it.

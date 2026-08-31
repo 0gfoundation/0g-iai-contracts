@@ -144,7 +144,8 @@ contract MintCurveTest is Test {
 
     function testFuzz_QuoteForValue_IsAffordable(uint256 s, uint256 delta) public pure {
         s = bound(s, 0, CAP - 1e18);
-        delta = bound(delta, 1e18, MintCurve.cost(R0, SLOPE, s, CAP - s));
+        // From 1 wei, not 1e18: dust quotes are where an off-by-one in the root would show.
+        delta = bound(delta, 1, MintCurve.cost(R0, SLOPE, s, CAP - s));
         uint256 d = MintCurve.quoteForValue(R0, SLOPE, s, delta);
         if (d == 0) return;
         assertLe(MintCurve.cost(R0, SLOPE, s, d), delta, "quoted amount must be affordable");

@@ -156,7 +156,7 @@ IAIVault.quoteMint(uint256 d) view returns (uint256 delta0G, uint256 a0GIn)
 
 | Parameter | Where it comes from | Conversion |
 | --- | --- | --- |
-| `d` | The amount of iAI the user wants, from your input box. | `parseUnits(input, 18)` |
+| `d` | The amount of iAI the user wants, from your input box. **Cap it at `cap() - totalSupply()`** — beyond the remaining headroom this reverts with `CapExceeded`, the same error `mint` gives. | `parseUnits(input, 18)` |
 
 | Return | Meaning | Display |
 | --- | --- | --- |
@@ -165,6 +165,12 @@ IAIVault.quoteMint(uint256 d) view returns (uint256 delta0G, uint256 a0GIn)
 
 This is a `view` call — free, no gas, no wallet prompt. Re-run it whenever the input changes and
 again right before submitting, because the price rises as other people mint.
+
+**Quotes fail wherever the action they price would fail**, with the identical error. `quoteMint`
+raises `CapExceeded` and `quoteBurn` raises `BurnExceedsPosition` exactly where `mint` and `burn`
+do. That is deliberate: a quote that answered anyway would hand you a number the contract refuses a
+moment later. Validate the input against `cap() - totalSupply()` and `positionOf().iaiOutstanding`
+before quoting, or catch the error and treat it as "too much".
 
 **The reverse direction.** If your UI has a "spend all my a0G" button:
 
@@ -176,8 +182,13 @@ IAIVault.quoteMintForA0G(uint256 a0GAmount) view returns (uint256 d)
 | --- | --- | --- |
 | `a0GAmount` | `a0G.balanceOf(userAddress)`, or a smaller amount the user typed. | Already 18-decimal wei if read from `balanceOf`; `parseUnits(input, 18)` if typed. |
 
-It returns the `d` you then pass to `quoteMint` and `mint`. It rounds down, so the resulting mint
-never costs more than `a0GAmount`.
+It returns the `d` you then pass to `mint`. It rounds down, so the resulting mint never costs more
+than `a0GAmount`.
+
+Unlike `quoteMint`, this one **does not revert** when the balance would buy more than the cap
+allows — it returns the remaining headroom. It was asked what a given spend buys, and the headroom
+is a true, mintable answer to that question. So a "spend everything" button never errors; it just
+stops growing once the cap is in sight.
 
 ### 3.2 Send the transaction
 
@@ -265,7 +276,7 @@ IAIVault.quoteBurn(address minter, uint256 b) view returns (uint256 unlocked0G, 
 | Parameter | Where it comes from | Conversion |
 | --- | --- | --- |
 | `minter` | The connected wallet address. | none |
-| `b` | How much iAI to burn. Cap the input at `min(iaiOutstanding, iAI.balanceOf(user))`. | `parseUnits(input, 18)` |
+| `b` | How much iAI to burn. **Cap the input at `min(iaiOutstanding, iAI.balanceOf(user))`** — above `iaiOutstanding` this reverts with `BurnExceedsPosition`, the same error `burn` gives, so quoting and executing fail identically. | `parseUnits(input, 18)` |
 
 | Return | Meaning |
 | --- | --- |
@@ -339,10 +350,20 @@ Takes **no arguments** and withdraws everything whose cooldown has elapsed. Call
 
 ```solidity
 CreditRegistry.stakedOf(address account) view returns (uint256)
-CreditRegistry.stakedInfoOf(address account)
-  view returns (uint256 amountStaked, uint256 coolDownAmount, uint256 coolDownEnd)
+CreditRegistry.stakedInfoOf(address account) view returns (StakedInfo)   // ← a struct
 CreditRegistry.cooldownDuration() view returns (uint256)
 ```
+
+> **`stakedInfoOf` and `positionOf` come back in different shapes.** `positionOf` declares three
+> separate outputs, so a client hands you an **array** — destructure it positionally.
+> `stakedInfoOf` returns a single `struct`, so a client hands you an **object** keyed by field name.
+> Mixing them up is a silent `undefined`, not an error.
+>
+> ```ts
+> const [locked0G, iaiOutstanding, avgRate] = await vault.read.positionOf([user]);   // array
+> const info = await registry.read.stakedInfoOf([user]);                             // object
+> info.amountStaked; info.coolDownAmount; info.coolDownEnd;
+> ```
 
 | Field | Meaning | Display |
 | --- | --- | --- |
@@ -421,14 +442,14 @@ this for you.
 | --- | --- | --- | --- |
 | `0xce8c6762` | `ExcessiveInput(required, maxAccepted)` | The mint would cost more a0G than `maxA0GIn` allowed — someone minted first, or the rate moved. | Re-quote and retry. Offer to raise the slippage tolerance. `required` tells you the real price. |
 | `0xaa2fd925` | `Expired(deadline, nowTs)` | The transaction sat past its deadline. | Retry with a fresh `deadline`. If it happens often, the deadline is too short or the gas price too low. |
-| `0x509309dc` | `BurnExceedsPosition(requested, outstanding)` | Tried to burn more than this address minted. | Cap the input at `iaiOutstanding`. Usually means the user holds bought tokens (§8). |
+| `0x509309dc` | `BurnExceedsPosition(requested, outstanding)` | Tried to burn — or to quote a burn — of more than this address minted. | Cap the input at `iaiOutstanding`. Usually means the user holds bought tokens (§8). `quoteBurn` raises the same error, so this surfaces while typing rather than on submit. |
 | `0xe450d38c` | `ERC20InsufficientBalance` | Not enough iAI in the wallet to burn or stake. | Cap the input at `balanceOf`. |
 | `0xfb8f41b2` | `ERC20InsufficientAllowance` | Missing or too-small approval. | Run the approval flow (§2). Remember: burn and unstake need none. |
 | `0xfa07c026` | `CooldownNotOver(availableAt, nowTs)` | `unstake()` called before the cooldown elapsed. | `availableAt` is `coolDownEnd`, a Unix timestamp in seconds; it is also readable up front from `stakedInfoOf`. |
 | `0x2aab8ce8` | `NothingInCooldown()` | `unstake()` with nothing pending. | The user must call `initiateUnstake` first. |
 | `0x45be0a26` | `InsufficientStake(requested, staked)` | Withdrawing more than is staked. | Cap the input at `stakedOf`. |
 | `0x1f2a2005` | `ZeroAmount()` | An amount of zero. | Validate before sending. |
-| `0xf480e285` | `CapExceeded(supplyAfter, cap)` | The mint would exceed the total supply limit. | Show remaining headroom: `cap() - totalSupply()`. |
+| `0xf480e285` | `CapExceeded(supplyAfter, cap)` | The mint — or the quote for it — would exceed the total supply limit. | Cap the input at `cap() - totalSupply()`. `quoteMint` raises this too, so it surfaces while typing rather than on submit. |
 
 ### Errors that mean the system is closed, not the user
 
@@ -469,15 +490,15 @@ requested from the contracts team. It is not in this repository.
 
 ```solidity
 // ---- read (free, no wallet prompt) ----
-IAIVault.quoteMint(uint256 d)                    -> (uint256 delta0G, uint256 a0GIn)
-IAIVault.quoteMintForA0G(uint256 a0GAmount)      -> (uint256 d)
-IAIVault.quoteBurn(address minter, uint256 b)    -> (uint256 unlocked0G, uint256 a0GOut)
-IAIVault.positionOf(address account)             -> (uint256 locked0G, uint256 iaiOutstanding, uint256 avgRate)
+IAIVault.quoteMint(uint256 d)                    -> (uint256 delta0G, uint256 a0GIn)   // reverts past the cap
+IAIVault.quoteMintForA0G(uint256 a0GAmount)      -> (uint256 d)                        // clamps at the cap
+IAIVault.quoteBurn(address minter, uint256 b)    -> (uint256 unlocked0G, uint256 a0GOut) // reverts past the position
+IAIVault.positionOf(address account)             -> (uint256 locked0G, uint256 iaiOutstanding, uint256 avgRate)  // ARRAY
 IAIVault.exchangeRate()                          -> uint256          // 0G per a0G, 1e18-scaled
 IAIVault.cap()                                   -> uint256
 IAI.balanceOf(address) / totalSupply()           -> uint256
 CreditRegistry.stakedOf(address)                 -> uint256
-CreditRegistry.stakedInfoOf(address)             -> (uint256 amountStaked, uint256 coolDownAmount, uint256 coolDownEnd)
+CreditRegistry.stakedInfoOf(address)             -> StakedInfo       // OBJECT: .amountStaked .coolDownAmount .coolDownEnd
 CreditRegistry.cooldownDuration()                -> uint256          // seconds
 
 // ---- write ----
@@ -492,3 +513,6 @@ CreditRegistry.unstake()                         // no arguments
 ```
 
 Units, in one line: **every amount is an 18-decimal `bigint`; every timestamp is Unix seconds.**
+
+Quotes, in one line: **they fail exactly where the action fails**, with the same error — except
+`quoteMintForA0G`, which clamps because it was asked about a spend rather than an amount.

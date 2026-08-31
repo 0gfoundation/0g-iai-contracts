@@ -115,6 +115,11 @@ Three layers, all required to stay green:
   called the same helper would only prove the code equals itself. State is compared after *every*
   step so a mismatch names the operation that caused it. Coverage counters are asserted at the end,
   so a run that degenerates into no-ops fails instead of passing vacuously.
+There is deliberately **no Foundry `invariant_` layer**. It was considered and dropped: the seeded
+simulation already runs the same invariants over 100k operations, and an empty `test/invariant/`
+directory beside a dead `[profile.default.invariant]` block is worse than neither. If it is ever
+added back, add the tests and the config together.
+
 - **`test/script/`** — the only place that touches disk, and only for what genuinely needs it:
   reading the parameter file, writing the addresses back, and the artifact the account script
   produces. Real bugs were found here (`vm.writeJson`'s silent no-op on a missing key), so it

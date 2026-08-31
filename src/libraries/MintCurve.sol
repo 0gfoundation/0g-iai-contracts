@@ -56,8 +56,12 @@ library MintCurve {
      * @param target Total 0G locked once supply reaches `cap`, in wei-0G.
      */
     function deriveSlope(uint256 r0, uint256 cap, uint256 target) internal pure returns (uint256 slope) {
-        // cap^2 is computed unchecked-free below; bound cap so the square cannot overflow.
-        if (cap == 0 || cap > type(uint128).max) revert InvalidCurveCap();
+        // `cost` multiplies `d * (2s + d)` outside `mulDiv`. Within the cap that peaks at
+        // `cap^2`, but bounding cap at 2^127 keeps even `s = d = cap` (3*cap^2) inside
+        // uint256, so a caller that ignores the domain note on `cost` still reverts on the
+        // supply check rather than on an overflow deep in the arithmetic. Production cap is
+        // 9.27e21, about 2^73.
+        if (cap == 0 || cap > 2 ** 127) revert InvalidCurveCap();
 
         uint256 flatPortion = Math.mulDiv(r0, cap, WAD);
         if (target <= flatPortion) revert InvalidCurveTarget();
@@ -81,8 +85,10 @@ library MintCurve {
      *         a mint into many small ones strictly more expensive than doing it in one
      *         transaction, so there is no rounding arbitrage in either direction.
      *
-     *         Caller must keep `s + d` within the supply cap; the products below are
-     *         sized for that range and Solidity's checked arithmetic reverts otherwise.
+     *         Caller must keep `s + d` within the supply cap. `deriveSlope` bounds cap so
+     *         that the bare products below stay inside uint256 even outside that range;
+     *         Solidity's checked arithmetic reverts rather than wrapping if it is ever
+     *         exceeded.
      */
     function cost(uint256 r0, uint256 slope, uint256 s, uint256 d) internal pure returns (uint256) {
         uint256 linear = Math.mulDiv(r0, d, WAD, Math.Rounding.Ceil);
@@ -131,6 +137,11 @@ library MintCurve {
      *         the rounding above it does not execute (0 iterations across 30k sampled
      *         (s, delta) pairs). It terminates unconditionally because `cost` is
      *         monotonically increasing in `d` and `cost(s, 0) == 0 <= delta`.
+     *
+     *         `k * k` is a bare product: at the smallest legal slope with a large `r0` it can
+     *         overflow and revert. That needs a slope some 18 orders of magnitude below the
+     *         production value (k^2 there is ~1.3e44), and it is a view, so the failure is a
+     *         failed quote rather than a wrong one.
      *
      *         **View helper only.** Quoting is not pricing: feed the result back into
      *         `mint`, which re-prices with `cost`.
