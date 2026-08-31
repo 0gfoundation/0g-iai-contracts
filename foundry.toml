@@ -7,7 +7,14 @@ via_ir = true
 src = "src"
 out = "out"
 libs = ["lib"]
-fs_permissions = [{ access = "read-write", path = "./" }]
+# Tests may write only into the scratch directory. `deployments/` is READ-ONLY here, so a
+# test that forgets to redirect a script cannot overwrite a real deployment record; it fails
+# with a permission error instead. Deployments run under the `deploy` profile below.
+fs_permissions = [
+    { access = "read-write", path = "./cache" },
+    { access = "read", path = "./deployments" },
+    { access = "read", path = "./out" },
+]
 gas_reports = ["IAI", "IAIVault", "CreditRegistry"]
 # Maxed so the long deterministic simulations do not run out of gas.
 gas_limit = "18446744073709551615"
@@ -32,3 +39,7 @@ multiline_func_header = "params_first"
 number_underscore = "thousands"
 quote_style = "double"
 tab_width = 4
+
+# Used by run.sh / upgrade.sh, which legitimately write the deployment records.
+[profile.deploy]
+fs_permissions = [{ access = "read-write", path = "./" }]

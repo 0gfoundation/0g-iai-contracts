@@ -14,6 +14,10 @@ cd "$(dirname "$0")"
 source ./config.sh
 set -a; source .env; set +a
 
+# Tests run under the default profile, where `deployments/` is read-only so a stray test
+# cannot overwrite a deployment record. Writing those records is this script's job.
+export FOUNDRY_PROFILE=deploy
+
 CONFIG="deployments/iai-${CHAIN_ID}.json"
 [ -f "$CONFIG" ] || { echo "missing $CONFIG -- copy deployments/iai-example.json and fill it in"; exit 1; }
 

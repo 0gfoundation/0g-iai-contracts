@@ -121,8 +121,11 @@ $EDITOR deployments/iai-<chainid>.json   # start from iai-example.json
 
 `config.sh` carries the gas flags every 0G transaction needs — `--slow --with-gas-price 3gwei
 --priority-gas-price 3gwei`, since 0G's EIP-1559 wants both pinned and `--slow` stops a nonce gap
-from stranding the rest of a deployment. Running `forge script` by hand works too; see `run.sh` for
-the exact invocations.
+from stranding the rest of a deployment.
+
+Running `forge script` by hand works too, but set **`FOUNDRY_PROFILE=deploy`**: under the default
+profile `deployments/` is read-only, so that a test which forgets to redirect a script fails with a
+permission error instead of overwriting a deployment record. See `run.sh` for the exact invocations.
 
 **The vault deploys paused.** Opening issuance is a separate, explicit transaction — that is the only
 launch-timing control the system has, and it is deliberately manual. The `CreditRegistry` deploys
