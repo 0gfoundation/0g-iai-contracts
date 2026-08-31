@@ -71,7 +71,6 @@ contract IAIVault is IIAIVault, AccessControlUpgradeable, PausableUpgradeable, R
         IA0G a0G;
         IA0GOracle oracle;
         uint256 totalLocked0G;
-        uint256 supply;
         mapping(address => Position) positions;
     }
 
@@ -91,6 +90,11 @@ contract IAIVault is IIAIVault, AccessControlUpgradeable, PausableUpgradeable, R
     }
 
     /**
+     * @notice Wires the vault to its token and collateral and fixes the curve.
+     * @param p Deployment parameters; see `IIAIVault.InitParams`. `slope` is derived from
+     *          `r0`, `cap` and `target` rather than supplied, so the three published numbers
+     *          are the only thing anyone has to agree on.
+     *
      * @dev Starts **paused**: issuance opens on an explicit governance transaction, which is
      *      also the only launch-timing control the contract needs. Redemption is unaffected.
      *
@@ -129,35 +133,28 @@ contract IAIVault is IIAIVault, AccessControlUpgradeable, PausableUpgradeable, R
 
     /**
      * @notice Locks a0G and mints exactly `d` iAI.
-     * @param d          iAI to mint, wei-iAI.
-     * @param maxDelta0G Cap on the 0G value the curve may charge. Guards against someone
-     *                   minting ahead of the caller and pushing the curve up.
-     * @param maxA0GIn   Cap on the a0G actually taken. Guards against the exchange rate
-     *                   moving between quote and execution.
-     * @param deadline   Latest block timestamp the caller accepts.
-     *
-     * @dev The two slippage bounds are separate because they guard independent risks. A
-     *      caller may be tight on one and relaxed on the other; collapsing them into a
-     *      single number forces the looser tolerance onto both.
+     * @param d        Amount of iAI to mint, in wei-iAI. The caller names the output; the
+     *                 input follows from the curve and the exchange rate.
+     * @param maxA0GIn Maximum a0G the caller is willing to hand over, in wei-a0G. The whole
+     *                 slippage bound: both risks the caller faces -- someone minting ahead
+     *                 and pushing the curve up, and the a0G rate moving between quote and
+     *                 execution -- land on this one number, because it is what actually
+     *                 leaves the caller's wallet.
+     * @param deadline Latest block timestamp at which the caller still accepts execution,
+     *                 in seconds. Bounds how long a signed transaction may sit in the
+     *                 mempool while the price moves.
      */
-    function mint(uint256 d, uint256 maxDelta0G, uint256 maxA0GIn, uint256 deadline)
-        external
-        nonReentrant
-        whenNotPaused
-    {
+    function mint(uint256 d, uint256 maxA0GIn, uint256 deadline) external nonReentrant whenNotPaused {
         if (block.timestamp > deadline) revert Expired(deadline, block.timestamp);
         if (d == 0) revert ZeroAmount();
 
         VaultStorage storage $ = _s();
 
         uint256 s = $.iai.totalSupply();
-        if (s != $.supply) revert SupplyDesync(s, $.supply);
         uint256 supplyAfter = s + d;
         if (supplyAfter > $.cap) revert CapExceeded(supplyAfter, $.cap);
 
         uint256 delta0G = MintCurve.cost($.r0, $.slope, s, d);
-        if (delta0G > maxDelta0G) revert CurveSlippage(delta0G, maxDelta0G);
-
         uint256 er = $.oracle.getValue();
         uint256 a0GIn = Math.mulDiv(delta0G, WAD, er, Math.Rounding.Ceil);
         if (a0GIn > maxA0GIn) revert ExcessiveInput(a0GIn, maxA0GIn);
@@ -168,16 +165,11 @@ contract IAIVault is IIAIVault, AccessControlUpgradeable, PausableUpgradeable, R
         pos.iaiOutstanding += d;
         uint256 totalAfter = $.totalLocked0G + delta0G;
         $.totalLocked0G = totalAfter;
-        $.supply = supplyAfter;
 
         $.iai.mint(_msgSender(), d);
-
-        // Measure what actually arrived. a0G is upgradeable by a third party, so "it has no
-        // transfer fee" is a property of someone else's current bytecode, not an invariant.
-        uint256 before = $.a0G.balanceOf(address(this));
+        // a0G is an ERC-4626 share token with a plain ERC-20 transfer; `SafeERC20` already
+        // reverts unless the full amount moves.
         $.a0G.safeTransferFrom(_msgSender(), address(this), a0GIn);
-        uint256 received = $.a0G.balanceOf(address(this)) - before;
-        if (received < a0GIn) revert UnexpectedTransferAmount(a0GIn, received);
 
         emit Minted(_msgSender(), d, delta0G, a0GIn, er, supplyAfter, totalAfter);
     }
@@ -188,38 +180,55 @@ contract IAIVault is IIAIVault, AccessControlUpgradeable, PausableUpgradeable, R
 
     /**
      * @notice Burns `b` of the caller's iAI and returns the matching slice of their collateral.
+     * @param b        Amount of iAI to burn, in wei-iAI. Releases the same fraction of the
+     *                 caller's locked 0G, priced at the position's own average.
+     * @param deadline Latest block timestamp at which the caller still accepts execution,
+     *                 in seconds.
+     *
      * @dev Not pausable, by design.
+     *
+     *      There is no minimum-output bound, and adding one would protect nothing. The
+     *      released amount is fixed in 0G; the a0G it converts to only shrinks as a0G
+     *      appreciates, so waiting is always worse than executing and there is no adverse
+     *      move to be surprised by. `deadline` already bounds the drift a pending
+     *      transaction can accumulate.
      *
      *      No harvest is required first: the payout is derived from the position's recorded
      *      0G value rather than from a share of the vault balance, so yield accrued but not
      *      yet swept cannot leave with a redeemer.
      */
-    function burn(uint256 b, uint256 minA0GOut, uint256 deadline) external nonReentrant {
-        _settle(_msgSender(), _msgSender(), b, minA0GOut, deadline);
+    function burn(uint256 b, uint256 deadline) external nonReentrant {
+        _settle(_msgSender(), _msgSender(), b, deadline);
     }
 
     /**
      * @notice Settles `minter`'s position using iAI supplied by the caller.
+     * @param minter   Owner of the position to settle, and the address the collateral is
+     *                 sent to. Never the caller.
+     * @param b        Amount of iAI to burn, in wei-iAI, taken from the caller's balance.
+     * @param deadline Latest block timestamp at which the caller still accepts execution,
+     *                 in seconds.
+     *
      * @dev The caller provides the tokens; **the collateral goes to `minter`**. That
      *      direction is what makes the role safe to hold: it can unwind a position but
      *      cannot redirect a single wei of it.
      */
-    function burnFor(address minter, uint256 b, uint256 minA0GOut, uint256 deadline)
+    function burnFor(address minter, uint256 b, uint256 deadline)
         external
         nonReentrant
         onlyRole(RESCUE_ROLE)
     {
         if (minter == address(0)) revert ZeroAddress();
-        _settle(minter, _msgSender(), b, minA0GOut, deadline);
+        _settle(minter, _msgSender(), b, deadline);
     }
 
     /**
      * @param minter      Position owner; also always the recipient of the collateral.
-     * @param tokenSource Address whose iAI is burned.
+     * @param tokenSource Address whose iAI is burned. Equals `minter` for a self-redemption.
+     * @param b           Amount of iAI to burn, in wei-iAI.
+     * @param deadline    Latest block timestamp at which the caller still accepts execution.
      */
-    function _settle(address minter, address tokenSource, uint256 b, uint256 minA0GOut, uint256 deadline)
-        private
-    {
+    function _settle(address minter, address tokenSource, uint256 b, uint256 deadline) private {
         if (block.timestamp > deadline) revert Expired(deadline, block.timestamp);
         if (b == 0) revert ZeroAmount();
 
@@ -229,7 +238,6 @@ contract IAIVault is IIAIVault, AccessControlUpgradeable, PausableUpgradeable, R
         if (b > outstanding) revert BurnExceedsPosition(b, outstanding);
 
         uint256 s = $.iai.totalSupply();
-        if (s != $.supply) revert SupplyDesync(s, $.supply);
 
         // Pro-rata against the position's own average. Floor: releasing less than the exact
         // share keeps the vault over-collateralised, and a full redemption (b == outstanding)
@@ -238,14 +246,12 @@ contract IAIVault is IIAIVault, AccessControlUpgradeable, PausableUpgradeable, R
 
         uint256 er = $.oracle.getValue();
         uint256 a0GOut = Math.mulDiv(unlocked0G, WAD, er, Math.Rounding.Floor);
-        if (a0GOut < minA0GOut) revert InsufficientOutput(a0GOut, minA0GOut);
 
         pos.locked0G -= unlocked0G;
         pos.iaiOutstanding = outstanding - b;
         uint256 totalAfter = $.totalLocked0G - unlocked0G;
         $.totalLocked0G = totalAfter;
         uint256 supplyAfter = s - b;
-        $.supply = supplyAfter;
 
         $.iai.burn(tokenSource, b);
         $.a0G.safeTransfer(minter, a0GOut);
@@ -285,6 +291,7 @@ contract IAIVault is IIAIVault, AccessControlUpgradeable, PausableUpgradeable, R
     // Governance
     // -------------------------------------------------------------------------
 
+    /// @inheritdoc IIAIVault
     function setFoundation(address newFoundation) external onlyRole(DEFAULT_ADMIN_ROLE) {
         if (newFoundation == address(0)) revert ZeroAddress();
         VaultStorage storage $ = _s();
@@ -304,12 +311,14 @@ contract IAIVault is IIAIVault, AccessControlUpgradeable, PausableUpgradeable, R
     // Views
     // -------------------------------------------------------------------------
 
+    /// @inheritdoc IIAIVault
     function quoteMint(uint256 d) external view returns (uint256 delta0G, uint256 a0GIn) {
         VaultStorage storage $ = _s();
-        delta0G = MintCurve.cost($.r0, $.slope, $.supply, d);
+        delta0G = MintCurve.cost($.r0, $.slope, $.iai.totalSupply(), d);
         a0GIn = Math.mulDiv(delta0G, WAD, $.oracle.getValue(), Math.Rounding.Ceil);
     }
 
+    /// @inheritdoc IIAIVault
     function quoteBurn(address minter, uint256 b) external view returns (uint256 unlocked0G, uint256 a0GOut) {
         VaultStorage storage $ = _s();
         Position storage pos = $.positions[minter];
@@ -318,14 +327,17 @@ contract IAIVault is IIAIVault, AccessControlUpgradeable, PausableUpgradeable, R
         a0GOut = Math.mulDiv(unlocked0G, WAD, $.oracle.getValue(), Math.Rounding.Floor);
     }
 
-    /// @notice How much iAI a given amount of a0G buys right now.
-    /// @dev Convenience for a "spend all of it" flow. Quoting is not pricing — the result
-    ///      is fed back into `mint`, which re-prices from the curve.
+    /**
+     * @inheritdoc IIAIVault
+     * @dev Convenience for a "spend all of it" flow. Quoting is not pricing -- the result is
+     *      fed back into `mint`, which re-prices from the curve.
+     */
     function quoteMintForA0G(uint256 a0GAmount) external view returns (uint256 d) {
         VaultStorage storage $ = _s();
         uint256 delta = Math.mulDiv(a0GAmount, $.oracle.getValue(), WAD, Math.Rounding.Floor);
-        d = MintCurve.quoteForValue($.r0, $.slope, $.supply, delta);
-        uint256 headroom = $.cap - $.supply;
+        uint256 s = $.iai.totalSupply();
+        d = MintCurve.quoteForValue($.r0, $.slope, s, delta);
+        uint256 headroom = $.cap - s;
         if (d > headroom) d = headroom;
     }
 
@@ -393,6 +405,6 @@ contract IAIVault is IIAIVault, AccessControlUpgradeable, PausableUpgradeable, R
     }
 
     function supply() external view returns (uint256) {
-        return _s().supply;
+        return _s().iai.totalSupply();
     }
 }

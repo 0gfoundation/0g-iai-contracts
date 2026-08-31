@@ -12,6 +12,13 @@ docs/book/
 # NEVER commit private keys.
 deployments/test-accounts-*.json
 
+# Local/ephemeral deployment artifacts. The curated per-network files are committed
+# individually below.
+deployments/*
+!deployments/iai-example.json
+!deployments/iai-16661.json
+!deployments/iai-16602.json
+
 # Local operator scripts (each dev keeps their own RPC/keys)
 config.sh
 
@@ -25,3 +32,4 @@ lcov.info
 .DS_Store
 .vscode/
 .idea/
+deployments/upgrade-snapshot-*.json

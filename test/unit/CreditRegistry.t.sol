@@ -259,7 +259,7 @@ contract CreditRegistryTest is BaseTest {
 
         vm.expectRevert(); // ERC20InsufficientBalance inside iAI.burn
         vm.prank(alice);
-        vault.burn(100e18, 0, block.timestamp);
+        vault.burn(100e18, block.timestamp);
 
         vm.prank(alice);
         registry.initiateUnstake(100e18);

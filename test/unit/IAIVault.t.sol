@@ -131,40 +131,65 @@ contract IAIVaultTest is BaseTest {
     function test_Mint_RevertsPastCap() public {
         vm.expectRevert(abi.encodeWithSelector(IIAIVault.CapExceeded.selector, CAP + 1, CAP));
         vm.prank(alice);
-        vault.mint(CAP + 1, type(uint256).max, type(uint256).max, block.timestamp);
+        vault.mint(CAP + 1, type(uint256).max, block.timestamp);
     }
 
     function test_Mint_RevertsOnZero() public {
         vm.expectRevert(IIAIVault.ZeroAmount.selector);
         vm.prank(alice);
-        vault.mint(0, type(uint256).max, type(uint256).max, block.timestamp);
+        vault.mint(0, type(uint256).max, block.timestamp);
     }
 
     function test_Mint_RevertsPastDeadline() public {
         vm.warp(1_000);
         vm.expectRevert(abi.encodeWithSelector(IIAIVault.Expired.selector, 999, 1_000));
         vm.prank(alice);
-        vault.mint(1e18, type(uint256).max, type(uint256).max, 999);
+        vault.mint(1e18, type(uint256).max, 999);
     }
 
-    /// @dev Curve slippage and rate slippage guard independent risks and must be
-    ///      independently expressible.
-    function test_Mint_CurveSlippageIsSeparateFromRateSlippage() public {
+    /// @dev One bound, both risks. `maxA0GIn` is what leaves the caller's wallet, so a
+    ///      curve move and a rate move are visible through it alike.
+    function test_Mint_SlippageBoundCatchesAFrontRunningMint() public {
         uint256 d = 1e18;
-        (uint256 delta0G, uint256 a0GIn) = vault.quoteMint(d);
+        (, uint256 quoted) = vault.quoteMint(d);
         _fund(alice, d);
 
-        vm.expectRevert(abi.encodeWithSelector(IIAIVault.CurveSlippage.selector, delta0G, delta0G - 1));
-        vm.prank(alice);
-        vault.mint(d, delta0G - 1, type(uint256).max, block.timestamp);
+        // Someone mints first and pushes the curve up under alice.
+        _mintFor(bob, 50e18);
 
-        vm.expectRevert(abi.encodeWithSelector(IIAIVault.ExcessiveInput.selector, a0GIn, a0GIn - 1));
-        vm.prank(alice);
-        vault.mint(d, type(uint256).max, a0GIn - 1, block.timestamp);
+        (, uint256 nowCosts) = vault.quoteMint(d);
+        assertGt(nowCosts, quoted, "the curve did move");
 
-        // Exact bounds are accepted.
+        a0g.mint(alice, nowCosts);
         vm.prank(alice);
-        vault.mint(d, delta0G, a0GIn, block.timestamp);
+        a0g.approve(address(vault), type(uint256).max);
+
+        vm.expectRevert(abi.encodeWithSelector(IIAIVault.ExcessiveInput.selector, nowCosts, quoted));
+        vm.prank(alice);
+        vault.mint(d, quoted, block.timestamp);
+
+        // The exact bound is accepted.
+        vm.prank(alice);
+        vault.mint(d, nowCosts, block.timestamp);
+        assertEq(iai.balanceOf(alice), d);
+    }
+
+    /// @dev A rate move shows up through the same bound.
+    function test_Mint_SlippageBoundCatchesARateMove() public {
+        uint256 d = 1e18;
+        (, uint256 quoted) = vault.quoteMint(d);
+        _fund(alice, d);
+
+        // A falling rate is the adverse direction for a minter: the same 0G costs more a0G.
+        oracle.setValue(ER0 * 9 / 10);
+
+        (, uint256 nowCosts) = vault.quoteMint(d);
+        assertGt(nowCosts, quoted, "the rate move raised the cost");
+
+        a0g.mint(alice, nowCosts);
+        vm.expectRevert(abi.encodeWithSelector(IIAIVault.ExcessiveInput.selector, nowCosts, quoted));
+        vm.prank(alice);
+        vault.mint(d, quoted, block.timestamp);
     }
 
     function test_Mint_TakesNoMoreThanQuoted() public {
@@ -174,7 +199,7 @@ contract IAIVaultTest is BaseTest {
         vm.prank(alice);
         a0g.approve(address(vault), type(uint256).max);
         vm.prank(alice);
-        vault.mint(d, type(uint256).max, type(uint256).max, block.timestamp);
+        vault.mint(d, type(uint256).max, block.timestamp);
         assertEq(a0g.balanceOf(alice), a0GIn, "must not take more than the quote");
     }
 
@@ -221,22 +246,35 @@ contract IAIVaultTest is BaseTest {
         // collateral claim is not.
         vm.expectRevert(abi.encodeWithSelector(IIAIVault.BurnExceedsPosition.selector, 10e18, 0));
         vm.prank(bob);
-        vault.burn(10e18, 0, block.timestamp);
+        vault.burn(10e18, block.timestamp);
     }
 
     function test_Burn_RevertsBeyondOutstanding() public {
         _mintFor(alice, 10e18);
         vm.expectRevert(abi.encodeWithSelector(IIAIVault.BurnExceedsPosition.selector, 10e18 + 1, 10e18));
         vm.prank(alice);
-        vault.burn(10e18 + 1, 0, block.timestamp);
+        vault.burn(10e18 + 1, block.timestamp);
     }
 
-    function test_Burn_RevertsOnOutputSlippage() public {
+    /**
+     * @dev Redemption takes no minimum-output bound. This pins the reason: what a redeemer
+     *      gets back is fixed in 0G, and the a0G it converts to only shrinks as a0G
+     *      appreciates. There is no adverse surprise for a bound to catch -- delay is the
+     *      only thing that costs the redeemer, and `deadline` already limits that.
+     */
+    function test_Burn_PaysAFixed0GValueThatBuysLessA0GOverTime() public {
         _mintFor(alice, 10e18);
-        (, uint256 out) = vault.quoteBurn(alice, 10e18);
-        vm.expectRevert(abi.encodeWithSelector(IIAIVault.InsufficientOutput.selector, out, out + 1));
+        (uint256 unlockedNow, uint256 a0GNow) = vault.quoteBurn(alice, 10e18);
+
+        vm.warp(block.timestamp + 180 days);
+
+        (uint256 unlockedLater, uint256 a0GLater) = vault.quoteBurn(alice, 10e18);
+        assertEq(unlockedLater, unlockedNow, "the 0G owed does not move");
+        assertLt(a0GLater, a0GNow, "the same 0G buys less a0G once a0G has appreciated");
+
         vm.prank(alice);
-        vault.burn(10e18, out + 1, block.timestamp);
+        vault.burn(10e18, block.timestamp);
+        assertEq(a0g.balanceOf(alice), a0GLater);
     }
 
     /// @dev The redemption path must not be reachable by the pause switch. This encodes
@@ -248,7 +286,7 @@ contract IAIVaultTest is BaseTest {
 
         vm.expectRevert(PausableUpgradeable.EnforcedPause.selector);
         vm.prank(alice);
-        vault.mint(1e18, type(uint256).max, type(uint256).max, block.timestamp);
+        vault.mint(1e18, type(uint256).max, block.timestamp);
 
         _burnFor(alice, 10e18);
         assertEq(vault.supply(), 0, "redemption works while paused");
@@ -279,7 +317,7 @@ contract IAIVaultTest is BaseTest {
         (, uint256 expectedOut) = vault.quoteBurn(alice, d);
 
         vm.prank(rescuer);
-        vault.burnFor(alice, d, 0, block.timestamp);
+        vault.burnFor(alice, d, block.timestamp);
 
         assertEq(a0g.balanceOf(alice) - aliceBefore, expectedOut, "collateral returns to the minter");
         assertEq(a0g.balanceOf(rescuer), rescuerBefore, "the caller receives nothing");
@@ -300,7 +338,7 @@ contract IAIVaultTest is BaseTest {
             )
         );
         vm.prank(bob);
-        vault.burnFor(alice, 10e18, 0, block.timestamp);
+        vault.burnFor(alice, 10e18, block.timestamp);
     }
 
     // -------------------------------------------------------------------------
@@ -397,7 +435,7 @@ contract IAIVaultTest is BaseTest {
         assertGt(bobOwed, a0g.balanceOf(address(vault)), "vault can no longer cover the rest");
         vm.expectRevert(); // ERC20InsufficientBalance
         vm.prank(bob);
-        vault.burn(100e18, 0, block.timestamp);
+        vault.burn(100e18, block.timestamp);
     }
 
     // -------------------------------------------------------------------------

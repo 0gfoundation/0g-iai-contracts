@@ -28,12 +28,21 @@ contract MockA0G is IA0G, ERC20 {
         return _oracle;
     }
 
-    /// @notice Open faucet.
+    /**
+     * @notice Open faucet. Anyone may mint to anyone; this exists only on test networks.
+     * @param to     Recipient.
+     * @param amount Amount to mint, in wei.
+     */
     function mint(address to, uint256 amount) external {
         _mint(to, amount);
     }
 
-    /// @notice Funds many addresses in one transaction, for seeding test accounts.
+    /**
+     * @notice Mints the same amount to many addresses, so funding a test cohort is a few
+     *         transactions rather than one per account.
+     * @param recipients Addresses to credit.
+     * @param amount     Amount minted to each, in wei.
+     */
     function batchMint(address[] calldata recipients, uint256 amount) external {
         for (uint256 i = 0; i < recipients.length; i++) {
             _mint(recipients[i], amount);

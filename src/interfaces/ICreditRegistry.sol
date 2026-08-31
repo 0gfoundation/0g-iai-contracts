@@ -43,21 +43,51 @@ interface ICreditRegistry {
 
     event CooldownDurationUpdated(uint256 previous, uint256 current);
 
+    /**
+     * @notice Deposits iAI and starts earning immediately. Requires an iAI allowance.
+     * @param amount Amount to stake, in wei-iAI.
+     */
     function stake(uint256 amount) external;
 
+    /**
+     * @notice Begins withdrawing `amount`, which stops earning at once.
+     * @param amount Amount to move into cooldown, in wei-iAI. Calling this again before
+     *               claiming restarts the cooldown for the whole pending balance, not just
+     *               the addition.
+     */
     function initiateUnstake(uint256 amount) external;
 
+    /// @notice Claims everything whose cooldown has elapsed. Takes no amount, by design.
     function unstake() external;
 
+    /**
+     * @notice Changes the withdrawal delay. `DEFAULT_ADMIN_ROLE`.
+     * @param newDuration New delay in seconds. Applies to withdrawals started after this
+     *                    call; those already in flight keep the end time they were given.
+     */
     function setCooldownDuration(uint256 newDuration) external;
 
+    /**
+     * @notice The amount currently earning. The single number the off-chain meter reads.
+     * @param account Address to read.
+     * @return Staked and earning, in wei-iAI. Excludes anything in cooldown.
+     */
     function stakedOf(address account) external view returns (uint256);
 
+    /**
+     * @notice Full staking record, including any withdrawal in progress.
+     * @param account Address to read.
+     * @return The account's `amountStaked`, `coolDownAmount` and `coolDownEnd`.
+     */
     function stakedInfoOf(address account) external view returns (StakedInfo memory);
 
+    /// @return iAI held by this contract, in wei-iAI: everything staked plus everything in
+    ///         cooldown but not yet claimed.
     function totalStaked() external view returns (uint256);
 
+    /// @return Current withdrawal delay, in seconds.
     function cooldownDuration() external view returns (uint256);
 
+    /// @return The iAI token accepted for staking.
     function iai() external view returns (IIAI);
 }

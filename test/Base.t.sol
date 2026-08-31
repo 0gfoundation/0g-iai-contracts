@@ -11,13 +11,18 @@ import {CreditRegistry} from "../src/CreditRegistry.sol";
 import {IIAIVault} from "../src/interfaces/IIAIVault.sol";
 import {MockA0G} from "../src/mocks/MockA0G.sol";
 import {MockA0GOracle} from "../src/mocks/MockA0GOracle.sol";
+import {IAIDeployer} from "../script/deploy/IAIDeployer.sol";
 
 /**
- * @notice Shared fixture. Deploys the same impl/beacon/proxy topology the deploy script
- *         builds, so the tests exercise the contracts through a proxy exactly as production
- *         does — a plain `new` would miss initializer and storage-slot problems entirely.
+ * @notice Shared fixture.
+ *
+ * @dev Builds the system by calling the **deployment script's own wiring**, not a copy of
+ *      it. A fixture that re-implemented the topology would leave the script untested and
+ *      let the two drift: the suite could stay green against a system the script no longer
+ *      produces. Inheriting `IAIDeployer` means every test run is also a rehearsal of the
+ *      deployment, including its post-deploy sanity checks.
  */
-abstract contract BaseTest is Test {
+abstract contract BaseTest is Test, IAIDeployer {
     uint256 internal constant WAD = 1e18;
 
     uint256 internal constant R0 = 4_330e18;
@@ -54,56 +59,39 @@ abstract contract BaseTest is Test {
         oracle = new MockA0GOracle(ER0, DEFAULT_APR, ORACLE_MAX_AGE, admin);
         a0g = new MockA0G(address(oracle));
 
-        iaiBeacon = new UpgradeableBeacon(address(new IAI()), admin);
-        iai = IAI(
-            address(
-                new BeaconProxy(
-                    address(iaiBeacon), abi.encodeCall(IAI.initialize, ("Infinite AI", "iAI", CAP))
-                )
-            )
+        Deployment memory d = _deployIAISystem(
+            Config({
+                a0G: address(a0g),
+                foundation: foundation,
+                r0: R0,
+                cap: CAP,
+                target: TARGET,
+                cooldownDuration: COOLDOWN,
+                name: "Infinite AI",
+                symbol: "iAI"
+            }),
+            admin,
+            admin
         );
 
-        vaultBeacon = new UpgradeableBeacon(address(new IAIVault()), admin);
-        vault = IAIVault(
-            address(
-                new BeaconProxy(
-                    address(vaultBeacon),
-                    abi.encodeCall(
-                        IAIVault.initialize,
-                        (
-                            IIAIVault.InitParams({
-                                iai: address(iai),
-                                a0G: address(a0g),
-                                foundation: foundation,
-                                r0: R0,
-                                cap: CAP,
-                                target: TARGET
-                            })
-                        )
-                    )
-                )
-            )
-        );
+        iai = IAI(d.iai);
+        vault = IAIVault(d.vault);
+        registry = CreditRegistry(d.registry);
+        iaiBeacon = UpgradeableBeacon(d.iaiBeacon);
+        vaultBeacon = UpgradeableBeacon(d.vaultBeacon);
+        registryBeacon = UpgradeableBeacon(d.registryBeacon);
 
-        registryBeacon = new UpgradeableBeacon(address(new CreditRegistry()), admin);
-        registry = CreditRegistry(
-            address(
-                new BeaconProxy(
-                    address(registryBeacon), abi.encodeCall(CreditRegistry.initialize, (address(iai), COOLDOWN))
-                )
-            )
-        );
-
-        iai.grantRole(iai.MINTER_BURNER_ROLE(), address(vault));
+        // The deployment already grants PAUSER_ROLE to whoever deployed; the fixture only
+        // adds the roles a real launch would hand out afterwards. Deliberately not
+        // re-granting PAUSER here -- doing so would hide a deployment that forgot to.
         vault.grantRole(vault.PAUSER_ROLE(), guardian);
         vault.grantRole(vault.RESCUE_ROLE(), rescuer);
         registry.grantRole(registry.PAUSER_ROLE(), guardian);
 
-        // Both contracts deploy paused; open them for the tests that are not about pausing.
+        // Issuance deploys paused; open it for the tests that are not about pausing. The
+        // registry needs no such step -- it deploys open.
         vm.prank(guardian);
         vault.unpause();
-        vm.prank(guardian);
-        registry.unpause();
 
         vm.label(address(iai), "iAI");
         vm.label(address(vault), "IAIVault");
@@ -126,12 +114,12 @@ abstract contract BaseTest is Test {
     function _mintFor(address who, uint256 d) internal returns (uint256 a0GIn) {
         a0GIn = _fund(who, d);
         vm.prank(who);
-        vault.mint(d, type(uint256).max, type(uint256).max, block.timestamp);
+        vault.mint(d, type(uint256).max, block.timestamp);
     }
 
     function _burnFor(address who, uint256 b) internal {
         vm.prank(who);
-        vault.burn(b, 0, block.timestamp);
+        vault.burn(b, block.timestamp);
     }
 
     /// @notice Sum of `locked0G` over the actors a test touches, for the accounting invariant.
