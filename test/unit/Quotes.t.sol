@@ -21,6 +21,7 @@ contract QuotesTest is BaseTest {
 
         uint256 d = vault.quoteMintForA0G(x);
         assertGt(d, 0, "a real amount of a0G must buy something");
+        (, uint256 quotedIn) = vault.quoteMint(d);
 
         // Funded with exactly `x`: if the quote asked for a wei more, the mint cannot pay.
         a0g.mint(alice, x);
@@ -30,7 +31,10 @@ contract QuotesTest is BaseTest {
         vault.mint(d, x, block.timestamp);
 
         assertEq(iai.balanceOf(alice), d, "minted exactly what was quoted");
-        assertLe(x - a0g.balanceOf(alice), x, "spent no more than was offered");
+        // Pinning the amount, not bounding it: `maxA0GIn = x` already made "at most x"
+        // impossible to violate, so asserting that would have proved nothing.
+        assertEq(x - a0g.balanceOf(alice), quotedIn, "spent exactly what quoteMint priced");
+        assertLe(quotedIn, x, "the two quotes agree that this is affordable");
     }
 
     /// @dev The round trip has to hold everywhere, including at dust and at the far end of
@@ -138,6 +142,43 @@ contract QuotesTest is BaseTest {
         (, uint256 forEverything) = vault.quoteMint(headroom);
 
         assertEq(vault.quoteMintForA0G(forEverything * 100), headroom, "clamped, not reverted");
+    }
+
+    /**
+     * @dev Which error an underfunded mint raises is part of the frontend contract, and it is
+     *      not obvious: the failure happens inside a0G, reached through `SafeERC20`. OZ 5.3
+     *      bubbles the original revert data rather than wrapping it, so the caller sees a0G's
+     *      own `ERC20InsufficientBalance` -- the same selector a short iAI balance produces on
+     *      the burn side, from a different contract. Asserted rather than assumed.
+     */
+    function test_Mint_UnderfundedRaisesTheCollateralTokensOwnError() public {
+        (, uint256 needs) = vault.quoteMint(1e18);
+
+        a0g.mint(alice, needs - 1);
+        vm.prank(alice);
+        a0g.approve(address(vault), type(uint256).max);
+
+        vm.expectRevert(
+            abi.encodeWithSignature(
+                "ERC20InsufficientBalance(address,uint256,uint256)", alice, needs - 1, needs
+            )
+        );
+        vm.prank(alice);
+        vault.mint(1e18, type(uint256).max, block.timestamp);
+    }
+
+    /// @dev And a missing approval raises a0G's allowance error, not a vault error.
+    function test_Mint_WithoutApprovalRaisesTheAllowanceError() public {
+        (, uint256 needs) = vault.quoteMint(1e18);
+        a0g.mint(alice, needs);
+
+        vm.expectRevert(
+            abi.encodeWithSignature(
+                "ERC20InsufficientAllowance(address,uint256,uint256)", address(vault), 0, needs
+            )
+        );
+        vm.prank(alice);
+        vault.mint(1e18, type(uint256).max, block.timestamp);
     }
 
     /// @dev A quote is a read, not a promise: it moves as soon as anyone else mints.

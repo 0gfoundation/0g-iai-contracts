@@ -401,8 +401,10 @@ contract RandomSimTest is BaseTest {
             vm.prank(a);
             vault.mint(1e18, type(uint256).max, block.timestamp - 1);
         } else if (pick == 3) {
-            // Offering one wei less than the curve asks for.
-            if (mSupply >= CAP) return;
+            // Offering one wei less than the curve asks for. The headroom guard has to cover
+            // the whole amount: with less than 1e18 left, `mint` hits its cap check -- which
+            // precedes the slippage check -- and the wrong error comes back.
+            if (mSupply + 1e18 > CAP) return;
             uint256 needs = _shadowCeilDiv(_shadowCost(mSupply, 1e18) * WAD, vault.exchangeRate());
             if (needs == 0) return;
             a0g.mint(a, needs);
