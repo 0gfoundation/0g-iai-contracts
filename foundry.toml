@@ -1,0 +1,34 @@
+[profile.default]
+evm_version = "cancun"
+solc = "0.8.25"
+optimizer = true
+optimizer_runs = 200
+via_ir = true
+src = "src"
+out = "out"
+libs = ["lib"]
+fs_permissions = [{ access = "read-write", path = "./" }]
+gas_reports = ["IAI", "IAIVault", "CreditRegistry"]
+# Maxed so the long deterministic simulations do not run out of gas.
+gas_limit = "18446744073709551615"
+# Each external call in the simulation loop parks its returndata in memory and never frees
+# it, so a 100k-operation run needs far more than the default frame limit.
+memory_limit = 8589934592
+
+[profile.default.fuzz]
+runs = 1024
+max_test_rejects = 262144
+
+[profile.default.invariant]
+runs = 256
+depth = 256
+fail_on_revert = false
+
+[fmt]
+bracket_spacing = false
+int_types = "long"
+line_length = 120
+multiline_func_header = "params_first"
+number_underscore = "thousands"
+quote_style = "double"
+tab_width = 4

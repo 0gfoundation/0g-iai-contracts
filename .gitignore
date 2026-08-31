@@ -1,0 +1,27 @@
+# Foundry
+cache/
+out/
+broadcast/
+docs/book/
+
+# Env & secrets
+.env
+.env.*
+!.env.example
+
+# NEVER commit private keys.
+deployments/test-accounts-*.json
+
+# Local operator scripts (each dev keeps their own RPC/keys)
+config.sh
+
+# Tooling output
+abis/
+abigen/
+report/
+lcov.info
+
+# Editor / OS
+.DS_Store
+.vscode/
+.idea/
