@@ -5,6 +5,8 @@ import {BeaconProxy} from "@openzeppelin/contracts/proxy/beacon/BeaconProxy.sol"
 import {UpgradeableBeacon} from "@openzeppelin/contracts/proxy/beacon/UpgradeableBeacon.sol";
 
 import {IAI} from "../../src/IAI.sol";
+import {MockA0G} from "../../src/mocks/MockA0G.sol";
+import {MockA0GOracle} from "../../src/mocks/MockA0GOracle.sol";
 import {IAIVault} from "../../src/IAIVault.sol";
 import {CreditRegistry} from "../../src/CreditRegistry.sol";
 import {IIAIVault} from "../../src/interfaces/IIAIVault.sol";
@@ -45,6 +47,16 @@ abstract contract IAIDeployer {
         string symbol;
     }
 
+    /// @param initialValue Starting exchange rate, 0G per a0G scaled by 1e18.
+    /// @param apr          Simple annual accrual, scaled by 1e18. Test networks want this far
+    ///                     above production so the rate visibly moves within a session.
+    /// @param maxAge       Seconds before `getValue()` starts reverting as stale.
+    struct MockConfig {
+        uint256 initialValue;
+        uint256 apr;
+        uint256 maxAge;
+    }
+
     struct Deployment {
         address iai;
         address iaiImpl;
@@ -56,6 +68,24 @@ abstract contract IAIDeployer {
         address registryImpl;
         address registryBeacon;
         uint256 slope;
+    }
+
+    /**
+     * @notice Deploys stand-in collateral for a network that has no real a0G.
+     * @param c     Oracle parameters.
+     * @param owner Account that may pin the rate afterwards, via `setValue` / `setApr`.
+     * @return oracle The rate source.
+     * @return a0g    The collateral token, already pointing at `oracle`.
+     *
+     * @dev Lives beside the system wiring, and is used by both the script and the test
+     *      fixture, so the collateral the tests run against is the collateral a testnet gets.
+     */
+    function _deployMockCollateral(MockConfig memory c, address owner)
+        internal
+        returns (MockA0GOracle oracle, MockA0G a0g)
+    {
+        oracle = new MockA0GOracle(c.initialValue, c.apr, c.maxAge, owner);
+        a0g = new MockA0G(address(oracle));
     }
 
     /**

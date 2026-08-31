@@ -9,9 +9,11 @@ import {MockA0G} from "../../src/mocks/MockA0G.sol";
 
 /**
  * @title AccountsScriptTest
- * @notice The artifact this script writes is what other people build against, so its shape
- *         is part of the contract. The keys in it must also actually work -- a file of
- *         well-formed but wrong keys would only be discovered by whoever tried to use it.
+ * @notice The artifact the script writes, and the guards that depend on reading a file.
+ *
+ * @dev Deriving and funding is `AccountFunder`, covered in `test/unit/AccountFunder.t.sol`
+ *      without touching disk. What can only be tested here is the file: its shape is what
+ *      other people build against, and the keys have to survive the JSON round trip.
  */
 contract AccountsScriptTest is Test {
     uint256 internal constant DEPLOYER_PK =
@@ -59,8 +61,8 @@ contract AccountsScriptTest is Test {
         return vm.readFile(string.concat(dir, "/test-accounts-", vm.toString(block.chainid), ".json"));
     }
 
-    function test_WritesUsableKeysAndFundsThem() public {
-        _bootstrap("usable-keys");
+    function test_WritesAUsableKeyFile() public {
+        _bootstrap("key-file");
         _accounts().run();
         string memory json = _keysFile();
 
@@ -83,32 +85,7 @@ contract AccountsScriptTest is Test {
         assertEq(vm.parseJsonAddress(json, ".mockA0G"), address(a0g), "points at this network's mock");
     }
 
-    /// @dev A rerun must top accounts back up without re-sending what they already hold.
-    function test_RerunIsIdempotent() public {
-        _bootstrap("idempotent");
-        AccountsScript s = _accounts();
-        s.run();
 
-        address first = vm.parseJsonAddress(_keysFile(), ".accounts[0].address");
-        uint256 spentAfterFirst = 1000 ether - deployer.balance;
-
-        // Spend some of one account's gas, then rerun.
-        vm.prank(first);
-        payable(address(0xdead)).transfer(0.1 ether);
-
-        s.run();
-        assertEq(first.balance, GAS_EACH, "topped back up");
-        assertLt(1000 ether - deployer.balance - spentAfterFirst, GAS_EACH, "did not re-fund everyone");
-    }
-
-    /// @dev Enumerating the deployer would publish the admin and beacon-owner key.
-    function test_RefusesToPublishTheDeployerKey() public {
-        _bootstrap("deployer-key");
-        AccountsScript s = _accounts();
-        s.setParams(0, 0, 0, "test test test test test test test test test test test junk");
-        vm.expectRevert(bytes("TEST_MNEMONIC derives the deployer key"));
-        s.run();
-    }
 
     function test_RefusesOnMainnet() public {
         _bootstrap("mainnet");

@@ -5,6 +5,7 @@ import {Script, console} from "forge-std/Script.sol";
 
 import {JsonUtils} from "./Utils.s.sol";
 import {Constants} from "./Constants.s.sol";
+import {IAIDeployer} from "./IAIDeployer.sol";
 import {MockA0G} from "../../src/mocks/MockA0G.sol";
 import {MockA0GOracle} from "../../src/mocks/MockA0GOracle.sol";
 
@@ -20,7 +21,7 @@ import {MockA0GOracle} from "../../src/mocks/MockA0GOracle.sol";
  *      value moves about 0.04% a day, which is invisible in a testing session and makes
  *      `harvest()` look broken. `MockApr` is therefore its own parameter.
  */
-contract MockScript is Script, JsonUtils, Constants {
+contract MockScript is Script, JsonUtils, Constants, IAIDeployer {
     function run() public {
         require(usesMockCollateral(), "refusing to deploy mock collateral to mainnet");
 
@@ -33,8 +34,8 @@ contract MockScript is Script, JsonUtils, Constants {
         uint256 maxAge = _uintOr(json, ".MockOracleMaxAge", 21 days);
 
         vm.startBroadcast(pk);
-        MockA0GOracle oracle = new MockA0GOracle(initialValue, apr, maxAge, deployer);
-        MockA0G a0g = new MockA0G(address(oracle));
+        (MockA0GOracle oracle, MockA0G a0g) =
+            _deployMockCollateral(MockConfig({initialValue: initialValue, apr: apr, maxAge: maxAge}), deployer);
         vm.stopBroadcast();
 
         console.log("network        ", networkName());

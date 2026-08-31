@@ -56,8 +56,11 @@ abstract contract BaseTest is Test, IAIDeployer {
     address internal carol = makeAddr("carol");
 
     function setUp() public virtual {
-        oracle = new MockA0GOracle(ER0, DEFAULT_APR, ORACLE_MAX_AGE, admin);
-        a0g = new MockA0G(address(oracle));
+        // Same helper the testnet script uses, so the fixture cannot drift from what gets
+        // deployed. Only the numbers differ, and they come from the deployment file there.
+        (oracle, a0g) = _deployMockCollateral(
+            MockConfig({initialValue: ER0, apr: DEFAULT_APR, maxAge: ORACLE_MAX_AGE}), admin
+        );
 
         Deployment memory d = _deployIAISystem(
             Config({
