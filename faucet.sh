@@ -15,8 +15,9 @@ set -a; source .env; set +a
 TO="${1:?recipient address}"
 AMOUNT="${2:-1000000}"
 
-A0G=$(jq -r '.MockA0G // empty' "deployments/iai-${CHAIN_ID}.json")
-[ -n "$A0G" ] || { echo "no MockA0G in deployments/iai-${CHAIN_ID}.json -- run ./run.sh first"; exit 1; }
+CONFIG="${DEPLOYMENT_PATH:-deployments}/iai-${CHAIN_ID}.json"
+A0G=$(jq -r '.MockA0G // empty' "$CONFIG" 2>/dev/null)
+[ -n "$A0G" ] || { echo "no MockA0G in $CONFIG -- run ./run.sh first"; exit 1; }
 
 cast send "$A0G" "mint(address,uint256)" "$TO" "$(cast to-wei "$AMOUNT")" \
   --rpc-url "$RPC" --private-key "$PRIVATE_KEY" ${CAST_GAS_FLAGS:-}
