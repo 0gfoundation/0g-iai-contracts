@@ -2,26 +2,24 @@
 pragma solidity 0.8.25;
 
 import {Script, console} from "forge-std/Script.sol";
-import {UpgradeableBeacon} from "@openzeppelin/contracts/proxy/beacon/UpgradeableBeacon.sol";
 
 import {JsonUtils} from "./deploy/Utils.s.sol";
 import {Constants} from "./deploy/Constants.s.sol";
+import {UpgradeChecker} from "./deploy/UpgradeChecker.sol";
 import {IAI} from "../src/IAI.sol";
 import {IAIVault} from "../src/IAIVault.sol";
 import {CreditRegistry} from "../src/CreditRegistry.sol";
-import {MintCurve} from "../src/libraries/MintCurve.sol";
 
 /**
  * @title UpgradeScript
- * @notice Points one beacon at a freshly deployed implementation, and the before/after
- *         state comparison that must pass on a mainnet fork before the real transaction.
+ * @notice Points one beacon at a freshly deployed implementation, and the before/after state
+ *         comparison that must pass on a mainnet fork before the real transaction.
  *
- * @dev Correctness of an upgrade is established by rehearsal against forked mainnet state,
- *      not by an on-chain self-check. A guard the contract computes about itself is only
- *      sound while it reads the right storage slots -- which is exactly what is in doubt
- *      when a layout has shifted, so it reports "fine" in the case it exists to catch.
+ * @dev The comparison itself lives in `UpgradeChecker`, which the tests use directly. What is
+ *      here is the file half: `snapshot()` and `postUpgradeCheck()` are two separate
+ *      `forge script` invocations, so the snapshot has to cross a process boundary.
  *
- *      The rehearsal:
+ *      The rehearsal, which `./upgrade.sh rehearse <target>` runs for you:
  *
  *        anvil --fork-url https://evmrpc.0g.ai --chain-id 16661 &
  *        forge script script/Upgrade.s.sol --sig "snapshot()" --rpc-url http://127.0.0.1:8545
@@ -30,13 +28,10 @@ import {MintCurve} from "../src/libraries/MintCurve.sol";
  *        forge script script/Upgrade.s.sol --sig "postUpgradeCheck()" --rpc-url http://127.0.0.1:8545
  *        forge inspect IAIVault storageLayout > /tmp/new.json && diff /tmp/old.json /tmp/new.json
  *
- *      `CHECK_ACCOUNTS` (comma-separated) adds real positions to the comparison; on a fork
- *      of a live deployment, pass the largest holders.
- *
- *      Beacons are per-contract, so each entrypoint moves exactly one implementation and
- *      cannot reach the others.
+ *      `CHECK_ACCOUNTS` (comma-separated) adds real positions to the comparison; on a fork of a
+ *      live deployment, pass the largest holders.
  */
-contract UpgradeScript is Script, JsonUtils, Constants {
+contract UpgradeScript is Script, JsonUtils, Constants, UpgradeChecker {
     string internal constant SNAPSHOT_TASK = "upgrade-snapshot";
 
     // --- upgrades ---
@@ -45,7 +40,7 @@ contract UpgradeScript is Script, JsonUtils, Constants {
         (string memory json, string memory path) = loadOrInitJson("iai");
         vm.startBroadcast(vm.envUint("PRIVATE_KEY"));
         address impl = address(new IAI());
-        UpgradeableBeacon(vm.parseJsonAddress(json, ".IAIBeacon")).upgradeTo(impl);
+        _pointBeaconAt(vm.parseJsonAddress(json, ".IAIBeacon"), impl);
         vm.stopBroadcast();
         _record(json, path, "IAIImpl", impl);
     }
@@ -54,7 +49,7 @@ contract UpgradeScript is Script, JsonUtils, Constants {
         (string memory json, string memory path) = loadOrInitJson("iai");
         vm.startBroadcast(vm.envUint("PRIVATE_KEY"));
         address impl = address(new IAIVault());
-        UpgradeableBeacon(vm.parseJsonAddress(json, ".IAIVaultBeacon")).upgradeTo(impl);
+        _pointBeaconAt(vm.parseJsonAddress(json, ".IAIVaultBeacon"), impl);
         vm.stopBroadcast();
         _record(json, path, "IAIVaultImpl", impl);
     }
@@ -63,68 +58,48 @@ contract UpgradeScript is Script, JsonUtils, Constants {
         (string memory json, string memory path) = loadOrInitJson("iai");
         vm.startBroadcast(vm.envUint("PRIVATE_KEY"));
         address impl = address(new CreditRegistry());
-        UpgradeableBeacon(vm.parseJsonAddress(json, ".CreditRegistryBeacon")).upgradeTo(impl);
+        _pointBeaconAt(vm.parseJsonAddress(json, ".CreditRegistryBeacon"), impl);
         vm.stopBroadcast();
         _record(json, path, "CreditRegistryImpl", impl);
     }
 
     // --- rehearsal ---
 
-    /// @notice Records the state that an upgrade must leave untouched. Run before upgrading.
+    /// @notice Records the state an upgrade must leave untouched. Run before upgrading.
     function snapshot() public {
         (string memory json,) = loadOrInitJson("iai");
         (, string memory snapPath) = loadOrInitJson(SNAPSHOT_TASK);
 
-        IAIVault vault = IAIVault(vm.parseJsonAddress(json, ".IAIVault"));
-        IAI token = IAI(vm.parseJsonAddress(json, ".IAI"));
-        CreditRegistry registry = CreditRegistry(vm.parseJsonAddress(json, ".CreditRegistry"));
+        Snapshot memory s = _capture(_vault(json), _token(json), _registry(json), _checkAccounts());
 
         string memory o = "snap";
-        // Curve constants. A shifted storage layout shows up here first, and any change to
-        // them silently reprices every future mint.
-        vm.serializeString(o, "r0", vm.toString(vault.r0()));
-        vm.serializeString(o, "slope", vm.toString(vault.slope()));
-        vm.serializeString(o, "cap", vm.toString(vault.cap()));
-        vm.serializeString(o, "target", vm.toString(vault.target()));
-
-        vm.serializeAddress(o, "iai", address(vault.iai()));
-        vm.serializeAddress(o, "a0G", address(vault.a0G()));
-        vm.serializeAddress(o, "oracle", address(vault.oracle()));
-        vm.serializeAddress(o, "foundation", vault.foundation());
-
-        // Live accounting. Every 0G in here is someone's redeemable collateral.
-        vm.serializeString(o, "totalLocked0G", vm.toString(vault.totalLocked0G()));
-        vm.serializeString(o, "supply", vm.toString(vault.supply()));
-        vm.serializeString(o, "totalSupply", vm.toString(token.totalSupply()));
-        vm.serializeString(o, "tokenCap", vm.toString(token.cap()));
-        vm.serializeBool(o, "paused", vault.paused());
-
-        vm.serializeString(o, "totalStaked", vm.toString(registry.totalStaked()));
-        vm.serializeString(o, "cooldownDuration", vm.toString(registry.cooldownDuration()));
-        vm.serializeAddress(o, "registryIai", address(registry.iai()));
-
-        // Pricing at the live supply, quoted through the proxy rather than recomputed, so a
-        // change in how the contract reaches the answer is caught even if the inputs match.
-        (uint256 delta0G,) = vault.quoteMint(1e18);
-        vm.serializeString(o, "quote1", vm.toString(delta0G));
-        (uint256 delta0G100,) = vault.quoteMint(100e18);
-        vm.serializeString(o, "quote100", vm.toString(delta0G100));
-
-        // Real positions, if any were named. These are the balances an upgrade would strand.
-        address[] memory accounts = _checkAccounts();
-        string memory finalJson;
-        for (uint256 i = 0; i < accounts.length; i++) {
-            (uint256 locked, uint256 outstanding,) = vault.positionOf(accounts[i]);
-            vm.serializeString(o, string.concat("locked_", vm.toString(accounts[i])), vm.toString(locked));
-            finalJson = vm.serializeString(
-                o, string.concat("outstanding_", vm.toString(accounts[i])), vm.toString(outstanding)
-            );
-        }
-        if (accounts.length == 0) finalJson = vm.serializeUint(o, "accounts", 0);
+        vm.serializeString(o, "r0", vm.toString(s.r0));
+        vm.serializeString(o, "slope", vm.toString(s.slope));
+        vm.serializeString(o, "cap", vm.toString(s.cap));
+        vm.serializeString(o, "target", vm.toString(s.target));
+        vm.serializeAddress(o, "iai", s.iai);
+        vm.serializeAddress(o, "a0G", s.a0G);
+        vm.serializeAddress(o, "oracle", s.oracle);
+        vm.serializeAddress(o, "foundation", s.foundation);
+        vm.serializeAddress(o, "registryIai", s.registryIai);
+        vm.serializeString(o, "totalLocked0G", vm.toString(s.totalLocked0G));
+        vm.serializeString(o, "supply", vm.toString(s.supply));
+        vm.serializeString(o, "tokenSupply", vm.toString(s.tokenSupply));
+        vm.serializeString(o, "tokenCap", vm.toString(s.tokenCap));
+        vm.serializeBool(o, "paused", s.paused);
+        vm.serializeString(o, "totalStaked", vm.toString(s.totalStaked));
+        vm.serializeString(o, "cooldownDuration", vm.toString(s.cooldownDuration));
+        vm.serializeString(o, "quote1", vm.toString(s.quote1));
+        vm.serializeString(o, "quote100", vm.toString(s.quote100));
+        vm.serializeAddress(o, "accounts", s.accounts);
+        // Amounts go out as strings rather than JSON numbers: a uint256 balance does not
+        // survive a round trip through a double.
+        vm.serializeString(o, "locked", _toStrings(s.locked));
+        string memory finalJson = vm.serializeString(o, "outstanding", _toStrings(s.outstanding));
 
         vm.writeJson(finalJson, snapPath);
         console.log("snapshot written", snapPath);
-        console.log("accounts covered", accounts.length);
+        console.log("accounts covered", s.accounts.length);
     }
 
     /// @notice Compares the post-upgrade state against the snapshot. Reverts on any drift.
@@ -132,57 +107,60 @@ contract UpgradeScript is Script, JsonUtils, Constants {
         (string memory json,) = _read("iai");
         (string memory snap,) = _read(SNAPSHOT_TASK);
 
-        IAIVault vault = IAIVault(vm.parseJsonAddress(json, ".IAIVault"));
-        IAI token = IAI(vm.parseJsonAddress(json, ".IAI"));
-        CreditRegistry registry = CreditRegistry(vm.parseJsonAddress(json, ".CreditRegistry"));
+        // The accounts come from the snapshot, not the environment, so the two sides are
+        // guaranteed to be comparing the same positions.
+        Snapshot memory before_ = _readSnapshot(snap);
+        Snapshot memory after_ = _capture(_vault(json), _token(json), _registry(json), before_.accounts);
 
-        _eq(vault.r0(), snap, "r0");
-        _eq(vault.slope(), snap, "slope");
-        _eq(vault.cap(), snap, "cap");
-        _eq(vault.target(), snap, "target");
-        _eqAddr(address(vault.iai()), snap, "iai");
-        _eqAddr(address(vault.a0G()), snap, "a0G");
-        _eqAddr(address(vault.oracle()), snap, "oracle");
-        _eqAddr(vault.foundation(), snap, "foundation");
-        _eq(vault.totalLocked0G(), snap, "totalLocked0G");
-        _eq(vault.supply(), snap, "supply");
-        _eq(token.totalSupply(), snap, "totalSupply");
-        _eq(token.cap(), snap, "tokenCap");
-        require(vault.paused() == vm.parseJsonBool(snap, ".paused"), "paused changed");
-        _eq(registry.totalStaked(), snap, "totalStaked");
-        _eq(registry.cooldownDuration(), snap, "cooldownDuration");
-        _eqAddr(address(registry.iai()), snap, "registryIai");
-
-        (uint256 q1,) = vault.quoteMint(1e18);
-        _eqValue(q1, snap, "quote1");
-        (uint256 q100,) = vault.quoteMint(100e18);
-        _eqValue(q100, snap, "quote100");
-
-        // The proxy's answer must still equal an independent evaluation of the curve, so an
-        // upgrade that changes the maths is caught even where the snapshot happens to match.
-        require(
-            q1 == MintCurve.cost(vault.r0(), vault.slope(), vault.supply(), 1e18),
-            "pricing diverged from the curve"
-        );
-
-        address[] memory accounts = _checkAccounts();
-        for (uint256 i = 0; i < accounts.length; i++) {
-            (uint256 locked, uint256 outstanding,) = vault.positionOf(accounts[i]);
-            _eqValue(locked, snap, string.concat("locked_", vm.toString(accounts[i])));
-            _eqValue(outstanding, snap, string.concat("outstanding_", vm.toString(accounts[i])));
-        }
+        _assertUnchanged(before_, after_);
+        _assertPricingMatchesCurve(_vault(json));
 
         console.log("post-upgrade check PASSED");
-        console.log("accounts covered", accounts.length);
+        console.log("accounts covered", before_.accounts.length);
         console.log("Also diff `forge inspect <contract> storageLayout` before going to mainnet.");
     }
 
     // --- internals ---
 
-    function _checkAccounts() internal view returns (address[] memory) {
+    /**
+     * @param snap Contents of the snapshot file.
+     * @return s The snapshot it encodes.
+     */
+    function _readSnapshot(string memory snap) private pure returns (Snapshot memory s) {
+        s.r0 = _uint(snap, ".r0");
+        s.slope = _uint(snap, ".slope");
+        s.cap = _uint(snap, ".cap");
+        s.target = _uint(snap, ".target");
+        s.iai = vm.parseJsonAddress(snap, ".iai");
+        s.a0G = vm.parseJsonAddress(snap, ".a0G");
+        s.oracle = vm.parseJsonAddress(snap, ".oracle");
+        s.foundation = vm.parseJsonAddress(snap, ".foundation");
+        s.registryIai = vm.parseJsonAddress(snap, ".registryIai");
+        s.totalLocked0G = _uint(snap, ".totalLocked0G");
+        s.supply = _uint(snap, ".supply");
+        s.tokenSupply = _uint(snap, ".tokenSupply");
+        s.tokenCap = _uint(snap, ".tokenCap");
+        s.paused = vm.parseJsonBool(snap, ".paused");
+        s.totalStaked = _uint(snap, ".totalStaked");
+        s.cooldownDuration = _uint(snap, ".cooldownDuration");
+        s.quote1 = _uint(snap, ".quote1");
+        s.quote100 = _uint(snap, ".quote100");
+        s.accounts = vm.parseJsonAddressArray(snap, ".accounts");
+        s.locked = _uints(snap, ".locked");
+        s.outstanding = _uints(snap, ".outstanding");
+    }
+
+    /// @return The addresses named by `CHECK_ACCOUNTS`, or an empty list.
+    function _checkAccounts() private view returns (address[] memory) {
         return vm.envOr("CHECK_ACCOUNTS", ",", new address[](0));
     }
 
+    /**
+     * @param json The deployment record as it currently stands.
+     * @param path Where to write it back.
+     * @param key  Which implementation key to update.
+     * @param impl The newly deployed implementation.
+     */
     function _record(string memory json, string memory path, string memory key, address impl) private {
         string memory o = "upg";
         vm.serializeJson(o, json);
@@ -200,17 +178,41 @@ contract UpgradeScript is Script, JsonUtils, Constants {
         return (vm.readFile(path), path);
     }
 
-    function _eq(uint256 actual, string memory snap, string memory key) private pure {
-        _eqValue(actual, snap, key);
+    /// @param json The deployment record. @return The vault proxy it names.
+    function _vault(string memory json) private pure returns (IAIVault) {
+        return IAIVault(vm.parseJsonAddress(json, ".IAIVault"));
     }
 
-    function _eqValue(uint256 actual, string memory snap, string memory key) private pure {
-        uint256 expected = vm.parseJsonUint(snap, string.concat(".", key));
-        require(actual == expected, string.concat("changed across upgrade: ", key));
+    /// @param json The deployment record. @return The iAI proxy it names.
+    function _token(string memory json) private pure returns (IAI) {
+        return IAI(vm.parseJsonAddress(json, ".IAI"));
     }
 
-    function _eqAddr(address actual, string memory snap, string memory key) private pure {
-        address expected = vm.parseJsonAddress(snap, string.concat(".", key));
-        require(actual == expected, string.concat("changed across upgrade: ", key));
+    /// @param json The deployment record. @return The credit registry proxy it names.
+    function _registry(string memory json) private pure returns (CreditRegistry) {
+        return CreditRegistry(vm.parseJsonAddress(json, ".CreditRegistry"));
+    }
+
+    /// @param json A JSON document. @param key Path to a decimal string. @return Its value.
+    function _uint(string memory json, string memory key) private pure returns (uint256) {
+        return vm.parseUint(vm.parseJsonString(json, key));
+    }
+
+    /// @param json A JSON document. @param key Path to an array of decimal strings.
+    /// @return out The values.
+    function _uints(string memory json, string memory key) private pure returns (uint256[] memory out) {
+        string[] memory raw = vm.parseJsonStringArray(json, key);
+        out = new uint256[](raw.length);
+        for (uint256 i = 0; i < raw.length; i++) {
+            out[i] = vm.parseUint(raw[i]);
+        }
+    }
+
+    /// @param values Amounts to encode. @return out Their decimal representations.
+    function _toStrings(uint256[] memory values) private pure returns (string[] memory out) {
+        out = new string[](values.length);
+        for (uint256 i = 0; i < values.length; i++) {
+            out[i] = vm.toString(values[i]);
+        }
     }
 }

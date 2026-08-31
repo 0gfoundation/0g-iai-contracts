@@ -77,18 +77,48 @@ There is deliberately **no on-chain self-check** for upgrade safety. A guard a c
 about itself is only sound while it reads the right storage slots, which is precisely what is in
 doubt when a layout has shifted — it would report "fine" in the exact case it exists to catch.
 
+## Scripts: chain work and disk work are separate
+
+Every script splits in two, and the split is load-bearing:
+
+- The part that touches a chain is an `internal` function on an abstract contract —
+  `IAIDeployer` (system wiring, mock collateral), `AccountFunder` (deriving and funding),
+  `UpgradeChecker` (capture, compare, point a beacon). No file access, no environment reads.
+- The `*.s.sol` script is a thin shell around it: read the parameters, call the function, write
+  the result back.
+
+That is what lets the tests reach the logic without a filesystem. It also keeps the deployment
+described in exactly one place — the fixture and the script call the same function, so they
+cannot drift.
+
+The abstract halves must stay `internal` functions on inherited contracts, never deployed
+helpers. `BeaconProxy` delegatecalls `initialize` during construction, so `msg.sender` there is
+whoever ran the `new`; calling out to a separate deployer contract would hand
+`DEFAULT_ADMIN_ROLE` to that contract instead of to the deploying account.
+
 ## Testing
 
 Three layers, all required to stay green:
 
-- **`test/unit/`** — per-function behaviour, golden vectors for the curve, and full revert and
-  permission matrices.
+- **`test/unit/`** — per-function behaviour, golden vectors for the curve, full revert and
+  permission matrices, and the scripts' chain work via the abstract halves above.
+  **Unit tests never touch the filesystem.** Not `vm.readFile`, `vm.writeJson`, `vm.createDir`,
+  `vm.projectRoot`, or `vm.setEnv` — the last one because it writes the *process* environment,
+  which parallel test contracts share. Check it with:
+
+  ```bash
+  grep -rnE "vm\.(readFile|writeFile|readJson|writeJson|createDir|readDir|projectRoot|setEnv)" \
+      test/unit test/sim test/Base.t.sol && echo "unit tests must not touch files"
+  ```
 - **`test/sim/`** — a seeded randomized simulation against a shadow model. The shadow **recomputes
   the curve independently**, with plain checked arithmetic instead of `Math.mulDiv`; a shadow that
   called the same helper would only prove the code equals itself. State is compared after *every*
   step so a mismatch names the operation that caused it. Coverage counters are asserted at the end,
   so a run that degenerates into no-ops fails instead of passing vacuously.
-- **`test/script/`** — the deployment, upgrade and account scripts, run the way an operator runs them.
+- **`test/script/`** — the only place that touches disk, and only for what genuinely needs it:
+  reading the parameter file, writing the addresses back, and the artifact the account script
+  produces. Real bugs were found here (`vm.writeJson`'s silent no-op on a missing key), so it
+  cannot be dropped — but everything that does not need a file belongs in `test/unit/`.
 
 **The unit fixture must keep building the system through `IAIDeployer`.** `test/Base.t.sol` inherits
 the same abstract contract the deploy script does, so every test run rehearses the real deployment

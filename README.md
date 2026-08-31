@@ -76,12 +76,15 @@ Two caveats are real and must be stated to users:
 
 ```
 src/            contracts
-script/deploy/  IAIDeployer (the wiring), IAI, Mock, Accounts, Constants, Utils
+script/deploy/  the chain work, as abstract contracts: IAIDeployer (system wiring and mock
+                collateral), AccountFunder, UpgradeChecker — plus the thin *.s.sol shells
+                that read parameters and write results back
 script/         Upgrade.s.sol — beacon upgrades and the fork rehearsal
 deployments/    per-network parameters *and* the addresses a run produced
-test/unit/      per-function behaviour, golden vectors, revert and permission matrices
+test/unit/      per-function behaviour, golden vectors, revert and permission matrices, and
+                the scripts' chain work. Never touches the filesystem.
 test/sim/       seeded randomized simulation against an independent shadow model
-test/script/    the deployment, upgrade and account scripts, run as an operator would
+test/script/    the file half of the scripts: parameters in, addresses out
 docs/           frontend integration guide
 run.sh upgrade.sh faucet.sh verify.sh   operator wrappers
 ```

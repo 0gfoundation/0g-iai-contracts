@@ -5,6 +5,7 @@ import {Script, console} from "forge-std/Script.sol";
 
 import {JsonUtils} from "./Utils.s.sol";
 import {Constants} from "./Constants.s.sol";
+import {AccountFunder} from "./AccountFunder.sol";
 import {MockA0G} from "../../src/mocks/MockA0G.sol";
 
 /**
@@ -12,7 +13,10 @@ import {MockA0G} from "../../src/mocks/MockA0G.sol";
  * @notice Derives a batch of funded testnet accounts and writes them out with their private
  *         keys, so whoever is testing can use them directly.
  *
- * @dev The output is deliberately a plain list of `{index, address, privateKey}`. Handing
+ * @dev The chain work is in `AccountFunder`; what is left here is reading the parameters and
+ *      writing the artifact.
+ *
+ *      The output is deliberately a plain list of `{index, address, privateKey}`. Handing
  *      over a mnemonic and a derivation path instead would make every consumer -- frontend,
  *      PM, a load-testing script -- reimplement BIP-32 correctly before they can send a
  *      transaction.
@@ -21,15 +25,12 @@ import {MockA0G} from "../../src/mocks/MockA0G.sol";
  *      and this script refuses to run anywhere but a test network, so a mnemonic that also
  *      controls mainnet funds cannot be enumerated into a file by accident.
  *
- *      Funding is split: native gas has to come from the deployer's own balance one transfer
- *      at a time, while a0G is minted by the mock in batches. Both are chunked, because a
- *      thousand transfers do not fit in one block's gas.
  */
-contract AccountsScript is Script, JsonUtils, Constants {
-    /// @dev Native transfers are ~21k each; 200 sits well inside a block at any 0G gas limit.
-    uint256 internal constant GAS_BATCH = 200;
-    /// @dev Minting only writes a balance slot, so batches can be larger.
-    uint256 internal constant MINT_BATCH = 500;
+contract AccountsScript is Script, JsonUtils, Constants, AccountFunder {
+    uint256 private countOverride;
+    uint256 private gasOverride;
+    uint256 private a0GOverride;
+    string private mnemonicOverride;
 
     /**
      * @notice Overrides the environment for this instance. Everything else comes from
@@ -49,11 +50,6 @@ contract AccountsScript is Script, JsonUtils, Constants {
         if (bytes(mnemonic).length != 0) mnemonicOverride = mnemonic;
     }
 
-    uint256 private countOverride;
-    uint256 private gasOverride;
-    uint256 private a0GOverride;
-    string private mnemonicOverride;
-
     function run() public {
         require(usesMockCollateral(), "refusing to write test keys for mainnet");
 
@@ -71,51 +67,20 @@ contract AccountsScript is Script, JsonUtils, Constants {
         address deployer = vm.addr(pk);
         require(deployer.balance >= count * gasEach, "deployer cannot fund that many accounts");
 
-        address[] memory addrs = new address[](count);
-        uint256[] memory keys = new uint256[](count);
-        for (uint256 i = 0; i < count; i++) {
-            keys[i] = vm.deriveKey(mnemonic, uint32(i));
-            addrs[i] = vm.addr(keys[i]);
-            // The deployer holds DEFAULT_ADMIN and the beacons. This file gets handed to
-            // whoever is testing, so publishing that key would hand over the deployment
-            // with it. Common with the stock anvil mnemonic, hence the check.
-            require(addrs[i] != deployer, "TEST_MNEMONIC derives the deployer key");
-        }
+        (address[] memory addrs, uint256[] memory keys) = _deriveAccounts(mnemonic, count, deployer);
 
         // Written before funding: if a funding transaction fails halfway, the keys are still
         // on disk and the run can be repeated rather than leaving funded accounts unrecorded.
         _write(addrs, keys, gasEach, a0GEach, address(a0g));
 
         vm.startBroadcast(pk);
-        for (uint256 start = 0; start < count; start += MINT_BATCH) {
-            a0g.batchMint(_slice(addrs, start, MINT_BATCH), a0GEach);
-        }
-        for (uint256 start = 0; start < count; start += GAS_BATCH) {
-            uint256 end = start + GAS_BATCH > count ? count : start + GAS_BATCH;
-            for (uint256 i = start; i < end; i++) {
-                // Skips accounts that are already topped up, so a rerun after a partial
-                // failure costs only what it still needs to send.
-                if (addrs[i].balance < gasEach) payable(addrs[i]).transfer(gasEach - addrs[i].balance);
-            }
-        }
+        _fundAccounts(a0g, addrs, gasEach, a0GEach);
         vm.stopBroadcast();
 
         console.log("network        ", networkName());
         console.log("accounts       ", count);
         console.log("gas each (wei) ", gasEach);
         console.log("a0G each (wei) ", a0GEach);
-    }
-
-    function _slice(address[] memory all, uint256 start, uint256 size)
-        private
-        pure
-        returns (address[] memory out)
-    {
-        uint256 end = start + size > all.length ? all.length : start + size;
-        out = new address[](end - start);
-        for (uint256 i = start; i < end; i++) {
-            out[i - start] = all[i];
-        }
     }
 
     /**
@@ -138,7 +103,6 @@ contract AccountsScript is Script, JsonUtils, Constants {
     ) private {
         string memory path = deploymentPath("test-accounts");
 
-        string memory acc = "accounts";
         string[] memory entries = new string[](addrs.length);
         for (uint256 i = 0; i < addrs.length; i++) {
             string memory item = string.concat("acc", vm.toString(i));
@@ -155,7 +119,7 @@ contract AccountsScript is Script, JsonUtils, Constants {
         vm.serializeString(
             root, "warning", "Contains private keys. Test networks only. Never commit this file."
         );
-        string memory finalJson = vm.serializeString(root, acc, entries);
+        string memory finalJson = vm.serializeString(root, "accounts", entries);
 
         vm.writeJson(finalJson, path);
         console.log("wrote          ", path);
