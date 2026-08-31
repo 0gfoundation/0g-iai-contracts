@@ -79,14 +79,14 @@ src/            contracts
 script/deploy/  the chain work, as abstract contracts: IAIDeployer (system wiring and mock
                 collateral), AccountFunder, UpgradeChecker — plus the thin *.s.sol shells
                 that read parameters and write results back
-script/         Upgrade.s.sol — beacon upgrades and the fork rehearsal
+script/         Upgrade.s.sol, Handover.s.sol — beacon upgrades and the governance handover
 deployments/    per-network parameters *and* the addresses a run produced
 test/unit/      per-function behaviour, golden vectors, revert and permission matrices, and
                 the scripts' chain work. Never touches the filesystem.
 test/sim/       seeded randomized simulation against an independent shadow model
 test/script/    the file half of the scripts: parameters in, addresses out
 docs/           frontend integration guide
-run.sh upgrade.sh faucet.sh verify.sh   operator wrappers
+run.sh upgrade.sh handover.sh faucet.sh verify.sh   operator wrappers
 ```
 
 `deployments/iai-<chainId>.json` is both the input and the record: hand-written parameters go in, the
@@ -131,11 +131,36 @@ permission error instead of overwriting a deployment record. See `run.sh` for th
 launch-timing control the system has, and it is deliberately manual. The `CreditRegistry` deploys
 open; nobody can stake before iAI exists.
 
-Deployment grants `DEFAULT_ADMIN_ROLE`, `PAUSER_ROLE` and beacon ownership to the deploying account.
-**Hand them to the multisig before launch.**
+Deployment grants `DEFAULT_ADMIN_ROLE`, `PAUSER_ROLE` and beacon ownership to the deploying account,
+and grants `RESCUE_ROLE` to nobody — so `burnFor` is unreachable until governance opens it.
+
+## Handing over governance
+
+Fill in `Admin`, `Guardian`, `Rescuer` and `BeaconOwner` in the deployment file, then:
+
+```bash
+./handover.sh status      # who holds what right now
+./handover.sh grant       # every role and beacon to its target; deployer keeps its own
+./handover.sh status      # confirm — and execute something from the Safe
+./handover.sh renounce    # stand the deployer down
+```
+
+Two transactions, deliberately. `grant` leaves the deployer in place, so the targets can be read
+back and a Safe confirmed to actually respond before the only key that still works is given up.
+`renounce` re-reads governance from the chain and refuses unless the targets already hold
+everything — a mistyped address stops there, with the deployer still in control, rather than after,
+with nobody in control. Beacon ownership is one-step `Ownable` with no acceptance step, so that
+precondition is the only safety net it has.
 
 Other operator entrypoints: `./run.sh pause`, `./run.sh harvest`, and
 `forge script script/deploy/IAI.s.sol --sig "setFoundation(address)" <addr>`.
+
+| Role | Intended holder | Can do |
+| --- | --- | --- |
+| `DEFAULT_ADMIN_ROLE` | multisig | grant and revoke roles, `setFoundation` |
+| `PAUSER_ROLE` | guardian | close and open issuance, nothing else — a lighter key, because speed matters more than ceremony |
+| `RESCUE_ROLE` | multisig + timelock | `burnFor`, which can only ever return collateral to its owner |
+| beacon owner | multisig + timelock | upgrade one contract; each has its own beacon |
 
 ## Upgrades
 
