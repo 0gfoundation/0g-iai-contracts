@@ -134,6 +134,12 @@ call, so capturing it early silently drops everything serialized afterwards.
   with the stock anvil mnemonic, whose account 0 is the usual local deployer.
 - `config.sh` and `.env` are gitignored; commit `config.example.sh` and `.env.example` instead.
 - Nothing else in `deployments/` is secret — those files are meant to be committed and shared.
+- **Never print a private key, mnemonic, or any other secret into the conversation, into a commit
+  message, into a PR body, or into terminal output that gets pasted around.** This applies to keys
+  that look disposable: a testnet key is still a key, and one that reaches a chat log or a public
+  repository has to be treated as compromised and rotated. When a secret has to be shown to prove
+  something, show a derived public value instead — an address, a checksum, or a count. Read `.env`
+  and the account files only as far as the task actually requires, and never echo their contents.
 
 ## Accepted risks
 

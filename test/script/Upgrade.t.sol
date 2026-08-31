@@ -41,10 +41,20 @@ contract UpgradeScriptTest is Test {
 
     function setUp() public {
         deployer = vm.addr(DEPLOYER_PK);
-        dir = _scratchDir("upgrade-test");
-        file = string.concat(dir, "/iai-", vm.toString(block.chainid), ".json");
-
         vm.setEnv("PRIVATE_KEY", vm.toString(bytes32(DEPLOYER_PK)));
+    }
+
+    /**
+     * @dev Called by each test with its own name, which is the only reliable way to give each
+     *      one its own directory. `forge` rolls back EVM state between tests but not the
+     *      filesystem, tests within a contract run concurrently, and its random cheatcodes are
+     *      seeded per test -- so a path chosen in `setUp` is the same path for every test, and
+     *      they race over the file.
+     */
+    function _bootstrap(string memory name) internal {
+        dir = string.concat(vm.projectRoot(), "/cache/upgrade-test-", name);
+        vm.createDir(dir, true);
+        file = string.concat(dir, "/iai-", vm.toString(block.chainid), ".json");
 
         vm.writeFile(file, vm.readFile(string.concat(vm.projectRoot(), "/deployments/iai-example.json")));
         vm.writeJson(vm.toString(deployer), file, ".Foundation");
@@ -75,6 +85,7 @@ contract UpgradeScriptTest is Test {
     }
 
     function test_Rehearsal_PassesForAnHonestUpgrade() public {
+        _bootstrap("PassesForAnHonestUpgrade");
         vm.setEnv("CHECK_ACCOUNTS", vm.toString(makeAddr("holder")));
 
         upg.snapshot();
@@ -94,6 +105,7 @@ contract UpgradeScriptTest is Test {
     }
 
     function test_Rehearsal_CatchesAnUpgradeThatMovesTheCurve() public {
+        _bootstrap("CatchesAnUpgradeThatMovesTheCurve");
         upg.snapshot();
 
         address beacon = vm.parseJsonAddress(vm.readFile(file), ".IAIVaultBeacon");
@@ -109,6 +121,7 @@ contract UpgradeScriptTest is Test {
 
     /// @dev Each contract has its own beacon so one upgrade cannot reach the others.
     function test_UpgradingOneContractLeavesTheOthersAlone() public {
+        _bootstrap("UpgradingOneContractLeavesTheOthersAlone");
         string memory json = vm.readFile(file);
         address vaultImpl = UpgradeableBeacon(vm.parseJsonAddress(json, ".IAIVaultBeacon")).implementation();
         address registryImpl =
@@ -131,6 +144,7 @@ contract UpgradeScriptTest is Test {
 
     /// @dev The beacon owner is the upgrade key. Nobody else may move an implementation.
     function test_OnlyTheBeaconOwnerCanUpgrade() public {
+        _bootstrap("OnlyTheBeaconOwnerCanUpgrade");
         address beacon = vm.parseJsonAddress(vm.readFile(file), ".IAIVaultBeacon");
         assertEq(UpgradeableBeacon(beacon).owner(), deployer, "deployer holds the upgrade key");
 
@@ -140,14 +154,6 @@ contract UpgradeScriptTest is Test {
         UpgradeableBeacon(beacon).upgradeTo(drifted);
     }
 
-    /**
-     * @dev A fresh directory per test. `forge` rolls back EVM state between tests but not the
-     *      filesystem, so a shared path lets one test's leftover file decide another's result.
-     */
-    function _scratchDir(string memory name) internal returns (string memory d) {
-        d = string.concat(vm.projectRoot(), "/cache/", name, "-", vm.toString(vm.randomUint()));
-        vm.createDir(d, true);
-    }
 
     function _IAIScript() internal returns (IAIScript s) {
         s = new IAIScript();

@@ -30,10 +30,20 @@ contract DeployScriptTest is Test {
     string internal file;
 
     function setUp() public {
-        dir = _scratchDir("deploy-test");
-        file = string.concat(dir, "/iai-", vm.toString(block.chainid), ".json");
-
         vm.setEnv("PRIVATE_KEY", vm.toString(bytes32(DEPLOYER_PK)));
+    }
+
+    /**
+     * @dev Called by each test with its own name, which is the only reliable way to give each
+     *      one its own directory. `forge` rolls back EVM state between tests but not the
+     *      filesystem, tests within a contract run concurrently, and its random cheatcodes are
+     *      seeded per test -- so a path chosen in `setUp` is the same path for every test, and
+     *      they race over the file.
+     */
+    function _bootstrap(string memory name) internal {
+        dir = string.concat(vm.projectRoot(), "/cache/deploy-test-", name);
+        vm.createDir(dir, true);
+        file = string.concat(dir, "/iai-", vm.toString(block.chainid), ".json");
 
         // The operator's starting point: copy the shipped template and fill in the blanks.
         string memory template = vm.readFile(string.concat(vm.projectRoot(), "/deployments/iai-example.json"));
@@ -43,6 +53,7 @@ contract DeployScriptTest is Test {
 
     /// @dev Mock first (it writes `A0G`), then the system, exactly as the runbook says.
     function test_Scripts_DeployAWorkingSystemAndRecordIt() public {
+        _bootstrap("records-it");
         _MockScript().run();
         _IAIScript().run();
 
@@ -93,6 +104,7 @@ contract DeployScriptTest is Test {
     }
 
     function test_Scripts_ProduceASystemThatActuallyWorks() public {
+        _bootstrap("works");
         _MockScript().run();
         _IAIScript().run();
 
@@ -143,20 +155,13 @@ contract DeployScriptTest is Test {
     /// @dev Pointing the vault at mock collateral on mainnet would be unrecoverable, so the
     ///      script refuses rather than relying on the operator noticing.
     function test_MockScript_RefusesOnMainnet() public {
+        _bootstrap("refuses-mainnet");
         MockScript s = _MockScript();
         vm.chainId(16_661);
         vm.expectRevert(bytes("refusing to deploy mock collateral to mainnet"));
         s.run();
     }
 
-    /**
-     * @dev A fresh directory per test. `forge` rolls back EVM state between tests but not the
-     *      filesystem, so a shared path lets one test's leftover file decide another's result.
-     */
-    function _scratchDir(string memory name) internal returns (string memory d) {
-        d = string.concat(vm.projectRoot(), "/cache/", name, "-", vm.toString(vm.randomUint()));
-        vm.createDir(d, true);
-    }
 
     function _IAIScript() internal returns (IAIScript s) {
         s = new IAIScript();
