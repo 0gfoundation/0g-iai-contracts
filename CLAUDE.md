@@ -99,9 +99,16 @@ to open it.
 
 Two Foundry behaviours worth knowing before writing tests here:
 
-- **The filesystem is not rolled back between tests**, only EVM state. Tests that write files need
-  their own directory, and `vm.randomUint()` will not give you one — it is seeded per test, so every
-  test in a contract gets the same value.
+- **The filesystem is not rolled back between tests**, only EVM state — and tests within one
+  contract run **in parallel** (measured: three tests entered in the same millisecond, 4.8s wall
+  against 14.5s CPU). So any test that writes files needs a path of its own, or two of them race
+  over the same file and the suite goes flaky rather than failing honestly.
+- **`setUp()` runs once**, and every test starts from a snapshot of the state it left. A value
+  computed there is therefore identical in every test — including `vm.randomUint()`, which does vary
+  when called from a test body but not from `setUp`. That is why the script tests take the directory
+  name as an argument (`_bootstrap("some-name")`) instead of generating one: it cannot be derived in
+  `setUp`, and a generated name would also change every run, so a failed test could not be inspected
+  at a known path.
 - **`vm.setEnv` writes the process environment, which parallel test contracts share.** Scripts
   therefore take per-instance overrides (`setDeploymentDir`, `setParams`); `DEPLOYMENT_PATH` and the
   other environment variables remain for the command line.
