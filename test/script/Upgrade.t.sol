@@ -45,11 +45,11 @@ contract UpgradeScriptTest is Test {
     }
 
     /**
-     * @dev Called by each test with its own name, which is the only reliable way to give each
-     *      one its own directory. `forge` rolls back EVM state between tests but not the
-     *      filesystem, tests within a contract run concurrently, and its random cheatcodes are
-     *      seeded per test -- so a path chosen in `setUp` is the same path for every test, and
-     *      they race over the file.
+     * @dev Each test names its own directory. Tests in one contract run in parallel and the
+     *      filesystem is not rolled back between them, so a shared path means two tests race
+     *      over the same file. The name cannot be generated in `setUp` either: `setUp` runs
+     *      once and every test resumes from a snapshot of it, so a value computed there --
+     *      `vm.randomUint()` included -- is the same in every test.
      */
     function _bootstrap(string memory name) internal {
         dir = string.concat(vm.projectRoot(), "/cache/upgrade-test-", name);

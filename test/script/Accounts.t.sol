@@ -37,9 +37,11 @@ contract AccountsScriptTest is Test {
     }
 
     /**
-     * @dev Called by each test with its own name. The directory cannot be chosen in `setUp`:
-     *      forge rolls back EVM state between tests but not the filesystem, and its random
-     *      cheatcodes are seeded per test, so every test would be handed the same path.
+     * @dev Each test names its own directory. Tests in one contract run in parallel and the
+     *      filesystem is not rolled back between them, so a shared path means two tests race
+     *      over the same file. The name cannot be generated in `setUp` either: `setUp` runs
+     *      once and every test resumes from a snapshot of it, so a value computed there --
+     *      `vm.randomUint()` included -- is the same in every test.
      */
     function _bootstrap(string memory name) internal {
         dir = string.concat(vm.projectRoot(), "/cache/accounts-test-", name);
