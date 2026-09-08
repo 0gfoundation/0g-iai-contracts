@@ -4,7 +4,7 @@ pragma solidity 0.8.25;
 import {Math} from "@openzeppelin/contracts/utils/math/Math.sol";
 
 /**
- * @title MintCurve
+ * @title LinearCurveMath
  * @notice Stateless math for the iAI linear bonding curve.
  *
  * @dev The marginal price of the next iAI rises linearly with supply:
@@ -33,7 +33,7 @@ import {Math} from "@openzeppelin/contracts/utils/math/Math.sol";
  *      All values are 18-decimal fixed point. Divisions always go through
  *      `Math.mulDiv`, which carries a 512-bit intermediate product.
  */
-library MintCurve {
+library LinearCurveMath {
     uint256 internal constant WAD = 1e18;
 
     /// @notice `target` must exceed the collateral the flat part of the curve alone would lock.

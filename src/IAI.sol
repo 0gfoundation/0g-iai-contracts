@@ -25,27 +25,16 @@ import {IIAI} from "./interfaces/IIAI.sol";
  *         — name-bound to the original minter. Keeping transfer unrestricted is what makes
  *         that separation real rather than nominal.
  *
- *      The cap is enforced here as well as in the vault. The vault's own supply accounting
- *      is the primary bound; this is a second, independent one that survives a bug there.
+ *      **The supply cap lives in the vault, not here.** It has to: the cap is now
+ *      governance-adjustable in both directions, and a second immutable copy in the token
+ *      would either block a raise or drift out of agreement. What that gives up is a bound
+ *      on `DEFAULT_ADMIN_ROLE` here -- it can grant `MINTER_BURNER_ROLE` to anything, and
+ *      nothing in this contract limits what that mints. Since the role now has no other use,
+ *      renouncing it or moving it behind a timelock costs nothing and is the mitigation.
  */
 contract IAI is IIAI, ERC20Upgradeable, AccessControlUpgradeable {
     /// @notice Held only by the vault. Granted at deployment, never to an EOA.
     bytes32 public constant MINTER_BURNER_ROLE = keccak256("MINTER_BURNER_ROLE");
-
-    /// @custom:storage-location erc7201:0g.iai.IAI
-    struct IAIStorage {
-        uint256 cap;
-    }
-
-    // keccak256(abi.encode(uint256(keccak256("0g.iai.IAI")) - 1)) & ~bytes32(uint256(0xff))
-    bytes32 private constant IAIStorageLocation =
-        0xa82bb8f0bd2e715f19257d1c2af6490407305a1f43c97209bb7c823bfb50a800;
-
-    function _getIAIStorage() private pure returns (IAIStorage storage $) {
-        assembly {
-            $.slot := IAIStorageLocation
-        }
-    }
 
     /// @custom:oz-upgrades-unsafe-allow constructor
     constructor() {
@@ -57,29 +46,17 @@ contract IAI is IIAI, ERC20Upgradeable, AccessControlUpgradeable {
     /**
      * @param name_   Token name.
      * @param symbol_ Token symbol.
-     * @param cap_    Hard supply ceiling in wei-iAI. Immutable thereafter.
      * @dev Admin is the deployer; it is expected to be handed to a multisig before launch.
      */
-    function initialize(string memory name_, string memory symbol_, uint256 cap_) external initializer {
-        if (cap_ == 0) revert ZeroCap();
-
+    function initialize(string memory name_, string memory symbol_) external initializer {
         __ERC20_init(name_, symbol_);
         __AccessControl_init();
         _grantRole(DEFAULT_ADMIN_ROLE, _msgSender());
-
-        _getIAIStorage().cap = cap_;
     }
 
-    /// @inheritdoc IIAI
-    function cap() public view returns (uint256) {
-        return _getIAIStorage().cap;
-    }
 
     /// @inheritdoc IIAI
     function mint(address to, uint256 amount) external onlyRole(MINTER_BURNER_ROLE) {
-        uint256 supplyAfter = totalSupply() + amount;
-        uint256 cap_ = _getIAIStorage().cap;
-        if (supplyAfter > cap_) revert CapExceeded(supplyAfter, cap_);
         _mint(to, amount);
     }
 

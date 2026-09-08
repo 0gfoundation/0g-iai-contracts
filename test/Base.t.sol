@@ -12,6 +12,7 @@ import {IIAIVault} from "../src/interfaces/IIAIVault.sol";
 import {MockA0G} from "../src/mocks/MockA0G.sol";
 import {MockA0GOracle} from "../src/mocks/MockA0GOracle.sol";
 import {IAIDeployer} from "../script/deploy/IAIDeployer.sol";
+import {LinearMintCurve} from "../src/curves/LinearMintCurve.sol";
 
 /**
  * @notice Shared fixture.
@@ -41,6 +42,7 @@ abstract contract BaseTest is Test, IAIDeployer {
     CreditRegistry internal registry;
     MockA0G internal a0g;
     MockA0GOracle internal oracle;
+    LinearMintCurve internal mintCurve;
 
     UpgradeableBeacon internal iaiBeacon;
     UpgradeableBeacon internal vaultBeacon;
@@ -66,6 +68,7 @@ abstract contract BaseTest is Test, IAIDeployer {
             Config({
                 a0G: address(a0g),
                 foundation: foundation,
+                curveKind: "LinearMintCurve",
                 r0: R0,
                 cap: CAP,
                 target: TARGET,
@@ -80,6 +83,7 @@ abstract contract BaseTest is Test, IAIDeployer {
         iai = IAI(d.iai);
         vault = IAIVault(d.vault);
         registry = CreditRegistry(d.registry);
+        mintCurve = LinearMintCurve(d.curve);
         iaiBeacon = UpgradeableBeacon(d.iaiBeacon);
         vaultBeacon = UpgradeableBeacon(d.vaultBeacon);
         registryBeacon = UpgradeableBeacon(d.registryBeacon);
@@ -101,6 +105,7 @@ abstract contract BaseTest is Test, IAIDeployer {
         vm.label(address(registry), "CreditRegistry");
         vm.label(address(a0g), "a0G");
         vm.label(address(oracle), "oracle");
+        vm.label(address(mintCurve), "LinearMintCurve");
     }
 
     // --- helpers ---

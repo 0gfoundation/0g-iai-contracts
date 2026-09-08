@@ -26,7 +26,7 @@ These are not style preferences. Each one exists because the alternative has a c
 **2. Every rounding decision favours the protocol.** Value entering the vault rounds **up**; value
 leaving rounds **down**. State the direction and the reason in the NatSpec at each site, and cover it
 with a test. The aggregate consequence — splitting a mint into many is strictly more expensive than
-doing it at once — is asserted in `test/unit/MintCurve.t.sol`, so a reversed rounding fails loudly.
+doing it at once — is asserted in `test/unit/curves/LinearCurveMath.t.sol`, so a reversed rounding fails loudly.
 
 **3. Checks, effects, interactions, and `nonReentrant` on anything that touches an external contract.**
 Write all state before any external call. `mint`, `burn`, `burnFor`, `harvest`, `stake`,
@@ -37,10 +37,17 @@ switch must not be able to reach it. `test_Burn_SucceedsWhilePaused` encodes thi
 assertion; if you add a shared modifier, check it did not sweep redemption in with it.
 
 **5. Roles, not owners.** `AccessControlUpgradeable` with one role per responsibility:
-`DEFAULT_ADMIN_ROLE` (grant/revoke, `setFoundation`), `PAUSER_ROLE` (pause/unpause only),
+`DEFAULT_ADMIN_ROLE` (grant/revoke, `setFoundation`, `setCurve`, `setCap`), `PAUSER_ROLE` (pause/unpause only),
 `RESCUE_ROLE` (`burnFor` only), `MINTER_BURNER_ROLE` (held solely by the vault), and beacon
 ownership (upgrades). Deployment puts admin, pauser and the beacons on the deploying account and
 `RESCUE_ROLE` on nobody, so the rescue path opens as an explicit act of governance.
+
+**`DEFAULT_ADMIN_ROLE` on the vault is an upgrade-grade key and must go to the same multisig as
+beacon ownership.** It was not always: before the curve moved out of the vault, admin could not touch
+pricing at all, and separating it from the upgrade key was a real boundary. `setCurve` and `setCap`
+erase that boundary — between them they can reprice all future issuance and lift the supply ceiling
+without limit, which is the same economic power an upgrade has. Treating admin as a lesser key
+because it once was is the mistake this paragraph exists to prevent.
 
 `./handover.sh grant` then `./handover.sh renounce` moves them, in two transactions on purpose:
 `grant` leaves the deployer in place so the targets can be confirmed to respond, and `renounce`
@@ -50,11 +57,28 @@ net. Never collapse the two steps.
 
 **6. `SafeERC20` for every external token.**
 
-**7. Do not add redundant state.** A field that mirrors something another contract already knows is a
+**7. Never write `require(newCap >= supply)` in `setCap`, and never forbid `setCap(0)`.** Lowering
+the cap below the live supply is the supported way to close issuance — burn-only mode — and it is
+wanted precisely in an emergency, which is when a guard like that would block it. It reads as a
+safety check and is the most natural wrong instinct here, so it is called out by name. Burn-only
+needs no mode flag: `mint`'s `supplyAfter > cap` check is simply always true once `cap < supply`,
+and nothing else consults the cap. `test_SetCap_MayGoBelowTheLiveSupply` and `test_SetCap_MayBeZero`
+fail if anyone adds one.
+
+Note what burn-only does **not** stop: `harvest` is gated by `pause`, not by the cap, so
+`setCap(0)` closes issuance while the sweep keeps running. `pause()` is the wind-down switch;
+`setCap(0)` on its own is not.
+
+**8. Do not add redundant state.** A field that mirrors something another contract already knows is a
 liability, not a safety net — it costs gas on every write and creates a divergence that has to be
 handled. The vault reads `iAI.totalSupply()` directly for exactly this reason; a mirrored `supply`
 counter with a fail-closed check was removed because the check was also read by `burn`, so any
 divergence would have bricked the one path that must always work.
+
+`LinearMintCurve.anchorCap` and `.target` are not an exception to this. They are `immutable`, so
+they cannot drift from anything — nothing reads them to make a decision, and they enforce nothing.
+They record how `slope` was derived, which is the only way "127,000,000 0G at full supply" stays
+readable on chain now that the vault's own cap is a separate, adjustable number.
 
 ## Storage and upgrades
 
@@ -66,6 +90,21 @@ transaction (split in two, anyone could initialize the proxy first and own the c
 **Adding storage:** append to the end of the namespaced struct. Never reorder, never remove, never
 change a type.
 
+**`IAIVault`'s struct was rewritten once, deliberately, and that licence has expired.** The curve
+and cap refactor reordered and retyped every field. It was safe only because mainnet did not exist
+yet and Galileo was redeployed from scratch rather than upgraded — the append-only rule applies from
+that deployment onward. The reason it must: pointing a new implementation at an *old* proxy after a
+rewrite fails silently and plausibly. The new `curve` reads the old `r0` (an address with no code),
+the new `cap` reads the old `slope` (a ceiling of about two iAI), and `positions` lands on a
+different base slot so every position reads zero — every `burn` reverts `BurnExceedsPosition` and
+the collateral is stuck. Changing the namespace string does not help; the positions still read zero.
+**Never point a new implementation at a proxy from before the rewrite.**
+
+**Pricing is no longer inside the beacon.** `IAIVault` stores a curve address and calls it; the
+maths lives in a separate immutable contract. So an upgrade rehearsal that only compared the vault's
+own numbers would miss the one thing an upgrade can still do to reprice the system — repoint
+`curve`. `UpgradeChecker` snapshots that address for exactly this reason.
+
 **Before any upgrade touches a live chain, rehearse it on a fork.** This is not optional and it is
 not replaced by a unit test:
 
@@ -74,8 +113,8 @@ not replaced by a unit test:
 ./upgrade.sh vault               # only after the rehearsal passes
 ```
 
-The rehearsal snapshots the curve constants, the accounting totals, live pricing and the positions
-named in `CHECK_ACCOUNTS`, upgrades, and reverts on any drift; it also diffs
+The rehearsal snapshots the curve address and cap, the accounting totals, live pricing and the
+positions named in `CHECK_ACCOUNTS`, upgrades, and reverts on any drift; it also diffs
 `forge inspect <Contract> storageLayout`. On a live upgrade, set `CHECK_ACCOUNTS` to the largest
 holders.
 
@@ -109,6 +148,14 @@ Three layers, all required to stay green:
 
 - **`test/unit/`** — per-function behaviour, golden vectors for the curve, full revert and
   permission matrices, and the scripts' chain work via the abstract halves above.
+
+  **`test/unit/curves/CurveConformance.t.sol` is the gate on `IMintCurve`.** It is an abstract
+  suite stating the behaviours a signature cannot: `cost` rounds up and is never zero, it is
+  monotonic in supply, splitting a mint is never cheaper, a quote is affordable, and the curve is
+  evaluable across the domain it declares. It is written entirely in terms of `cost`,
+  `quoteForValue` and `maxSafeSupply`, so it applies unchanged to a curve of any shape and a curve
+  cannot pass it by reporting figures that agree with each other while disagreeing with what it
+  charges. **A new curve is not fit to point the vault at until it inherits this and passes.**
   **Unit tests never touch the filesystem.** Not `vm.readFile`, `vm.writeJson`, `vm.createDir`,
   `vm.projectRoot`, or `vm.setEnv` — the last one because it writes the *process* environment,
   which parallel test contracts share. Check it with:
@@ -124,10 +171,22 @@ Three layers, all required to stay green:
   step so a mismatch names the operation that caused it. Coverage counters are asserted at the end,
   so a run that degenerates into no-ops fails instead of passing vacuously.
 
-  Pausing and rejected operations are part of the operation mix. That makes "redemption is never
-  gated" a property held across the whole run (a 10k-operation run redeems ~830 times while issuance
-  is closed) rather than one assertion, and it checks **which** error each guard raises from whatever
-  state the run has reached. Rejected operations deliberately take no state snapshot: the EVM already
+  Pausing, cap changes, curve swaps and rejected operations are all part of the operation mix. That
+  makes "redemption is never gated" a property held across the whole run rather than one assertion,
+  against both switches: a 10k-operation run redeems ~690 times while paused and ~580 times with the
+  cap below the live supply. It also checks **which** error each guard raises from whatever state the
+  run has reached — `_opMint` draws its amount without reference to the cap and lets the shadow
+  decide whether the mint should be refused, which is a stronger statement than a `supply <= cap`
+  assertion and, unlike one, survives burn-only mode.
+
+  Curve swaps go in both directions. The shadow tracks the curve in force, so a mint after a swap is
+  priced at the new curve while a burn of a pre-swap position is still settled at that position's own
+  average — requirement 1, checked wei for wei thousands of times from states no hand-written test
+  reaches.
+
+  Adding an operation redraws the entire deterministic sequence, including the sub-sampling inside
+  `_opRejection`. Make simulation changes in one pass, then re-run 10k **and** 100k and recalibrate
+  the coverage floors against what the new sequence actually produces. Rejected operations deliberately take no state snapshot: the EVM already
   rolls back a reverted frame, and the shadow is not advanced for a rejected operation, so the
   per-step comparison already fails if the contract kept anything.
 There is deliberately **no Foundry `invariant_` layer**. It was considered and dropped: the seeded
@@ -187,12 +246,24 @@ no error, no warning. Seed the output object from the current file and write it 
 string memory obj = "iai";
 vm.serializeJson(obj, json);              // keep everything already recorded
 vm.serializeAddress(obj, "IAIVault", d.vault);
-string memory finalJson = vm.serializeString(obj, "Slope", vm.toString(d.slope));
+string memory finalJson = vm.serializeAddress(obj, "MintCurve", d.curve);
 vm.writeJson(finalJson, path);            // only the LAST serialize call returns the document
 ```
 
 Note the last line's comment: `vm.serializeXxx` returns the completed document only from the final
 call, so capturing it early silently drops everything serialized afterwards.
+
+**Curves are recorded by kind as well as by role.** A record carries `MintCurveKind` (which kind is
+in force), `MintCurve` (its address), and the address again under the kind's own name — today
+`LinearMintCurve`, tomorrow `ExponentialMintCurve` alongside it. That lets one record hold several
+deployed curves and still say which one is pricing, which is what `./run.sh setCurve <kind>` reads.
+
+**Deploy scripts that touch collateral must be idempotent.** `Mock.s.sol` reuses an already-recorded
+`MockA0G` instead of deploying a new one. An unconditional redeploy is silent and total: every
+balance ever minted stays in the old token while the new system points at an empty one, nothing
+reverts, and on a testnet with funded accounts it destroys all of them. Redeploying the *system*
+against existing collateral is a supported operation and is how the testnet gets a rebuilt vault
+without re-funding accounts.
 
 ## Secrets
 
@@ -220,7 +291,8 @@ for dust, restore it, redeem: the collateral is gone. iAI does not defend agains
 root cause is the combination of yield-bearing collateral and recording curve value rather than
 deposited tokens — both deliberate. **Operational requirement:** monitor the oracle's `ValueSet`
 events and `pause()` on any move outside the expected daily band. `pause()` stops minting but not
-redemption, so the window between alert and human response is the exposure.
+redemption, so the window between alert and human response is the exposure. Note the cap is not a
+bound on this: it is adjustable upward, so "mint to the cap" is not a fixed quantity of damage.
 
 **R2 — a mint and an immediate full burn costs 1 wei.** Round-trips are effectively free, so a large
 mint can be front-run for position. Accepted; slippage protection is the only defence, and the
@@ -230,14 +302,59 @@ contracts are upgradeable if a holding period ever becomes necessary.
 revert.** An external dependency. Note that setting the upstream `maxAge` to zero freezes the system
 permanently rather than temporarily.
 
-**R4 — `totalLocked0G` can exceed `target`, up to roughly 213.9M 0G.** A redeemer releases 0G at
-their own average rate while the freed supply is resold at the marginal rate, so churn ratchets the
-total upward. **Never write `require(totalLocked0G <= target)`.**
+**R4 — `totalLocked0G` can exceed the curve's `target`, and has no computable upper bound.** A
+redeemer releases 0G at their own average rate while the freed supply is resold at the marginal
+rate, so churn ratchets the total upward. The old figure of "roughly 213.9M 0G" was derived from a
+fixed `(r0, cap, target)` and is no longer a bound of any kind: the cap can be raised and the curve
+replaced with a dearer one, both without limit. **Never write `require(totalLocked0G <= target)`**,
+and do not reintroduce a numeric ceiling in its place.
 
 **R5 — a falling exchange rate leaves late redeemers short.** The harvest sweep goes quiet and
 redemption becomes first come, first served. Accepted on the premise that a0G does not depreciate;
 `test_RateFall_SweepGoesQuietButLateRedeemersAreLeftShort` pins the actual behaviour so it is a known
-quantity rather than a surprise.
+quantity rather than a surprise. Lowering the cap to wind the system down makes this worse rather
+than better — the sweep is gated by `pause`, not by the cap, so it keeps running. Use `pause()`.
+
+**R6 — governance can reprice all future issuance, and lower the curve at existing holders' profit.**
+`setCurve` takes any contract satisfying `IMintCurve`. Lowering the curve lets an existing holder
+burn and re-mint at a profit: they release 0G at their own average and buy the same supply back
+cheaper. Measured — dropping `r0` from 4,330 to 2,000 lets a 100-iAI holder extract 238,439 0G.
+Solvency is unaffected (the vault only ever pays out what a position holds), but the same supply
+then sits on less collateral and the foundation's future harvest shrinks. Accepted deliberately:
+no on-chain restriction on the direction of a swap, and no record of the price difference.
+`test_Swap_DownwardsIsArbitrageableByExistingHolders` pins it.
+
+**R7 — the supply ceiling is adjustable without limit.** `setCap` accepts anything up to the curve's
+declared arithmetic domain. Raising it dilutes nothing directly, but it removes the ceiling every
+other figure here was quoted against, R1 and R4 included.
+
+**R8 — a curve can be discriminatory or mutable; the vault cannot tell.** `IMintCurve`'s functions
+are `view`, so a curve reaches the vault by `STATICCALL` and cannot write state or reenter — that
+much is structural. `view` is not `pure`, though: a curve may read `block.timestamp` or `tx.origin`
+and price differently per transaction or per originator. `msg.sender` at the curve is the vault, but
+`tx.origin` is the user, so a curve that is free for one address and ruinous for everyone else is
+constructible and invisible from the vault. Likewise "a curve is an immutable value" is a property
+of the deployment convention, not of the type: the vault cannot distinguish `LinearMintCurve` from a
+proxy in front of one. **Read the deployed bytecode of any curve before pointing the vault at it.**
+
+What a bad curve structurally *cannot* do is take collateral. `mint` derives both the amount it
+records and the amount it collects from the same single return value, so the vault can never record
+more than it collected, and `_settle` never consults a curve at all — existing positions are out of
+reach from the curve side. A curve returning zero is caught by the vault's own `delta0G == 0` guard
+rather than trusted not to.
+
+**R9 — `IAI` has no supply cap of its own any more, so `MINTER_BURNER_ROLE` is unbounded.** The
+token used to carry a hard cap as a second, independent line of defence; the cap moved into the
+vault to become adjustable, and the token's was removed rather than left to contradict it. What is
+given up is real, and it is more than "extra tokens": `iai.totalSupply()` is the vault's pricing
+input, so iAI minted outside the vault raises the curve for everyone, can push the supply past the
+cap and force burn-only from the token side, and leaves supply the vault has no position behind —
+which is the premise `_settle`'s arithmetic rests on.
+
+The mitigation got cheap in the same change, though, and should be taken: **`IAI` now has no
+admin-settable state at all**, so `DEFAULT_ADMIN_ROLE` on the token does nothing except grant
+`MINTER_BURNER_ROLE`. Renouncing it, or moving it behind a timelock, costs nothing operationally.
+That was not true before.
 
 ## Conventions
 

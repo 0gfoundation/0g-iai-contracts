@@ -73,10 +73,8 @@ contract UpgradeScript is Script, JsonUtils, Constants, UpgradeChecker {
         Snapshot memory s = _capture(_vault(json), _token(json), _registry(json), _checkAccounts());
 
         string memory o = "snap";
-        vm.serializeString(o, "r0", vm.toString(s.r0));
-        vm.serializeString(o, "slope", vm.toString(s.slope));
+        vm.serializeAddress(o, "curve", s.curve);
         vm.serializeString(o, "cap", vm.toString(s.cap));
-        vm.serializeString(o, "target", vm.toString(s.target));
         vm.serializeAddress(o, "iai", s.iai);
         vm.serializeAddress(o, "a0G", s.a0G);
         vm.serializeAddress(o, "oracle", s.oracle);
@@ -85,10 +83,10 @@ contract UpgradeScript is Script, JsonUtils, Constants, UpgradeChecker {
         vm.serializeString(o, "totalLocked0G", vm.toString(s.totalLocked0G));
         vm.serializeString(o, "supply", vm.toString(s.supply));
         vm.serializeString(o, "tokenSupply", vm.toString(s.tokenSupply));
-        vm.serializeString(o, "tokenCap", vm.toString(s.tokenCap));
         vm.serializeBool(o, "paused", s.paused);
         vm.serializeString(o, "totalStaked", vm.toString(s.totalStaked));
         vm.serializeString(o, "cooldownDuration", vm.toString(s.cooldownDuration));
+        vm.serializeBool(o, "quotesAvailable", s.quotesAvailable);
         vm.serializeString(o, "quote1", vm.toString(s.quote1));
         vm.serializeString(o, "quote100", vm.toString(s.quote100));
         vm.serializeAddress(o, "accounts", s.accounts);
@@ -127,10 +125,8 @@ contract UpgradeScript is Script, JsonUtils, Constants, UpgradeChecker {
      * @return s The snapshot it encodes.
      */
     function _readSnapshot(string memory snap) private pure returns (Snapshot memory s) {
-        s.r0 = _uint(snap, ".r0");
-        s.slope = _uint(snap, ".slope");
+        s.curve = vm.parseJsonAddress(snap, ".curve");
         s.cap = _uint(snap, ".cap");
-        s.target = _uint(snap, ".target");
         s.iai = vm.parseJsonAddress(snap, ".iai");
         s.a0G = vm.parseJsonAddress(snap, ".a0G");
         s.oracle = vm.parseJsonAddress(snap, ".oracle");
@@ -139,10 +135,10 @@ contract UpgradeScript is Script, JsonUtils, Constants, UpgradeChecker {
         s.totalLocked0G = _uint(snap, ".totalLocked0G");
         s.supply = _uint(snap, ".supply");
         s.tokenSupply = _uint(snap, ".tokenSupply");
-        s.tokenCap = _uint(snap, ".tokenCap");
         s.paused = vm.parseJsonBool(snap, ".paused");
         s.totalStaked = _uint(snap, ".totalStaked");
         s.cooldownDuration = _uint(snap, ".cooldownDuration");
+        s.quotesAvailable = vm.parseJsonBool(snap, ".quotesAvailable");
         s.quote1 = _uint(snap, ".quote1");
         s.quote100 = _uint(snap, ".quote100");
         s.accounts = vm.parseJsonAddressArray(snap, ".accounts");

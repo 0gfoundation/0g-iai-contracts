@@ -7,6 +7,7 @@
   "BeaconOwner": "0x0000000000000000000000000000000000000000",
   "Name": "Infinite AI",
   "Symbol": "iAI",
+  "MintCurveKind": "LinearMintCurve",
   "R0": "4330000000000000000000",
   "Cap": "9270000000000000000000",
   "Target": "127000000000000000000000000",

@@ -9,6 +9,7 @@ import {IAIDeployer} from "./IAIDeployer.sol";
 import {IAI} from "../../src/IAI.sol";
 import {IAIVault} from "../../src/IAIVault.sol";
 import {CreditRegistry} from "../../src/CreditRegistry.sol";
+import {IMintCurve} from "../../src/interfaces/IMintCurve.sol";
 
 /**
  * @title IAIScript
@@ -31,6 +32,7 @@ contract IAIScript is Script, JsonUtils, Constants, IAIDeployer {
         Config memory c = Config({
             a0G: vm.parseJsonAddress(json, ".A0G"),
             foundation: vm.parseJsonAddress(json, ".Foundation"),
+            curveKind: vm.parseJsonString(json, ".MintCurveKind"),
             r0: vm.parseJsonUint(json, ".R0"),
             cap: vm.parseJsonUint(json, ".Cap"),
             target: vm.parseJsonUint(json, ".Target"),
@@ -47,7 +49,7 @@ contract IAIScript is Script, JsonUtils, Constants, IAIDeployer {
         console.log("iAI            ", d.iai);
         console.log("IAIVault       ", d.vault);
         console.log("CreditRegistry ", d.registry);
-        console.log("slope          ", d.slope);
+        console.log("curve          ", d.curve, c.curveKind);
         console.log("");
         console.log("Issuance is PAUSED. Open it with --sig 'unpause()' when ready.");
         console.log("DEFAULT_ADMIN and the beacon owner are the deployer; hand them to the");
@@ -61,6 +63,7 @@ contract IAIScript is Script, JsonUtils, Constants, IAIDeployer {
         // Echo the inputs so a rerun of this script cannot silently drop them.
         vm.serializeAddress(obj, "A0G", c.a0G);
         vm.serializeAddress(obj, "Foundation", c.foundation);
+        vm.serializeString(obj, "MintCurveKind", c.curveKind);
         vm.serializeString(obj, "R0", vm.toString(c.r0));
         vm.serializeString(obj, "Cap", vm.toString(c.cap));
         vm.serializeString(obj, "Target", vm.toString(c.target));
@@ -78,9 +81,11 @@ contract IAIScript is Script, JsonUtils, Constants, IAIDeployer {
         vm.serializeAddress(obj, "CreditRegistryBeacon", d.registryBeacon);
         vm.serializeAddress(obj, "CreditRegistry", d.registry);
 
-        // Derived, not an input. Recorded so off-chain tooling can cross-check the curve.
+        // The active curve, and the same address under its own kind so a record can hold more
+        // than one deployed curve at a time.
+        vm.serializeAddress(obj, c.curveKind, d.curve);
         // Only the last `serialize` call returns the completed document.
-        string memory finalJson = vm.serializeString(obj, "Slope", vm.toString(d.slope));
+        string memory finalJson = vm.serializeAddress(obj, "MintCurve", d.curve);
 
         vm.writeJson(finalJson, path);
     }
@@ -134,6 +139,83 @@ contract IAIScript is Script, JsonUtils, Constants, IAIDeployer {
         console.log("cooldownDuration", newDuration);
     }
 
+    /**
+     * @notice Deploys a curve of the given kind from the parameters in the record, and records
+     *         its address under that kind. Does **not** put it into service.
+     * @param kind Curve contract name, e.g. `"LinearMintCurve"`.
+     *
+     * @dev Two steps on purpose: deploy, read the address back, then switch. A curve is an
+     *      immutable value, so several may coexist in one record and the active one is
+     *      whichever `MintCurve` names.
+     */
+    function deployCurve(string memory kind) public {
+        (string memory json, string memory path) = loadOrInitJson("iai");
+
+        Config memory c = Config({
+            a0G: vm.parseJsonAddress(json, ".A0G"),
+            foundation: vm.parseJsonAddress(json, ".Foundation"),
+            curveKind: kind,
+            r0: vm.parseJsonUint(json, ".R0"),
+            cap: vm.parseJsonUint(json, ".Cap"),
+            target: vm.parseJsonUint(json, ".Target"),
+            cooldownDuration: vm.parseJsonUint(json, ".CooldownDuration"),
+            name: vm.parseJsonString(json, ".Name"),
+            symbol: vm.parseJsonString(json, ".Symbol")
+        });
+
+        vm.startBroadcast(vm.envUint("PRIVATE_KEY"));
+        address deployed = address(_deployCurve(c));
+        vm.stopBroadcast();
+
+        string memory o = "iai";
+        vm.serializeJson(o, json);
+        vm.writeJson(vm.serializeAddress(o, kind, deployed), path);
+
+        console.log("deployed       ", kind, deployed);
+        console.log("Not yet in service. Switch with --sig 'setCurve(string)' when ready.");
+    }
+
+    /**
+     * @notice Puts an already-deployed curve into service, by kind. `DEFAULT_ADMIN_ROLE`.
+     * @param kind Curve contract name, which must already be recorded by `deployCurve`.
+     *
+     * @dev Prices only future mints. Everything already minted keeps its own price, because
+     *      positions record an absolute 0G amount and redemption never consults a curve.
+     */
+    function setCurve(string memory kind) public {
+        (string memory json, string memory path) = loadOrInitJson("iai");
+        address target = vm.parseJsonAddress(json, string.concat(".", kind));
+        require(target != address(0), "no curve recorded under that kind -- run deployCurve first");
+
+        vm.startBroadcast(vm.envUint("PRIVATE_KEY"));
+        IAIVault(vm.parseJsonAddress(json, ".IAIVault")).setCurve(IMintCurve(target));
+        vm.stopBroadcast();
+
+        string memory o = "iai";
+        vm.serializeJson(o, json);
+        vm.serializeString(o, "MintCurveKind", kind);
+        vm.writeJson(vm.serializeAddress(o, "MintCurve", target), path);
+
+        console.log("now pricing on ", kind, target);
+    }
+
+    /**
+     * @notice Moves the supply ceiling. `DEFAULT_ADMIN_ROLE`.
+     * @param newCap New ceiling in wei-iAI. Below the current supply this closes issuance
+     *               while leaving redemption working.
+     */
+    function setCap(uint256 newCap) public {
+        (string memory json, string memory path) = loadOrInitJson("iai");
+        vm.startBroadcast(vm.envUint("PRIVATE_KEY"));
+        IAIVault(vm.parseJsonAddress(json, ".IAIVault")).setCap(newCap);
+        vm.stopBroadcast();
+
+        string memory o = "iai";
+        vm.serializeJson(o, json);
+        vm.writeJson(vm.serializeString(o, "Cap", vm.toString(newCap)), path);
+        console.log("cap            ", newCap);
+    }
+
     function setFoundation(address newFoundation) public {
         (string memory json,) = loadOrInitJson("iai");
         vm.startBroadcast(vm.envUint("PRIVATE_KEY"));
@@ -156,6 +238,7 @@ contract IAIScript is Script, JsonUtils, Constants, IAIDeployer {
         Config memory c = Config({
             a0G: vm.parseJsonAddress(json, ".A0G"),
             foundation: vm.parseJsonAddress(json, ".Foundation"),
+            curveKind: vm.parseJsonString(json, ".MintCurveKind"),
             r0: vm.parseJsonUint(json, ".R0"),
             cap: vm.parseJsonUint(json, ".Cap"),
             target: vm.parseJsonUint(json, ".Target"),
@@ -173,13 +256,13 @@ contract IAIScript is Script, JsonUtils, Constants, IAIDeployer {
             registry: vm.parseJsonAddress(json, ".CreditRegistry"),
             registryImpl: vm.parseJsonAddress(json, ".CreditRegistryImpl"),
             registryBeacon: vm.parseJsonAddress(json, ".CreditRegistryBeacon"),
-            slope: 0
+            curve: vm.parseJsonAddress(json, ".MintCurve")
         });
 
         _assertWiring(c, d);
         require(
-            IAIVault(d.vault).slope() == vm.parseJsonUint(json, ".Slope"),
-            "recorded Slope does not match the chain"
+            address(IAIVault(d.vault).curve()) == vm.parseJsonAddress(json, string.concat(".", c.curveKind)),
+            "the active curve is not the one recorded under its kind"
         );
 
         console.log("network        ", networkName());
@@ -197,6 +280,8 @@ contract IAIScript is Script, JsonUtils, Constants, IAIDeployer {
         console.log("paused (vault) ", vault.paused());
         console.log("supply         ", token.totalSupply());
         console.log("cap            ", vault.cap());
+        console.log("remainingCap   ", vault.remainingCap());
+        console.log("curve          ", address(vault.curve()));
         console.log("totalLocked0G  ", vault.totalLocked0G());
         console.log("exchangeRate   ", vault.exchangeRate());
         console.log("pendingSurplus ", vault.pendingSurplus());

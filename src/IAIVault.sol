@@ -13,7 +13,7 @@ import {IIAIVault} from "./interfaces/IIAIVault.sol";
 import {IIAI} from "./interfaces/IIAI.sol";
 import {IA0G} from "./interfaces/external/IA0G.sol";
 import {IA0GOracle} from "./interfaces/external/IA0GOracle.sol";
-import {MintCurve} from "./libraries/MintCurve.sol";
+import {IMintCurve} from "./interfaces/IMintCurve.sol";
 
 /**
  * @title IAIVault
@@ -59,13 +59,21 @@ contract IAIVault is IIAIVault, AccessControlUpgradeable, PausableUpgradeable, R
      */
     bytes32 public constant RESCUE_ROLE = keccak256("RESCUE_ROLE");
 
+    /**
+     * @dev Hard bound on the supply the vault will price at, independent of what a curve
+     *      claims. `cost` implementations multiply supply-sized quantities outside a
+     *      512-bit helper; at `2**127` even a squared term stays inside uint256. Applied
+     *      alongside `curve.maxSafeSupply()` so a curve reporting an absurd domain cannot
+     *      widen it.
+     */
+    uint256 private constant ABSOLUTE_SUPPLY_BOUND = 2 ** 127;
+
     /// @custom:storage-location erc7201:0g.iai.IAIVault
     struct VaultStorage {
-        // Curve constants. Written once during initialization; no setter exists.
-        uint256 r0;
-        uint256 slope;
+        /// The curve in force. Swappable: see `setCurve`.
+        IMintCurve curve;
+        /// Supply ceiling. Adjustable in both directions: see `setCap`.
         uint256 cap;
-        uint256 target;
         address foundation;
         IIAI iai;
         IA0G a0G;
@@ -90,10 +98,8 @@ contract IAIVault is IIAIVault, AccessControlUpgradeable, PausableUpgradeable, R
     }
 
     /**
-     * @notice Wires the vault to its token and collateral and fixes the curve.
-     * @param p Deployment parameters; see `IIAIVault.InitParams`. `slope` is derived from
-     *          `r0`, `cap` and `target` rather than supplied, so the three published numbers
-     *          are the only thing anyone has to agree on.
+     * @notice Wires the vault to its token, collateral and curve.
+     * @param p Deployment parameters; see `IIAIVault.InitParams`.
      *
      * @dev Starts **paused**: issuance opens on an explicit governance transaction, which is
      *      also the only launch-timing control the contract needs. Redemption is unaffected.
@@ -115,10 +121,8 @@ contract IAIVault is IIAIVault, AccessControlUpgradeable, PausableUpgradeable, R
         $.iai = IIAI(p.iai);
         $.a0G = IA0G(p.a0G);
         $.foundation = p.foundation;
-        $.r0 = p.r0;
-        $.cap = p.cap;
-        $.target = p.target;
-        $.slope = MintCurve.deriveSlope(p.r0, p.cap, p.target);
+        _setCurve($, IMintCurve(p.curve), p.cap);
+        _setCap($, p.cap);
 
         IA0GOracle o = IA0G(p.a0G).oracle();
         if (address(o) == address(0)) revert ZeroAddress();
@@ -154,7 +158,11 @@ contract IAIVault is IIAIVault, AccessControlUpgradeable, PausableUpgradeable, R
         uint256 supplyAfter = s + d;
         if (supplyAfter > $.cap) revert CapExceeded(supplyAfter, $.cap);
 
-        uint256 delta0G = MintCurve.cost($.r0, $.slope, s, d);
+        uint256 delta0G = $.curve.cost(s, d);
+        // A curve returning zero would hand out free iAI: the recipient could claim compute
+        // for nothing, and the supply the vault prices against would inflate permanently.
+        // Enforced here so it is a property of the vault, not a promise from the curve.
+        if (delta0G == 0) revert ZeroAmount();
         uint256 er = $.oracle.getValue();
         uint256 a0GIn = Math.mulDiv(delta0G, WAD, er, Math.Rounding.Ceil);
         if (a0GIn > maxA0GIn) revert ExcessiveInput(a0GIn, maxA0GIn);
@@ -263,6 +271,40 @@ contract IAIVault is IIAIVault, AccessControlUpgradeable, PausableUpgradeable, R
         emit Burned(minter, tokenSource, b, unlocked0G, a0GOut, er, supplyAfter, totalAfter);
     }
 
+    /**
+     * @param $        Vault storage.
+     * @param newCurve The curve to install.
+     * @param capNow   The cap that must remain inside the new curve's safe domain.
+     */
+    function _setCurve(VaultStorage storage $, IMintCurve newCurve, uint256 capNow) private {
+        if (address(newCurve) == address(0)) revert ZeroAddress();
+        if (address(newCurve).code.length == 0) revert NotAContract(address(newCurve));
+        _requireWithinDomain(newCurve, capNow);
+        $.curve = newCurve;
+    }
+
+    /**
+     * @param $      Vault storage.
+     * @param newCap The ceiling to install.
+     */
+    function _setCap(VaultStorage storage $, uint256 newCap) private {
+        _requireWithinDomain($.curve, newCap);
+        $.cap = newCap;
+    }
+
+    /**
+     * @param c      Curve the cap must be valid for.
+     * @param capNow Proposed or existing cap.
+     * @dev Two bounds, both applied. The curve states the supply its own arithmetic is proven
+     *      at; the vault applies its own hard bound as well, so a curve reporting an absurd
+     *      domain cannot widen it.
+     */
+    function _requireWithinDomain(IMintCurve c, uint256 capNow) private view {
+        uint256 bound = c.maxSafeSupply();
+        if (bound > ABSOLUTE_SUPPLY_BOUND) bound = ABSOLUTE_SUPPLY_BOUND;
+        if (capNow > bound) revert CapAboveCurveDomain(capNow, bound);
+    }
+
     // -------------------------------------------------------------------------
     // Yield
     // -------------------------------------------------------------------------
@@ -303,6 +345,40 @@ contract IAIVault is IIAIVault, AccessControlUpgradeable, PausableUpgradeable, R
         $.foundation = newFoundation;
     }
 
+    /**
+     * @inheritdoc IIAIVault
+     * @dev Deliberately does **not** read the outgoing curve. A curve that reverts, runs out
+     *      of gas, or has no code would otherwise be unreplaceable and issuance would be dead
+     *      permanently -- the one situation this function exists to escape.
+     *
+     *      Nothing already minted is repriced: positions record an absolute 0G amount and
+     *      redemption never consults a curve. What changes is the price of future mints.
+     */
+    function setCurve(IMintCurve newCurve) external onlyRole(DEFAULT_ADMIN_ROLE) {
+        VaultStorage storage $ = _s();
+        IMintCurve previous = $.curve;
+        _setCurve($, newCurve, $.cap);
+        emit CurveUpdated(address(previous), address(newCurve));
+    }
+
+    /**
+     * @inheritdoc IIAIVault
+     * @dev A cap below the current supply is allowed, and so is zero. That is how the system
+     *      is wound down: minting stops of its own accord because `supply + d` can no longer
+     *      fit, while redemption -- which never looks at the cap -- keeps working. Adding a
+     *      `newCap >= supply` guard here is the obvious instinct and would defeat the entire
+     *      point.
+     *
+     *      Note that `harvest` is not cap-gated either, so lowering the cap alone does not
+     *      stop yield being swept. `pause()` is the lever that stops everything except exit.
+     */
+    function setCap(uint256 newCap) external onlyRole(DEFAULT_ADMIN_ROLE) {
+        VaultStorage storage $ = _s();
+        uint256 previous = $.cap;
+        _setCap($, newCap);
+        emit CapUpdated(previous, newCap);
+    }
+
     function pause() external onlyRole(PAUSER_ROLE) {
         _pause();
     }
@@ -323,7 +399,7 @@ contract IAIVault is IIAIVault, AccessControlUpgradeable, PausableUpgradeable, R
         // a price for an amount that can never be issued.
         uint256 supplyAfter = s + d;
         if (supplyAfter > $.cap) revert CapExceeded(supplyAfter, $.cap);
-        delta0G = MintCurve.cost($.r0, $.slope, s, d);
+        delta0G = $.curve.cost(s, d);
         a0GIn = Math.mulDiv(delta0G, WAD, $.oracle.getValue(), Math.Rounding.Ceil);
     }
 
@@ -349,10 +425,24 @@ contract IAIVault is IIAIVault, AccessControlUpgradeable, PausableUpgradeable, R
      */
     function quoteMintForA0G(uint256 a0GAmount) external view returns (uint256 d) {
         VaultStorage storage $ = _s();
+        // The oracle is read first on purpose: a stale feed must make this revert like every
+        // other priced path, so an early return for a full cap would silently exempt it.
         uint256 delta = Math.mulDiv(a0GAmount, $.oracle.getValue(), WAD, Math.Rounding.Floor);
+
         uint256 s = $.iai.totalSupply();
-        d = MintCurve.quoteForValue($.r0, $.slope, s, delta);
-        uint256 headroom = $.cap - s;
+        uint256 cap_ = $.cap;
+        // Saturating: once the cap is below the supply there is no headroom, and a plain
+        // subtraction would panic instead of answering zero.
+        uint256 headroom = cap_ > s ? cap_ - s : 0;
+        if (headroom == 0) return 0;
+
+        // Clamp the value *before* solving. The root solver squares an intermediate, so a
+        // caller holding an absurd balance would otherwise overflow it -- and this function
+        // promises to clamp, never to revert.
+        uint256 forAllOfIt = $.curve.cost(s, headroom);
+        if (delta > forAllOfIt) return headroom;
+
+        d = $.curve.quoteForValue(s, delta);
         if (d > headroom) d = headroom;
     }
 
@@ -371,9 +461,17 @@ contract IAIVault is IIAIVault, AccessControlUpgradeable, PausableUpgradeable, R
         return _s().oracle.getValue();
     }
 
-    function lockedAt(uint256 s) external view returns (uint256) {
+    /// @inheritdoc IIAIVault
+    function remainingCap() public view returns (uint256) {
         VaultStorage storage $ = _s();
-        return MintCurve.lockedAt($.r0, $.slope, s);
+        uint256 s = $.iai.totalSupply();
+        uint256 cap_ = $.cap;
+        return cap_ > s ? cap_ - s : 0;
+    }
+
+    /// @inheritdoc IIAIVault
+    function curve() external view returns (IMintCurve) {
+        return _s().curve;
     }
 
     function pendingSurplus() external view returns (uint256) {
@@ -399,20 +497,8 @@ contract IAIVault is IIAIVault, AccessControlUpgradeable, PausableUpgradeable, R
         return _s().foundation;
     }
 
-    function r0() external view returns (uint256) {
-        return _s().r0;
-    }
-
-    function slope() external view returns (uint256) {
-        return _s().slope;
-    }
-
     function cap() external view returns (uint256) {
         return _s().cap;
-    }
-
-    function target() external view returns (uint256) {
-        return _s().target;
     }
 
     function totalLocked0G() external view returns (uint256) {

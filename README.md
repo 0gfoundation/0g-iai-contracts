@@ -21,10 +21,12 @@ locked, and the yield the collateral earned in the meantime is swept to the foun
 
 | Contract | Role |
 | --- | --- |
-| `src/IAI.sol` | The ERC-20. Hard supply cap; mint and burn restricted to `MINTER_BURNER_ROLE`, held only by the vault. Deliberately **not** `ERC20Burnable` — a holder burning their own tokens would strand the collateral behind them. |
-| `src/IAIVault.sol` | Custody, positions, pricing. `mint` / `burn` / `burnFor` / `harvest`. |
+| `src/IAI.sol` | The ERC-20. Mint and burn restricted to `MINTER_BURNER_ROLE`, held only by the vault; the supply ceiling is the vault's, not the token's. Deliberately **not** `ERC20Burnable` — a holder burning their own tokens would strand the collateral behind them. |
+| `src/IAIVault.sol` | Custody, positions, the supply cap, and which curve is pricing. `mint` / `burn` / `burnFor` / `harvest`. |
 | `src/CreditRegistry.sol` | Staking with a cooldown. Records who has how much iAI earning; the allowance itself is metered off-chain. |
-| `src/libraries/MintCurve.sol` | Stateless curve maths. No storage, no state. |
+| `src/interfaces/IMintCurve.sol` | The pricing surface the vault calls. Three `view` functions, so a curve reaches the vault by `STATICCALL` and can neither write state nor reenter. |
+| `src/curves/LinearMintCurve.sol` | The curve in force. Every parameter `immutable`, zero storage — a curve is a value, and replacing one means deploying another and repointing the vault. |
+| `src/curves/LinearCurveMath.sol` | The linear curve's closed form. A library: no storage, no state. |
 | `src/mocks/` | Stand-in a0G and its oracle, for networks without the real thing. In `src/` rather than `test/` because they are deployed and verified on testnets. |
 
 ### The curve
@@ -37,19 +39,40 @@ locked(s) = R0·s + (slope/2)·s²       0G locked at supply s
 cost(s→s+d) = locked(s+d) − locked(s) what a mint charges
 ```
 
-`slope` is **derived** at initialization from `R0`, `cap` and `target` — never supplied — so the
-three published numbers are the only thing anyone has to agree on. With the shipped parameters:
+`slope` is **derived** in the curve's constructor from `R0`, `anchorCap` and `target` — never
+supplied — so the three published numbers are the only thing anyone has to agree on. With the
+shipped parameters:
 
 | | |
 | --- | --- |
 | `R0` (price at zero supply) | 4,330 0G / iAI |
-| `Cap` (max supply) | 9,270 iAI |
-| `Target` (0G locked at full supply) | 127,000,000 0G |
+| `anchorCap` (the supply `slope` is pinned against) | 9,270 iAI |
+| `Target` (0G the curve accounts for at `anchorCap`) | 127,000,000 0G |
 | derived `slope` | 2,021,598,247,004,348,741 |
-| implied price at cap | 23,070.2157 0G / iAI |
+| implied price at `anchorCap` | 23,070.2157 0G / iAI |
 
-`cost()` is the only pricing primitive. `lockedAt()` floors and exists for views and reconciliation
-only; it sits a hair under `target` at the cap, so never assert equality between the two.
+`cost()` is the only pricing primitive. `lockedAt()` floors and exists for charts and reconciliation
+only; it sits a hair under `target` at the anchor, so never assert equality between the two.
+
+**The curve and the supply cap are separate, and both move.** The vault's cap is its own number and
+is adjustable in either direction; `anchorCap` is provenance on the curve, recording how `slope` was
+derived, and enforces nothing. Governance can also replace the whole curve. Neither reaches anything
+already minted — see below — but it does mean no figure on this page is a permanent bound. Read them
+from the chain rather than hard-coding them.
+
+### Replacing the curve, and moving the cap
+
+Positions record an **absolute amount of 0G**, not the curve parameters that produced it, and
+redemption never consults a curve. So swapping the curve reprices nothing already minted: a holder
+who minted before a swap redeems for exactly what they locked, and mints after it use the new curve.
+A holder who mints on both sides gets one blended average for the whole position — the guarantee is
+"nobody's existing collateral is repriced", not "every coin redeems at the price it was minted at".
+
+Lowering the cap below the live supply is a supported state, **burn-only mode**: `mint` refuses,
+and redemption, rescue, staking and the harvest sweep all carry on untouched. It needs no mode flag
+— `mint`'s ceiling check is simply always true once the cap is under the supply. Note that `harvest`
+is gated by `pause`, not by the cap, so `setCap(0)` is not a wind-down switch on its own; `pause()`
+is.
 
 ### Rounding
 
@@ -68,9 +91,10 @@ Two caveats are real and must be stated to users:
 
 - **Staked iAI must be unstaked first.** `initiateUnstake` → wait out the cooldown → `unstake` → then
   `burn`. `burn` itself is never pausable, but reaching it can take a day.
-- **`totalLocked0G` can exceed `target`.** A redeemer releases 0G at their average rate while the
-  freed supply is resold at the marginal rate, so churn ratchets the total upward — up to about
-  213.9M 0G. Never write `require(totalLocked0G <= target)`.
+- **`totalLocked0G` can exceed the curve's `target`, with no computable ceiling.** A redeemer
+  releases 0G at their average rate while the freed supply is resold at the marginal rate, so churn
+  ratchets the total upward. There is no numeric bound to quote: the cap can be raised and the curve
+  replaced with a dearer one. Never write `require(totalLocked0G <= target)`.
 
 ## Layout
 
@@ -83,6 +107,8 @@ script/         Upgrade.s.sol, Handover.s.sol — beacon upgrades and the govern
 deployments/    per-network parameters *and* the addresses a run produced
 test/unit/      per-function behaviour, golden vectors, revert and permission matrices, and
                 the scripts' chain work. Never touches the filesystem.
+test/unit/curves/  the curves themselves, plus CurveConformance.t.sol — the abstract suite
+                every curve must inherit and pass before the vault may point at it
 test/sim/       seeded randomized simulation against an independent shadow model
 test/script/    the file half of the scripts: parameters in, addresses out
 docs/           frontend integration guide
@@ -96,7 +122,7 @@ addresses of what was deployed come back into the same file. `iai-example.json` 
 
 ```bash
 forge build
-forge test                      # 82 tests, a few seconds
+forge test                      # 171 tests, a few seconds
 SIM_LONG=1 forge test --match-test test_Sim_Long   # 100k-operation simulation
 ```
 
@@ -176,6 +202,8 @@ export CHECK_ACCOUNTS=0xLargestHolder,0xNextOne   # optional but recommended
 ./upgrade.sh vault             # only after the rehearsal passes
 ```
 
-The rehearsal forks the configured chain, snapshots every curve constant, every balance and the
-positions named in `CHECK_ACCOUNTS`, upgrades, and reverts if anything moved. `iai` and `registry`
+The rehearsal forks the configured chain, snapshots the curve address and cap, every balance and the
+positions named in `CHECK_ACCOUNTS`, upgrades, and reverts if anything moved. The curve address is
+in there because pricing lives outside the beacon now: repointing it is the one thing an upgrade can
+still do to reprice the system. `iai` and `registry`
 are the other two targets.

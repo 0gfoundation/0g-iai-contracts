@@ -156,7 +156,7 @@ IAIVault.quoteMint(uint256 d) view returns (uint256 delta0G, uint256 a0GIn)
 
 | Parameter | Where it comes from | Conversion |
 | --- | --- | --- |
-| `d` | The amount of iAI the user wants, from your input box. **Cap it at `cap() - totalSupply()`** — beyond the remaining headroom this reverts with `CapExceeded`, the same error `mint` gives. | `parseUnits(input, 18)` |
+| `d` | The amount of iAI the user wants, from your input box. **Cap it at `remainingCap()`** — beyond the remaining headroom this reverts with `CapExceeded`, the same error `mint` gives. Read `remainingCap()`; do **not** compute `cap() - totalSupply()` yourself, because the supply can legitimately sit above the cap and that subtraction throws in JS `bigint`. | `parseUnits(input, 18)` |
 
 | Return | Meaning | Display |
 | --- | --- | --- |
@@ -169,7 +169,7 @@ again right before submitting, because the price rises as other people mint.
 **Quotes fail wherever the action they price would fail**, with the identical error. `quoteMint`
 raises `CapExceeded` and `quoteBurn` raises `BurnExceedsPosition` exactly where `mint` and `burn`
 do. That is deliberate: a quote that answered anyway would hand you a number the contract refuses a
-moment later. Validate the input against `cap() - totalSupply()` and `positionOf().iaiOutstanding`
+moment later. Validate the input against `remainingCap()` and `positionOf().iaiOutstanding`
 before quoting, or catch the error and treat it as "too much".
 
 **The reverse direction.** If your UI has a "spend all my a0G" button:
@@ -188,7 +188,8 @@ than `a0GAmount`.
 Unlike `quoteMint`, this one **does not revert** when the balance would buy more than the cap
 allows — it returns the remaining headroom. It was asked what a given spend buys, and the headroom
 is a true, mintable answer to that question. So a "spend everything" button never errors; it just
-stops growing once the cap is in sight.
+stops growing once the cap is in sight, whatever the balance. With no headroom at all it returns
+`0`, so treat a zero here as "minting is closed" rather than as a failure.
 
 ### 3.2 Send the transaction
 
@@ -253,8 +254,33 @@ Useful companions:
 IAIVault.exchangeRate() view returns (uint256)   // 0G per a0G, scaled by 1e18
 IAI.balanceOf(address)  view returns (uint256)   // freely transferable token balance
 IAI.totalSupply()       view returns (uint256)   // current supply; drives the price
-IAIVault.cap()          view returns (uint256)   // hard maximum supply
+IAIVault.cap()          view returns (uint256)   // the current supply ceiling; it can change
+IAIVault.remainingCap() view returns (uint256)   // headroom left to mint; 0 when minting is closed
+IAIVault.curve()        view returns (address)   // the pricing contract currently in force
 ```
+
+**Read these; never hard-code them.** The ceiling is adjustable in both directions and the pricing
+curve can be replaced, both by governance and without an upgrade. A UI that bakes in "9,270 iAI" or
+the curve's coefficients will silently show wrong numbers after either change. Always use
+`remainingCap()` rather than subtracting: the supply is allowed to be *above* the cap, so
+`cap() - totalSupply()` underflows and throws in JS `bigint`. `remainingCap()` saturates at `0`.
+
+### When minting is closed
+
+Governance can lower the cap below the supply that already exists. That closes issuance and nothing
+else — this is a deliberate, supported state, not an outage:
+
+| | |
+| --- | --- |
+| `remainingCap()` | `0` |
+| `mint`, `quoteMint` | revert `CapExceeded` for any amount |
+| `quoteMintForA0G` | returns `0` (it clamps, it does not revert) |
+| `burn`, `quoteBurn` | work normally |
+| staking, cooldown, `unstake` | work normally |
+
+Detect it with `remainingCap() == 0` and disable the mint input, showing that minting is currently
+closed. Do **not** treat it as an error state or a failed connection, and leave everything else
+enabled — users must still be able to redeem.
 
 To convert between the two units anywhere in your UI:
 
@@ -449,7 +475,7 @@ this for you.
 | `0x2aab8ce8` | `NothingInCooldown()` | `unstake()` with nothing pending. | The user must call `initiateUnstake` first. |
 | `0x45be0a26` | `InsufficientStake(requested, staked)` | Withdrawing more than is staked. | Cap the input at `stakedOf`. |
 | `0x1f2a2005` | `ZeroAmount()` | An amount of zero. | Validate before sending. |
-| `0xf480e285` | `CapExceeded(supplyAfter, cap)` | The mint — or the quote for it — would exceed the total supply limit. | Cap the input at `cap() - totalSupply()`. `quoteMint` raises this too, so it surfaces while typing rather than on submit. |
+| `0xf480e285` | `CapExceeded(supplyAfter, cap)` | The mint — or the quote for it — would exceed the supply limit. | Cap the input at `remainingCap()`. `quoteMint` raises this too, so it surfaces while typing rather than on submit. When `remainingCap()` is `0` there is no amount that works — minting is closed; see §"When minting is closed". |
 
 ### Errors that mean the system is closed, not the user
 
@@ -495,7 +521,9 @@ IAIVault.quoteMintForA0G(uint256 a0GAmount)      -> (uint256 d)                 
 IAIVault.quoteBurn(address minter, uint256 b)    -> (uint256 unlocked0G, uint256 a0GOut) // reverts past the position
 IAIVault.positionOf(address account)             -> (uint256 locked0G, uint256 iaiOutstanding, uint256 avgRate)  // ARRAY
 IAIVault.exchangeRate()                          -> uint256          // 0G per a0G, 1e18-scaled
-IAIVault.cap()                                   -> uint256
+IAIVault.cap()                                   -> uint256          // adjustable; read it, do not hard-code
+IAIVault.remainingCap()                          -> uint256          // headroom; 0 = minting closed
+IAIVault.curve()                                 -> address          // the pricing contract in force
 IAI.balanceOf(address) / totalSupply()           -> uint256
 CreditRegistry.stakedOf(address)                 -> uint256
 CreditRegistry.stakedInfoOf(address)             -> StakedInfo       // OBJECT: .amountStaked .coolDownAmount .coolDownEnd

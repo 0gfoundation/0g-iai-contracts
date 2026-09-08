@@ -5,17 +5,11 @@ import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 
 /**
  * @title IIAI
- * @notice The iAI token: a plain, freely transferable ERC-20 with a hard supply cap
+ * @notice The iAI token: a plain, freely transferable ERC-20; the supply ceiling is the vault's
  *         whose issuance is controlled entirely by the vault.
  */
 interface IIAI is IERC20 {
-    /// @notice A mint would push total supply past the immutable cap.
-    error CapExceeded(uint256 attempted, uint256 cap);
-    /// @notice Cap must be non-zero.
-    error ZeroCap();
 
-    /// @notice Hard supply ceiling, written once at initialization.
-    function cap() external view returns (uint256);
 
     /// @notice Role held only by the vault; there is no other issuance path.
     function MINTER_BURNER_ROLE() external view returns (bytes32);
@@ -23,7 +17,7 @@ interface IIAI is IERC20 {
     /**
      * @notice Issues new iAI. `MINTER_BURNER_ROLE`.
      * @param to     Recipient of the newly minted tokens.
-     * @param amount Amount to mint, in wei-iAI. Reverts if it would breach `cap`.
+     * @param amount Amount to mint, in wei-iAI. The supply ceiling is enforced by the vault, not here.
      */
     function mint(address to, uint256 amount) external;
 

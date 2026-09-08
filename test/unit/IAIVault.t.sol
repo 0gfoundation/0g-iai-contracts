@@ -9,17 +9,21 @@ import {IAccessControl} from "@openzeppelin/contracts/access/IAccessControl.sol"
 import {PausableUpgradeable} from "@openzeppelin/contracts-upgradeable/utils/PausableUpgradeable.sol";
 import {BeaconProxy} from "@openzeppelin/contracts/proxy/beacon/BeaconProxy.sol";
 import {UpgradeableBeacon} from "@openzeppelin/contracts/proxy/beacon/UpgradeableBeacon.sol";
+import {LinearMintCurve} from "../../src/curves/LinearMintCurve.sol";
 
 contract IAIVaultTest is BaseTest {
     // -------------------------------------------------------------------------
     // Initialization
     // -------------------------------------------------------------------------
 
-    function test_Initialize_DerivesCurveConstants() public view {
-        assertEq(vault.slope(), SLOPE, "slope must be derived, never supplied");
-        assertEq(vault.r0(), R0);
-        assertEq(vault.cap(), CAP);
-        assertEq(vault.target(), TARGET);
+    function test_Initialize_WiresTheCurveAndTheCap() public view {
+        // Pricing lives in the curve now; the vault only records which one is in force.
+        assertEq(address(vault.curve()), address(mintCurve), "the vault points at the deployed curve");
+        assertEq(mintCurve.slope(), SLOPE, "slope must be derived, never supplied");
+        assertEq(mintCurve.r0(), R0);
+        assertEq(mintCurve.target(), TARGET);
+        assertEq(vault.cap(), CAP, "the cap is the vault's own, and adjustable");
+        assertEq(vault.remainingCap(), CAP, "nothing minted yet");
         assertEq(address(vault.oracle()), address(oracle), "oracle cached from a0G");
         assertEq(vault.foundation(), foundation);
     }
@@ -63,9 +67,8 @@ contract IAIVaultTest is BaseTest {
             iai: iai_,
             a0G: a0G_,
             foundation: foundation_,
-            r0: R0,
-            cap: CAP,
-            target: TARGET
+            curve: address(mintCurve),
+            cap: CAP
         });
     }
 
@@ -484,9 +487,8 @@ contract IAIVaultTest is BaseTest {
         vault.harvest();
 
         assertEq(_sumLocked(_actors()), vault.totalLocked0G(), "A: positions sum to the total");
-        assertGe(vault.totalLocked0G(), vault.lockedAt(vault.supply()), "B: total covers the curve");
         assertEq(vault.supply(), iai.totalSupply(), "D: supply counters agree");
-        assertLe(vault.supply(), CAP, "D: cap respected");
+        assertLe(vault.supply(), vault.cap(), "D: cap respected");
         _assertSolvent(); // C
     }
 
@@ -500,9 +502,12 @@ contract IAIVaultTest is BaseTest {
         _burnFor(alice, 4_000e18);
         _mintFor(carol, 4_000e18);
 
+        // Asked of the concrete curve, not of the vault: "what would this curve have locked"
+        // is a question about one curve's shape, and the vault no longer answers it because
+        // after a swap it would be a counterfactual about mints that curve never priced.
         assertGt(
             vault.totalLocked0G(),
-            vault.lockedAt(vault.supply()),
+            LinearMintCurve(address(vault.curve())).lockedAt(vault.supply()),
             "aggregate collateral ratchets above the curve after churn"
         );
     }

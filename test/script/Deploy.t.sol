@@ -75,13 +75,15 @@ contract DeployScriptTest is Test {
         assertEq(vm.parseJsonAddress(json, ".A0G"), mockA0G, "A0G points at the deployed mock");
         assertTrue(vm.parseJsonAddress(json, ".MockA0GOracle") != address(0), "mock oracle preserved");
 
-        IAI token = IAI(tokenAddr);
         IAIVault vault = IAIVault(vaultAddr);
 
-        // The recorded slope must match what the vault actually derived.
-        assertEq(vm.parseJsonUint(json, ".Slope"), vault.slope(), "recorded slope matches the chain");
+        // The active curve must be recorded both as `MintCurve` and under its own kind, so a
+        // record can hold several deployed curves and still say which one is pricing.
+        address recordedCurve = vm.parseJsonAddress(json, ".MintCurve");
+        assertEq(recordedCurve, address(vault.curve()), "recorded curve matches the chain");
+        assertEq(vm.parseJsonAddress(json, ".LinearMintCurve"), recordedCurve, "recorded under its kind");
+        assertEq(vm.parseJsonString(json, ".MintCurveKind"), "LinearMintCurve");
         assertEq(vm.parseJsonUint(json, ".Cap"), vault.cap(), "inputs echoed back intact");
-        assertEq(token.cap(), vault.cap());
 
         // A deployment that arrives open would be a launch incident.
         assertTrue(vault.paused(), "vault must arrive paused");
@@ -101,6 +103,45 @@ contract DeployScriptTest is Test {
         string memory json2 = vm.readFile(file);
         assertEq(vm.parseJsonAddress(json2, ".MockA0G"), mockA0G, "rerun keeps the mock");
         assertEq(vm.parseJsonUint(json2, ".MockApr"), 36.5e18, "rerun keeps the parameters");
+    }
+
+    /**
+     * @dev Rerunning the mock script on a network that already has one must reuse it. This is
+     *      the single most destructive thing in the deployment scripts if it is wrong, and it
+     *      is invisible when it goes wrong: an unconditional redeploy leaves every balance
+     *      ever minted sitting in the old collateral token while the newly deployed system
+     *      points at a fresh, empty one. Nothing reverts. On the testnet, where fifty funded
+     *      accounts hold their a0G in that contract, it is total and silent loss.
+     *
+     *      Redeploying the *system* against the same collateral is a supported operation --
+     *      it is how the testnet gets a rebuilt vault without re-funding the accounts -- so
+     *      this asserts the address is unchanged and that a real balance survived it.
+     */
+    function test_MockScript_ReusesTheCollateralItAlreadyDeployed() public {
+        _bootstrap("mock-idempotent");
+        _MockScript().run();
+
+        string memory json = vm.readFile(file);
+        address mockA0G = vm.parseJsonAddress(json, ".MockA0G");
+        address mockOracle = vm.parseJsonAddress(json, ".MockA0GOracle");
+
+        // Someone holds collateral in it, the way the funded test accounts do.
+        address holder = makeAddr("funded account");
+        MockA0G(mockA0G).mint(holder, 400_000e18);
+
+        _MockScript().run();
+
+        string memory json2 = vm.readFile(file);
+        assertEq(vm.parseJsonAddress(json2, ".MockA0G"), mockA0G, "the collateral token was reused");
+        assertEq(vm.parseJsonAddress(json2, ".MockA0GOracle"), mockOracle, "and so was its oracle");
+        assertEq(vm.parseJsonAddress(json2, ".A0G"), mockA0G, "the system still points at it");
+        assertEq(MockA0G(mockA0G).balanceOf(holder), 400_000e18, "the balance was not orphaned");
+
+        // And the system deploys fresh against that same collateral.
+        _IAIScript().run();
+        assertEq(
+            vm.parseJsonAddress(vm.readFile(file), ".A0G"), mockA0G, "redeployed against the same a0G"
+        );
     }
 
     function test_Scripts_ProduceASystemThatActuallyWorks() public {

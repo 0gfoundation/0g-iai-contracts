@@ -11,7 +11,8 @@ import {IAIVault} from "../../src/IAIVault.sol";
 import {CreditRegistry} from "../../src/CreditRegistry.sol";
 import {IIAIVault} from "../../src/interfaces/IIAIVault.sol";
 import {IA0G} from "../../src/interfaces/external/IA0G.sol";
-import {MintCurve} from "../../src/libraries/MintCurve.sol";
+import {IMintCurve} from "../../src/interfaces/IMintCurve.sol";
+import {LinearMintCurve} from "../../src/curves/LinearMintCurve.sol";
 
 /**
  * @title IAIDeployer
@@ -32,13 +33,15 @@ import {MintCurve} from "../../src/libraries/MintCurve.sol";
 abstract contract IAIDeployer {
     /// @param a0G              Collateral token. The live a0G on mainnet, a mock elsewhere.
     /// @param foundation       Recipient of harvested yield.
-    /// @param r0               Marginal price at supply zero, 0G per iAI.
-    /// @param cap              Hard supply ceiling, wei-iAI.
-    /// @param target           Total 0G locked at full supply; fixes the slope.
+    /// @param curveKind        Which curve to deploy. Only `"LinearMintCurve"` exists today.
+    /// @param r0               Linear curve: marginal price at supply zero, 0G per iAI.
+    /// @param cap              Starting supply ceiling, wei-iAI. Adjustable after launch.
+    /// @param target           Linear curve: 0G locked at `cap`; fixes the slope.
     /// @param cooldownDuration Withdrawal delay in the credit registry.
     struct Config {
         address a0G;
         address foundation;
+        string curveKind;
         uint256 r0;
         uint256 cap;
         uint256 target;
@@ -67,7 +70,7 @@ abstract contract IAIDeployer {
         address registry;
         address registryImpl;
         address registryBeacon;
-        uint256 slope;
+        address curve;
     }
 
     /**
@@ -113,8 +116,12 @@ abstract contract IAIDeployer {
         d.iaiImpl = address(new IAI());
         d.iaiBeacon = address(new UpgradeableBeacon(d.iaiImpl, beaconOwner));
         d.iai = address(
-            new BeaconProxy(d.iaiBeacon, abi.encodeCall(IAI.initialize, (c.name, c.symbol, c.cap)))
+            new BeaconProxy(d.iaiBeacon, abi.encodeCall(IAI.initialize, (c.name, c.symbol)))
         );
+
+        // Before the vault: the curve is a constructor argument, and it is an immutable value
+        // rather than a proxy, so there is nothing to point at it afterwards.
+        d.curve = address(_deployCurve(c));
 
         d.vaultImpl = address(new IAIVault());
         d.vaultBeacon = address(new UpgradeableBeacon(d.vaultImpl, beaconOwner));
@@ -128,9 +135,8 @@ abstract contract IAIDeployer {
                             iai: d.iai,
                             a0G: c.a0G,
                             foundation: c.foundation,
-                            r0: c.r0,
-                            cap: c.cap,
-                            target: c.target
+                            curve: d.curve,
+                            cap: c.cap
                         })
                     )
                 )
@@ -155,7 +161,6 @@ abstract contract IAIDeployer {
         IAIVault(d.vault).grantRole(IAIVault(d.vault).PAUSER_ROLE(), operator);
         CreditRegistry(d.registry).grantRole(CreditRegistry(d.registry).PAUSER_ROLE(), operator);
 
-        d.slope = IAIVault(d.vault).slope();
         _assertDeploymentSane(c, d, operator);
     }
 
@@ -204,23 +209,48 @@ abstract contract IAIDeployer {
         _assertHasCode(d.registryImpl, "CreditRegistryImpl");
         _assertHasCode(d.registryBeacon, "CreditRegistryBeacon");
         _assertHasCode(c.a0G, "A0G");
+        _assertHasCode(d.curve, "MintCurve");
 
         IAI token = IAI(d.iai);
         IAIVault vault_ = IAIVault(d.vault);
         CreditRegistry registry_ = CreditRegistry(d.registry);
 
         require(token.hasRole(token.MINTER_BURNER_ROLE(), d.vault), "vault cannot mint");
-        require(token.cap() == c.cap, "cap mismatch");
         require(address(vault_.iai()) == d.iai, "vault points at the wrong token");
         require(address(vault_.a0G()) == c.a0G, "vault points at the wrong collateral");
         require(address(vault_.oracle()) == address(IA0G(c.a0G).oracle()), "oracle not cached");
         require(address(registry_.iai()) == d.iai, "registry points at the wrong token");
 
-        // The slope must be the derived one, not anything a caller supplied.
-        require(vault_.slope() == MintCurve.deriveSlope(c.r0, c.cap, c.target), "slope not derived");
-        // Full supply must lock the intended collateral, up to the flooring of the slope.
-        uint256 atCap = vault_.lockedAt(c.cap);
-        require(atCap <= c.target && c.target - atCap < 1e12, "curve does not reach the target");
+        require(address(vault_.curve()) == d.curve, "vault points at the wrong curve");
+        require(vault_.cap() == c.cap, "cap mismatch");
+
+        // The vault must actually route to the curve it names. This is not a tautology: it
+        // catches an implementation whose pricing ignores the advertised curve. Whether the
+        // curve's own maths is right is settled by the conformance suite and golden vectors,
+        // not here.
+        //
+        // Skipped once the cap is reached or has been lowered below the supply -- `quoteMint`
+        // reverts there by design, and this check must not make `run.sh check` unusable in
+        // exactly the state an operator most needs to inspect.
+        uint256 headroom = vault_.remainingCap();
+        if (headroom != 0) {
+            uint256 probe = headroom < 1e18 ? headroom : 1e18;
+            (uint256 quoted,) = vault_.quoteMint(probe);
+            require(quoted == IMintCurve(d.curve).cost(vault_.supply(), probe), "vault prices off its curve");
+        }
+    }
+
+    /**
+     * @param c Deployment parameters, including which curve to build.
+     * @return The deployed curve.
+     * @dev Named rather than positional so a deployment record says which curve it is running,
+     *      and so a future curve arrives without disturbing this one.
+     */
+    function _deployCurve(Config memory c) internal returns (IMintCurve) {
+        if (keccak256(bytes(c.curveKind)) == keccak256(bytes("LinearMintCurve"))) {
+            return new LinearMintCurve(c.r0, c.cap, c.target);
+        }
+        revert(string.concat("unknown curve kind: ", c.curveKind));
     }
 
     /**
