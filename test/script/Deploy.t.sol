@@ -227,6 +227,37 @@ contract DeployScriptTest is Test {
         assertEq(history[1], second);
     }
 
+    /**
+     * @dev A record written before `MintCurveHistory` existed still names a curve. Appending
+     *      only the newcomer would lose that incumbent the moment `setCurve` moves `MintCurve`
+     *      off it, leaving its address nowhere in the record -- and positions it priced are
+     *      still open, so reconciling them needs it.
+     *
+     *      This is not hypothetical: it happened on the testnet, whose record predates the
+     *      list, and the first swap dropped the curve that had priced the only live position.
+     */
+    function test_DeployCurve_AdoptsAnIncumbentThatPredatesTheHistoryList() public {
+        _bootstrap("curve-history-backfill");
+        _MockScript().run();
+        _IAIScript().run();
+
+        // The older record shape: an incumbent curve and no history to speak of. A missing
+        // key and an empty list reach the same branch, and the missing key is already covered
+        // by every fresh deployment in this file, so the list is emptied here rather than
+        // deleted -- Foundry has no cheatcode that removes a key.
+        address incumbent = vm.parseJsonAddress(vm.readFile(file), ".MintCurve");
+        vm.writeJson("[]", file, ".MintCurveHistory");
+        assertEq(vm.parseJsonAddressArray(vm.readFile(file), ".MintCurveHistory").length, 0);
+
+        _IAIScript().setCap(CAP * 2); // makes the next curve a distinct contract
+        _IAIScript().deployCurve("LinearMintCurve");
+
+        address[] memory history = vm.parseJsonAddressArray(vm.readFile(file), ".MintCurveHistory");
+        assertEq(history.length, 2, "the incumbent was adopted, not dropped");
+        assertEq(history[0], incumbent, "and it comes first");
+        assertEq(history[1], vm.parseJsonAddress(vm.readFile(file), ".LinearMintCurve"));
+    }
+
     function test_Scripts_ProduceASystemThatActuallyWorks() public {
         _bootstrap("works");
         _MockScript().run();

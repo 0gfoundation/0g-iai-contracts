@@ -196,7 +196,7 @@ contract IAIScript is Script, JsonUtils, Constants, IAIDeployer {
     /**
      * @param json     The record as it stands.
      * @param deployed The curve just deployed.
-     * @return next Every curve this record has ever named, with `deployed` appended.
+     * @return Every curve this record has ever named, with `deployed` appended.
      *
      * @dev The kind key holds only the newest curve of its kind, and `MintCurve` only the
      *      active one, so without this a redeploy of the same kind would drop an address that
@@ -206,23 +206,44 @@ contract IAIScript is Script, JsonUtils, Constants, IAIDeployer {
     function _appendCurve(string memory json, address deployed)
         private
         pure
-        returns (address[] memory next)
+        returns (address[] memory)
     {
-        address[] memory previous;
+        address[] memory history;
         try vm.parseJsonAddressArray(json, ".MintCurveHistory") returns (address[] memory a) {
-            previous = a;
+            history = a;
         } catch {
-            previous = new address[](0);
-        }
-        for (uint256 i = 0; i < previous.length; i++) {
-            if (previous[i] == deployed) return previous; // re-running a script, not a new curve
+            history = new address[](0);
         }
 
-        next = new address[](previous.length + 1);
-        for (uint256 i = 0; i < previous.length; i++) {
-            next[i] = previous[i];
+        // A record written before this list existed has an incumbent curve and no history.
+        // Appending only the newcomer would drop the incumbent the moment `setCurve` moves
+        // `MintCurve` off it -- and that curve priced positions that are still open, so its
+        // address is still needed to reconcile them. Adopt it before appending.
+        if (history.length == 0) {
+            try vm.parseJsonAddress(json, ".MintCurve") returns (address incumbent) {
+                if (incumbent != address(0)) history = _append(history, incumbent);
+            } catch {}
         }
-        next[previous.length] = deployed;
+
+        return _append(history, deployed);
+    }
+
+    /**
+     * @param list  Addresses recorded so far.
+     * @param entry Address to add.
+     * @return The list with `entry` at the end, or unchanged if it is already present --
+     *         re-running a script must not record the same curve twice.
+     */
+    function _append(address[] memory list, address entry) private pure returns (address[] memory) {
+        for (uint256 i = 0; i < list.length; i++) {
+            if (list[i] == entry) return list;
+        }
+        address[] memory next = new address[](list.length + 1);
+        for (uint256 i = 0; i < list.length; i++) {
+            next[i] = list[i];
+        }
+        next[list.length] = entry;
+        return next;
     }
 
     /**
