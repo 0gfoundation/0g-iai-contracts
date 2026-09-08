@@ -90,6 +90,7 @@ contract LinearCurveMathTest is Test {
      */
     function testFuzz_DeriveSlopeAndLockedAtAreInverses(uint256 r0, uint256 cap, uint256 target)
         public
+        view
     {
         cap = bound(cap, 1e15, 2 ** 100);
         r0 = bound(r0, 0, 1e25);
