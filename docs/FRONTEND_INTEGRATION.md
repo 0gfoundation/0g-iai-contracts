@@ -396,7 +396,7 @@ CreditRegistry.cooldownDuration() view returns (uint256)
 | `amountStaked` | Currently earning. Same value as `stakedOf`. | 18 decimals |
 | `coolDownAmount` | Withdrawing; **not** earning. | 18 decimals |
 | `coolDownEnd` | Unix timestamp in **seconds** at which `unstake()` becomes callable. `0` if nothing is cooling down. | `new Date(Number(coolDownEnd) * 1000)` — multiply by 1000 for JavaScript |
-| `cooldownDuration` | The delay, in **seconds**. Typically `86400` (1 day). | `Number(x) / 86400` for days |
+| `cooldownDuration` | The delay, in **seconds**. Read it; do not assume a value. Mainnet is `86400` (1 day), but the Galileo testnet runs `300` (5 minutes) so integration does not take a day per attempt, and governance can change it on either. | Format from the seconds you read — a hardcoded `/ 86400` renders the testnet's 5 minutes as "0 days" |
 
 ```ts
 const canUnstake =
