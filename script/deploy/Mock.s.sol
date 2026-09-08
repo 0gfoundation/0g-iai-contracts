@@ -29,6 +29,19 @@ contract MockScript is Script, JsonUtils, Constants, IAIDeployer {
         address deployer = vm.addr(pk);
 
         (string memory json, string memory path) = loadOrInitJson("iai");
+
+        // Reuse whatever is already there. Redeploying over a live mock would strand every
+        // balance ever minted from it: the tokens stay in the old contract while the system
+        // starts pointing at a new one, and nothing errors. On a testnet with funded test
+        // accounts that is silent, total loss of their collateral.
+        address existing = _recordedAddress(json, ".MockA0G");
+        if (existing != address(0) && existing.code.length != 0) {
+            console.log("network        ", networkName());
+            console.log("MockA0G        ", existing, "(already deployed, reusing)");
+            console.log("MockA0GOracle  ", address(MockA0G(existing).oracle()));
+            return;
+        }
+
         uint256 initialValue = _uintOr(json, ".MockInitialValue", 1e18);
         uint256 apr = _uintOr(json, ".MockApr", 36.5e18); // ~10%/day, so accrual is visible
         uint256 maxAge = _uintOr(json, ".MockOracleMaxAge", 21 days);
@@ -53,6 +66,19 @@ contract MockScript is Script, JsonUtils, Constants, IAIDeployer {
         // The vault reads its collateral from `A0G`; point it at what was just deployed.
         string memory finalJson = vm.serializeAddress(obj, "A0G", address(a0g));
         vm.writeJson(finalJson, path);
+    }
+
+    /**
+     * @param json The deployment record.
+     * @param key  Path to an address.
+     * @return The recorded address, or zero when the key is absent.
+     */
+    function _recordedAddress(string memory json, string memory key) private pure returns (address) {
+        try vm.parseJsonAddress(json, key) returns (address v) {
+            return v;
+        } catch {
+            return address(0);
+        }
     }
 
     function _uintOr(string memory json, string memory key, uint256 fallbackValue)

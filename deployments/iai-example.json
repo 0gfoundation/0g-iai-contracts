@@ -7,9 +7,15 @@
   "BeaconOwner": "0x0000000000000000000000000000000000000000",
   "Name": "Infinite AI",
   "Symbol": "iAI",
-  "R0": "4330000000000000000000",
+  "MintCurveKind": "LinearMintCurve",
+  "CurveParams": {
+    "LinearMintCurve": {
+      "R0": "4330000000000000000000",
+      "AnchorCap": "9270000000000000000000",
+      "Target": "127000000000000000000000000"
+    }
+  },
   "Cap": "9270000000000000000000",
-  "Target": "127000000000000000000000000",
   "CooldownDuration": "86400",
   "MockInitialValue": "1000000000000000000",
   "MockApr": "36500000000000000000",

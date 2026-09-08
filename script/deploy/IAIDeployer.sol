@@ -11,7 +11,8 @@ import {IAIVault} from "../../src/IAIVault.sol";
 import {CreditRegistry} from "../../src/CreditRegistry.sol";
 import {IIAIVault} from "../../src/interfaces/IIAIVault.sol";
 import {IA0G} from "../../src/interfaces/external/IA0G.sol";
-import {MintCurve} from "../../src/libraries/MintCurve.sol";
+import {IMintCurve} from "../../src/interfaces/IMintCurve.sol";
+import {LinearMintCurve} from "../../src/curves/LinearMintCurve.sol";
 
 /**
  * @title IAIDeployer
@@ -32,19 +33,37 @@ import {MintCurve} from "../../src/libraries/MintCurve.sol";
 abstract contract IAIDeployer {
     /// @param a0G              Collateral token. The live a0G on mainnet, a mock elsewhere.
     /// @param foundation       Recipient of harvested yield.
-    /// @param r0               Marginal price at supply zero, 0G per iAI.
-    /// @param cap              Hard supply ceiling, wei-iAI.
-    /// @param target           Total 0G locked at full supply; fixes the slope.
+    /// @param curveKind        Which curve to deploy. Only `"LinearMintCurve"` exists today.
+    /// @param cap              Starting supply ceiling, wei-iAI. Adjustable after launch.
     /// @param cooldownDuration Withdrawal delay in the credit registry.
     struct Config {
         address a0G;
         address foundation;
-        uint256 r0;
+        string curveKind;
         uint256 cap;
-        uint256 target;
         uint256 cooldownDuration;
         string name;
         string symbol;
+    }
+
+    /// @param r0        Marginal price at supply zero, 0G per iAI.
+    /// @param anchorCap The supply the slope is derived against, wei-iAI. **Not the vault's
+    ///                  cap**, even though a fresh deployment sets both from the same number.
+    ///                  The vault's cap is adjustable and drifts away; this one is burned into
+    ///                  the curve at construction and records only how the slope was reached.
+    ///                  Feeding a moved cap in here derives a different curve from the same
+    ///                  published `r0` and `target`, and every number involved still looks
+    ///                  plausible.
+    /// @param target    0G the curve accounts for at `anchorCap`; together with `r0` and
+    ///                  `anchorCap` this fixes the slope.
+    ///
+    /// @dev Parameters belong to a curve, not to a deployment. This struct is
+    ///      `LinearMintCurve`'s; a differently shaped curve brings its own rather than
+    ///      widening this one, which is what keeps adding a curve additive.
+    struct LinearCurveParams {
+        uint256 r0;
+        uint256 anchorCap;
+        uint256 target;
     }
 
     /// @param initialValue Starting exchange rate, 0G per a0G scaled by 1e18.
@@ -67,7 +86,7 @@ abstract contract IAIDeployer {
         address registry;
         address registryImpl;
         address registryBeacon;
-        uint256 slope;
+        address curve;
     }
 
     /**
@@ -106,15 +125,23 @@ abstract contract IAIDeployer {
      *      records as admin. Reading `msg.sender` here would grant `PAUSER_ROLE` to an
      *      address that holds nothing and leave the real admin without it.
      */
-    function _deployIAISystem(Config memory c, address operator, address beaconOwner)
-        internal
-        returns (Deployment memory d)
-    {
+    function _deployIAISystem(
+        Config memory c,
+        IMintCurve curve,
+        address operator,
+        address beaconOwner
+    ) internal returns (Deployment memory d) {
         d.iaiImpl = address(new IAI());
         d.iaiBeacon = address(new UpgradeableBeacon(d.iaiImpl, beaconOwner));
         d.iai = address(
-            new BeaconProxy(d.iaiBeacon, abi.encodeCall(IAI.initialize, (c.name, c.symbol, c.cap)))
+            new BeaconProxy(d.iaiBeacon, abi.encodeCall(IAI.initialize, (c.name, c.symbol)))
         );
+
+        // Deployed by the caller, because only the caller knows what shape of curve it is
+        // building. It has to exist before the vault either way: the vault takes it as an
+        // initializer argument, and it is an immutable value rather than a proxy, so there is
+        // nothing to point at it afterwards.
+        d.curve = address(curve);
 
         d.vaultImpl = address(new IAIVault());
         d.vaultBeacon = address(new UpgradeableBeacon(d.vaultImpl, beaconOwner));
@@ -128,9 +155,8 @@ abstract contract IAIDeployer {
                             iai: d.iai,
                             a0G: c.a0G,
                             foundation: c.foundation,
-                            r0: c.r0,
-                            cap: c.cap,
-                            target: c.target
+                            curve: d.curve,
+                            cap: c.cap
                         })
                     )
                 )
@@ -155,7 +181,6 @@ abstract contract IAIDeployer {
         IAIVault(d.vault).grantRole(IAIVault(d.vault).PAUSER_ROLE(), operator);
         CreditRegistry(d.registry).grantRole(CreditRegistry(d.registry).PAUSER_ROLE(), operator);
 
-        d.slope = IAIVault(d.vault).slope();
         _assertDeploymentSane(c, d, operator);
     }
 
@@ -204,23 +229,50 @@ abstract contract IAIDeployer {
         _assertHasCode(d.registryImpl, "CreditRegistryImpl");
         _assertHasCode(d.registryBeacon, "CreditRegistryBeacon");
         _assertHasCode(c.a0G, "A0G");
+        _assertHasCode(d.curve, "MintCurve");
 
         IAI token = IAI(d.iai);
         IAIVault vault_ = IAIVault(d.vault);
         CreditRegistry registry_ = CreditRegistry(d.registry);
 
         require(token.hasRole(token.MINTER_BURNER_ROLE(), d.vault), "vault cannot mint");
-        require(token.cap() == c.cap, "cap mismatch");
         require(address(vault_.iai()) == d.iai, "vault points at the wrong token");
         require(address(vault_.a0G()) == c.a0G, "vault points at the wrong collateral");
         require(address(vault_.oracle()) == address(IA0G(c.a0G).oracle()), "oracle not cached");
         require(address(registry_.iai()) == d.iai, "registry points at the wrong token");
 
-        // The slope must be the derived one, not anything a caller supplied.
-        require(vault_.slope() == MintCurve.deriveSlope(c.r0, c.cap, c.target), "slope not derived");
-        // Full supply must lock the intended collateral, up to the flooring of the slope.
-        uint256 atCap = vault_.lockedAt(c.cap);
-        require(atCap <= c.target && c.target - atCap < 1e12, "curve does not reach the target");
+        require(address(vault_.curve()) == d.curve, "vault points at the wrong curve");
+        require(vault_.cap() == c.cap, "cap mismatch");
+
+        // The vault must actually route to the curve it names. This is not a tautology: it
+        // catches an implementation whose pricing ignores the advertised curve. Whether the
+        // curve's own maths is right is settled by the conformance suite and golden vectors,
+        // not here.
+        //
+        // Skipped once the cap is reached or has been lowered below the supply -- `quoteMint`
+        // reverts there by design, and this check must not make `run.sh check` unusable in
+        // exactly the state an operator most needs to inspect.
+        uint256 headroom = vault_.remainingCap();
+        if (headroom != 0) {
+            uint256 probe = headroom < 1e18 ? headroom : 1e18;
+            (uint256 quoted,) = vault_.quoteMint(probe);
+            require(quoted == IMintCurve(d.curve).cost(vault_.supply(), probe), "vault prices off its curve");
+        }
+    }
+
+    /**
+     * @param p The curve's own parameters.
+     * @return The deployed curve.
+     *
+     * @dev One typed function per curve kind, rather than one function switching on a name.
+     *      A name-switched deployer has to accept the union of every curve's parameters, so
+     *      each new curve widens a struct every other curve then carries fields it has no use
+     *      for — and a caller that fills in the wrong subset gets a curve that constructs
+     *      cleanly and prices differently. A second curve adds `_deployExponentialCurve` beside
+     *      this one and touches nothing here.
+     */
+    function _deployLinearCurve(LinearCurveParams memory p) internal returns (IMintCurve) {
+        return new LinearMintCurve(p.r0, p.anchorCap, p.target);
     }
 
     /**

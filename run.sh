@@ -9,6 +9,10 @@
 #   ./run.sh unpause      open issuance
 #   ./run.sh pause        close issuance
 #   ./run.sh harvest      sweep accrued yield to the foundation
+#   ./run.sh deployCurve <Kind>   deploy a curve and record it under its kind name
+#   ./run.sh setCurve <Kind>      point the vault at a previously deployed curve
+#   ./run.sh setCap <amount>      move the supply ceiling (wei-iAI; below the live supply
+#                                 closes issuance and leaves redemption open)
 set -euo pipefail
 cd "$(dirname "$0")"
 
@@ -49,5 +53,18 @@ case "${1:-deploy}" in
   unpause)  send script/deploy/IAI.s.sol --sig "unpause()" ;;
   pause)    send script/deploy/IAI.s.sol --sig "pause()" ;;
   harvest)  send script/deploy/IAI.s.sol --sig "harvest()" ;;
+  deployCurve)
+    [ $# -eq 2 ] || { echo "usage: ./run.sh deployCurve <Kind>   e.g. LinearMintCurve"; exit 1; }
+    send script/deploy/IAI.s.sol --sig "deployCurve(string)" "$2"
+    ;;
+  setCurve)
+    [ $# -eq 2 ] || { echo "usage: ./run.sh setCurve <Kind>   e.g. LinearMintCurve"; exit 1; }
+    send script/deploy/IAI.s.sol --sig "setCurve(string)" "$2"
+    read_only script/deploy/IAI.s.sol --sig "checkDeployment()"
+    ;;
+  setCap)
+    [ $# -eq 2 ] || { echo "usage: ./run.sh setCap <amount in wei-iAI>"; exit 1; }
+    send script/deploy/IAI.s.sol --sig "setCap(uint256)" "$2"
+    ;;
   *) echo "unknown command: $1"; sed -n '2,12p' "$0"; exit 1 ;;
 esac

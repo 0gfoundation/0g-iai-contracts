@@ -3,6 +3,7 @@ pragma solidity 0.8.25;
 
 import {IA0G} from "./external/IA0G.sol";
 import {IA0GOracle} from "./external/IA0GOracle.sol";
+import {IMintCurve} from "./IMintCurve.sol";
 import {IIAI} from "./IIAI.sol";
 
 /**
@@ -29,17 +30,15 @@ interface IIAIVault {
      * @param iai        The iAI token. The vault must hold its minter/burner role.
      * @param a0G        Collateral token.
      * @param foundation Recipient of harvested yield.
-     * @param r0         Marginal price at supply zero, 0G per iAI.
-     * @param cap        Hard supply ceiling, wei-iAI.
-     * @param target     Total 0G locked at full supply. Fixes `slope` by construction.
+     * @param curve      Pricing curve to start with. Swappable afterwards via `setCurve`.
+     * @param cap         Starting supply ceiling, wei-iAI. Adjustable afterwards via `setCap`.
      */
     struct InitParams {
         address iai;
         address a0G;
         address foundation;
-        uint256 r0;
+        address curve;
         uint256 cap;
-        uint256 target;
     }
 
     error ZeroAddress();
@@ -56,6 +55,14 @@ interface IIAIVault {
     error ExcessiveInput(uint256 required, uint256 maxAccepted);
     /// @notice Caller holds no redeemable position, or asked to redeem more than it holds.
     error BurnExceedsPosition(uint256 requested, uint256 outstanding);
+    /// @notice A curve address with no code behind it. Installing it would kill issuance.
+    error NotAContract(address target);
+    /**
+     * @notice The cap would sit above the supply the curve's arithmetic is proven at.
+     * @dev `bound` is the lower of the curve's own `maxSafeSupply()` and the vault's hard
+     *      limit, so a curve reporting an absurd domain cannot widen it.
+     */
+    error CapAboveCurveDomain(uint256 requested, uint256 bound);
 
     /// @dev Every event carries the resulting state so an indexer can rebuild the full
     ///      picture from the log stream alone, with no follow-up RPC calls, and can spot
@@ -86,6 +93,17 @@ interface IIAIVault {
     event Harvested(address indexed to, uint256 a0GSurplus, uint256 exchangeRate, uint256 totalLocked0G);
 
     event FoundationUpdated(address indexed previous, address indexed current);
+
+    /**
+     * @notice The pricing curve was replaced. Everything already minted keeps its own price.
+     * @dev Only the addresses: an indexer places the era boundary by block order, and
+     *      `Minted.supplyAfter` already carries the supply, so a price snapshot here would be
+     *      redundant.
+     */
+    event CurveUpdated(address indexed previous, address indexed current);
+
+    /// @notice The supply ceiling moved. Below the current supply this closes issuance.
+    event CapUpdated(uint256 previous, uint256 current);
 
     /**
      * @notice Locks a0G and mints exactly `d` iAI to the caller. Requires an a0G allowance.
@@ -122,6 +140,23 @@ interface IIAIVault {
      * @param newFoundation New recipient. Must be non-zero.
      */
     function setFoundation(address newFoundation) external;
+
+    /**
+     * @notice Replaces the pricing curve. `DEFAULT_ADMIN_ROLE`.
+     * @param newCurve The curve to install. Must hold code, and the current cap must sit
+     *                 inside its safe domain.
+     *
+     * @dev Prices only future mints. Positions already open record an absolute 0G amount and
+     *      redeem at their own average, untouched.
+     */
+    function setCurve(IMintCurve newCurve) external;
+
+    /**
+     * @notice Moves the supply ceiling. `DEFAULT_ADMIN_ROLE`.
+     * @param newCap New ceiling in wei-iAI. **May be below the current supply, and may be
+     *               zero** -- that closes issuance while leaving redemption untouched.
+     */
+    function setCap(uint256 newCap) external;
 
     // --- views ---
 
@@ -179,12 +214,15 @@ interface IIAIVault {
     function exchangeRate() external view returns (uint256);
 
     /**
-     * @notice Total 0G the curve locks at a given supply. For charts and reconciliation.
-     * @param s Supply to evaluate at, in wei-iAI.
-     * @return 0G value, in wei-0G, rounded down. Not the pricing path: minting charges the
-     *         integral between two points, which rounds up.
+     * @notice How much more iAI may still be minted.
+     * @return Headroom in wei-iAI. Zero once supply has reached or passed the cap — including
+     *         after the cap was lowered below it, where `cap - supply` would be negative.
+     *         Prefer this over computing the difference yourself.
      */
-    function lockedAt(uint256 s) external view returns (uint256);
+    function remainingCap() external view returns (uint256);
+
+    /// @return The pricing curve currently in force.
+    function curve() external view returns (IMintCurve);
 
     /**
      * @notice Collateral held beyond what the vault owes; what `harvest` would sweep.
@@ -204,24 +242,19 @@ interface IIAIVault {
     /// @return Current recipient of harvested yield.
     function foundation() external view returns (address);
 
-    /// @return Marginal price at supply zero, in wei-0G per iAI.
-    function r0() external view returns (uint256);
-
-    /// @return Rise of the marginal price per unit of supply, scaled by 1e18. Derived at
-    ///         initialization from `r0`, `cap` and `target`; never supplied directly.
-    function slope() external view returns (uint256);
-
-    /// @return Hard supply ceiling, in wei-iAI.
+    /// @return Current supply ceiling, in wei-iAI. Governance-adjustable, so read it rather
+    ///         than assuming the value a deployment started with.
     function cap() external view returns (uint256);
-
-    /// @return 0G locked once supply reaches `cap`, in wei-0G. Fixes `slope`.
-    function target() external view returns (uint256);
 
     /**
      * @notice Sum of every position's locked 0G.
-     * @dev Can exceed `target` after redemptions: a redeemer releases 0G at their average
-     *      rate while the freed supply is resold at the marginal rate, so the total ratchets
-     *      upward. Never assert it against `target`.
+     * @dev **This is the collateral the vault actually holds claims against** -- the sum of
+     *      what was really collected, not what any curve says it should have been. After a
+     *      curve swap those two diverge, and only this figure is a fact about the system.
+     *
+     *      It ratchets upward under churn: a redeemer releases 0G at their own average while
+     *      the freed supply is resold at the marginal rate. Never bound it by a curve's
+     *      target.
      * @return 0G value, in wei-0G.
      */
     function totalLocked0G() external view returns (uint256);

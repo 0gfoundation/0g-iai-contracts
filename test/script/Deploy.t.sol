@@ -9,6 +9,7 @@ import {IAI} from "../../src/IAI.sol";
 import {IAIVault} from "../../src/IAIVault.sol";
 import {CreditRegistry} from "../../src/CreditRegistry.sol";
 import {MockA0G} from "../../src/mocks/MockA0G.sol";
+import {LinearMintCurve} from "../../src/curves/LinearMintCurve.sol";
 
 /**
  * @title DeployScriptTest
@@ -25,6 +26,8 @@ import {MockA0G} from "../../src/mocks/MockA0G.sol";
 contract DeployScriptTest is Test {
     uint256 internal constant DEPLOYER_PK =
         0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80;
+
+    uint256 internal constant CAP = 9_270e18;
 
     string internal dir;
     string internal file;
@@ -75,13 +78,24 @@ contract DeployScriptTest is Test {
         assertEq(vm.parseJsonAddress(json, ".A0G"), mockA0G, "A0G points at the deployed mock");
         assertTrue(vm.parseJsonAddress(json, ".MockA0GOracle") != address(0), "mock oracle preserved");
 
-        IAI token = IAI(tokenAddr);
         IAIVault vault = IAIVault(vaultAddr);
 
-        // The recorded slope must match what the vault actually derived.
-        assertEq(vm.parseJsonUint(json, ".Slope"), vault.slope(), "recorded slope matches the chain");
+        // The active curve must be recorded both as `MintCurve` and under its own kind, so a
+        // record can hold several deployed curves and still say which one is pricing.
+        address recordedCurve = vm.parseJsonAddress(json, ".MintCurve");
+        assertEq(recordedCurve, address(vault.curve()), "recorded curve matches the chain");
+        assertEq(vm.parseJsonAddress(json, ".LinearMintCurve"), recordedCurve, "recorded under its kind");
+        assertEq(vm.parseJsonString(json, ".MintCurveKind"), "LinearMintCurve");
         assertEq(vm.parseJsonUint(json, ".Cap"), vault.cap(), "inputs echoed back intact");
-        assertEq(token.cap(), vault.cap());
+
+        // The curve's own parameters are nested under its kind, and the script rewrites the
+        // record around them without flattening or dropping them. Worth an assertion because
+        // every other key in this file is a single flat level, so a future `serializeJson`
+        // change would take the nesting out silently and `deployCurve` would stop resolving.
+        string memory at = string.concat(".CurveParams.", vm.parseJsonString(json, ".MintCurveKind"), ".");
+        assertEq(vm.parseJsonUint(json, string.concat(at, "R0")), 4_330e18);
+        assertEq(vm.parseJsonUint(json, string.concat(at, "AnchorCap")), CAP);
+        assertEq(vm.parseJsonUint(json, string.concat(at, "Target")), 127_000_000e18);
 
         // A deployment that arrives open would be a launch incident.
         assertTrue(vault.paused(), "vault must arrive paused");
@@ -101,6 +115,147 @@ contract DeployScriptTest is Test {
         string memory json2 = vm.readFile(file);
         assertEq(vm.parseJsonAddress(json2, ".MockA0G"), mockA0G, "rerun keeps the mock");
         assertEq(vm.parseJsonUint(json2, ".MockApr"), 36.5e18, "rerun keeps the parameters");
+    }
+
+    /**
+     * @dev Rerunning the mock script on a network that already has one must reuse it. This is
+     *      the single most destructive thing in the deployment scripts if it is wrong, and it
+     *      is invisible when it goes wrong: an unconditional redeploy leaves every balance
+     *      ever minted sitting in the old collateral token while the newly deployed system
+     *      points at a fresh, empty one. Nothing reverts. On the testnet, where fifty funded
+     *      accounts hold their a0G in that contract, it is total and silent loss.
+     *
+     *      Redeploying the *system* against the same collateral is a supported operation --
+     *      it is how the testnet gets a rebuilt vault without re-funding the accounts -- so
+     *      this asserts the address is unchanged and that a real balance survived it.
+     */
+    function test_MockScript_ReusesTheCollateralItAlreadyDeployed() public {
+        _bootstrap("mock-idempotent");
+        _MockScript().run();
+
+        string memory json = vm.readFile(file);
+        address mockA0G = vm.parseJsonAddress(json, ".MockA0G");
+        address mockOracle = vm.parseJsonAddress(json, ".MockA0GOracle");
+
+        // Someone holds collateral in it, the way the funded test accounts do.
+        address holder = makeAddr("funded account");
+        MockA0G(mockA0G).mint(holder, 400_000e18);
+
+        _MockScript().run();
+
+        string memory json2 = vm.readFile(file);
+        assertEq(vm.parseJsonAddress(json2, ".MockA0G"), mockA0G, "the collateral token was reused");
+        assertEq(vm.parseJsonAddress(json2, ".MockA0GOracle"), mockOracle, "and so was its oracle");
+        assertEq(vm.parseJsonAddress(json2, ".A0G"), mockA0G, "the system still points at it");
+        assertEq(MockA0G(mockA0G).balanceOf(holder), 400_000e18, "the balance was not orphaned");
+
+        // And the system deploys fresh against that same collateral.
+        _IAIScript().run();
+        assertEq(
+            vm.parseJsonAddress(vm.readFile(file), ".A0G"), mockA0G, "redeployed against the same a0G"
+        );
+    }
+
+    /**
+     * @dev The curve's anchor and the vault's cap start life as the same number and then part
+     *      company: `setCap` moves the vault's, while the anchor is burned into a deployed
+     *      curve and only records how its slope was reached.
+     *
+     *      They used to share one record key, so deploying a curve after any cap change
+     *      derived a **different curve** from the same published `R0` and `Target` -- silently,
+     *      since every number involved still looked reasonable. Doubling the cap and
+     *      redeploying produced a slope of 271850478687441015 instead of
+     *      2021598247004348741: a curve nobody asked for, and one the golden vectors would
+     *      never be checked against because they only ever run against the constants.
+     */
+    function test_DeployCurve_IsUnaffectedByACapChange() public {
+        _bootstrap("curve-anchor");
+        _MockScript().run();
+        _IAIScript().run();
+
+        address original = vm.parseJsonAddress(vm.readFile(file), ".MintCurve");
+        uint256 slope = LinearMintCurve(original).slope();
+        assertEq(slope, 2_021_598_247_004_348_741, "the deployed curve is the published one");
+
+        // Governance moves the ceiling; the record follows.
+        _IAIScript().setCap(CAP * 2);
+        assertEq(vm.parseJsonUint(vm.readFile(file), ".Cap"), CAP * 2, "the vault's cap moved");
+
+        _IAIScript().deployCurve("LinearMintCurve");
+
+        LinearMintCurve redeployed =
+            LinearMintCurve(vm.parseJsonAddress(vm.readFile(file), ".LinearMintCurve"));
+        assertTrue(address(redeployed) != original, "a new curve was deployed");
+        assertEq(redeployed.slope(), slope, "the same parameters produced the same curve");
+        assertEq(redeployed.anchorCap(), CAP, "the anchor did not follow the cap");
+    }
+
+    /**
+     * @dev `deployCurve` and `setCurve` are two steps on purpose, and the check has to work in
+     *      between them -- that gap is precisely where an operator wants to look at a curve
+     *      before putting it in service. The check used to require the active curve to equal
+     *      whatever the kind key named, which is false by construction in that window.
+     *
+     *      Also asserts no address is lost. The kind key holds only the newest curve of its
+     *      kind, so a same-kind redeploy overwrites it; the history list is what keeps the
+     *      previous one, which still priced real mints and is still live on chain.
+     */
+    function test_DeployCurve_LeavesTheCheckWorkingAndLosesNoAddress() public {
+        _bootstrap("curve-two-step");
+        _MockScript().run();
+        _IAIScript().run();
+
+        address first = vm.parseJsonAddress(vm.readFile(file), ".MintCurve");
+        _IAIScript().checkDeployment();
+
+        _IAIScript().setCap(CAP * 2); // makes the second curve a different contract
+        _IAIScript().deployCurve("LinearMintCurve");
+        address second = vm.parseJsonAddress(vm.readFile(file), ".LinearMintCurve");
+        assertTrue(second != first, "the kind key now names the newer curve");
+
+        // The window between the two steps: still checkable.
+        _IAIScript().checkDeployment();
+        assertEq(vm.parseJsonAddress(vm.readFile(file), ".MintCurve"), first, "still pricing on the first");
+
+        _IAIScript().setCurve("LinearMintCurve");
+        assertEq(vm.parseJsonAddress(vm.readFile(file), ".MintCurve"), second, "now pricing on the second");
+        _IAIScript().checkDeployment();
+
+        address[] memory history = vm.parseJsonAddressArray(vm.readFile(file), ".MintCurveHistory");
+        assertEq(history.length, 2, "both curves are still named");
+        assertEq(history[0], first, "the superseded curve was not dropped");
+        assertEq(history[1], second);
+    }
+
+    /**
+     * @dev A record written before `MintCurveHistory` existed still names a curve. Appending
+     *      only the newcomer would lose that incumbent the moment `setCurve` moves `MintCurve`
+     *      off it, leaving its address nowhere in the record -- and positions it priced are
+     *      still open, so reconciling them needs it.
+     *
+     *      This is not hypothetical: it happened on the testnet, whose record predates the
+     *      list, and the first swap dropped the curve that had priced the only live position.
+     */
+    function test_DeployCurve_AdoptsAnIncumbentThatPredatesTheHistoryList() public {
+        _bootstrap("curve-history-backfill");
+        _MockScript().run();
+        _IAIScript().run();
+
+        // The older record shape: an incumbent curve and no history to speak of. A missing
+        // key and an empty list reach the same branch, and the missing key is already covered
+        // by every fresh deployment in this file, so the list is emptied here rather than
+        // deleted -- Foundry has no cheatcode that removes a key.
+        address incumbent = vm.parseJsonAddress(vm.readFile(file), ".MintCurve");
+        vm.writeJson("[]", file, ".MintCurveHistory");
+        assertEq(vm.parseJsonAddressArray(vm.readFile(file), ".MintCurveHistory").length, 0);
+
+        _IAIScript().setCap(CAP * 2); // makes the next curve a distinct contract
+        _IAIScript().deployCurve("LinearMintCurve");
+
+        address[] memory history = vm.parseJsonAddressArray(vm.readFile(file), ".MintCurveHistory");
+        assertEq(history.length, 2, "the incumbent was adopted, not dropped");
+        assertEq(history[0], incumbent, "and it comes first");
+        assertEq(history[1], vm.parseJsonAddress(vm.readFile(file), ".LinearMintCurve"));
     }
 
     function test_Scripts_ProduceASystemThatActuallyWorks() public {

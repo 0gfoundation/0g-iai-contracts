@@ -6,6 +6,8 @@ import {Prng} from "./Prng.sol";
 import {ICreditRegistry} from "../../src/interfaces/ICreditRegistry.sol";
 import {IIAIVault} from "../../src/interfaces/IIAIVault.sol";
 import {IAccessControl} from "@openzeppelin/contracts/access/IAccessControl.sol";
+import {IMintCurve} from "../../src/interfaces/IMintCurve.sol";
+import {LinearMintCurve} from "../../src/curves/LinearMintCurve.sol";
 
 /**
  * @title RandomSimTest
@@ -20,7 +22,7 @@ import {IAccessControl} from "@openzeppelin/contracts/access/IAccessControl.sol"
  *         simulation is for. It does **not** catch an algebraic one: it evaluates the same
  *         expansion the contract does, `R0*d + slope*d*(2s+d)/2`, rather than the equivalent
  *         `lockedAt(s+d) - lockedAt(s)`. The algebra is pinned elsewhere, by golden vectors
- *         computed outside this codebase and asserted in `test/unit/MintCurve.t.sol`. Stating
+ *         computed outside this codebase and asserted in `test/unit/curves/LinearCurveMath.t.sol`. Stating
  *         this plainly because "independent shadow" would overclaim what these steps prove.
  *
  *      2. **State is compared after every operation, not at the end.** A mismatch then
@@ -53,6 +55,12 @@ contract RandomSimTest is BaseTest {
     uint256 internal mHarvested;
     bool internal mPaused;
 
+    // The pricing surface and the ceiling, both adjustable by governance mid-run.
+    uint256 internal mR0;
+    uint256 internal mSlope;
+    uint256 internal mCap;
+    address internal mCurve;
+
     // --- coverage counters, asserted at the end so a silently degenerate run is caught ---
     uint256 internal nMints;
     uint256 internal nBurns;
@@ -63,6 +71,11 @@ contract RandomSimTest is BaseTest {
     uint256 internal nPauseToggles;
     uint256 internal nBurnsWhilePaused;
     uint256 internal nRejections;
+    uint256 internal nCapChanges;
+    uint256 internal nCurveSwaps;
+    uint256 internal nMintsRejectedByCap;
+    uint256 internal nBurnsInBurnOnlyMode;
+    uint256 internal nHarvestsInBurnOnlyMode;
 
     function setUp() public override {
         super.setUp();
@@ -77,6 +90,11 @@ contract RandomSimTest is BaseTest {
             iai.approve(address(registry), type(uint256).max);
         }
         vault.grantRole(vault.RESCUE_ROLE(), address(this));
+
+        mR0 = R0;
+        mSlope = SLOPE;
+        mCap = CAP;
+        mCurve = address(vault.curve());
     }
 
     // -------------------------------------------------------------------------
@@ -85,11 +103,33 @@ contract RandomSimTest is BaseTest {
 
     /// @dev Written without `Math.mulDiv` on purpose: hand-rolled ceilings over plain
     ///      checked arithmetic, so a rounding-direction change in the library shows up as
-    ///      a disagreement rather than being silently mirrored.
-    function _shadowCost(uint256 s, uint256 d) internal pure returns (uint256) {
-        uint256 linear = (R0 * d + WAD - 1) / WAD;
-        uint256 quadratic = (SLOPE * (d * (2 * s + d)) + (2 * WAD * WAD) - 1) / (2 * WAD * WAD);
+    ///      a disagreement rather than being silently mirrored. Takes the curve parameters
+    ///      as arguments rather than reading the constants, because the curve in force
+    ///      changes during the run.
+    function _shadowCost(uint256 r0, uint256 slope, uint256 s, uint256 d)
+        internal
+        pure
+        returns (uint256)
+    {
+        uint256 linear = (r0 * d + WAD - 1) / WAD;
+        uint256 quadratic = (slope * (d * (2 * s + d)) + (2 * WAD * WAD) - 1) / (2 * WAD * WAD);
         return linear + quadratic;
+    }
+
+    /// @dev The price the curve currently in force asks. Sugar over `_shadowCost`.
+    function _shadowCost(uint256 s, uint256 d) internal view returns (uint256) {
+        return _shadowCost(mR0, mSlope, s, d);
+    }
+
+    /// @dev Re-derives the slope the way `LinearCurveMath` does, in plain checked arithmetic.
+    ///      Floors, exactly as the library's `mulDiv` default does.
+    function _shadowSlope(uint256 r0, uint256 anchorCap, uint256 target)
+        internal
+        pure
+        returns (uint256)
+    {
+        uint256 flat = (r0 * anchorCap) / WAD;
+        return (2 * (target - flat) * (WAD * WAD)) / (anchorCap * anchorCap);
     }
 
     function _shadowCeilDiv(uint256 a, uint256 b) internal pure returns (uint256) {
@@ -122,26 +162,30 @@ contract RandomSimTest is BaseTest {
     function _step() internal {
         uint256 roll = rng.next() % 100;
 
-        if (roll < 27) {
+        if (roll < 26) {
             _opMint();
-        } else if (roll < 47) {
+        } else if (roll < 45) {
             _opBurn();
-        } else if (roll < 53) {
+        } else if (roll < 51) {
             _opRescue();
-        } else if (roll < 60) {
+        } else if (roll < 58) {
             _opHarvest();
-        } else if (roll < 69) {
+        } else if (roll < 66) {
             _opStake();
-        } else if (roll < 76) {
+        } else if (roll < 73) {
             _opInitiateUnstake();
-        } else if (roll < 81) {
+        } else if (roll < 78) {
             _opUnstake();
-        } else if (roll < 86) {
+        } else if (roll < 83) {
             _opWarp();
-        } else if (roll < 90) {
+        } else if (roll < 87) {
             _opTransfer();
-        } else if (roll < 93) {
+        } else if (roll < 90) {
             _opTogglePause();
+        } else if (roll < 93) {
+            _opSetCap();
+        } else if (roll < 95) {
+            _opSetCurve();
         } else {
             _opRejection();
         }
@@ -153,23 +197,40 @@ contract RandomSimTest is BaseTest {
 
     // --- operations ---
 
+    /**
+     * @dev The amount is drawn without reference to the cap, so whether this mint is allowed
+     *      is a question the shadow answers rather than one the sampler avoids. Both outcomes
+     *      are asserted: a rejection has to come back as `CapExceeded` with the exact pair of
+     *      numbers, from whatever state the run has reached. That is a stronger statement than
+     *      the `supply <= cap` assertion it replaces, which could not survive a cap lowered
+     *      below the live supply -- the very mode this simulation now spends time in.
+     */
     function _opMint() internal {
-        uint256 headroom = CAP - mSupply;
-        if (headroom == 0) return;
-
         address a = _actor();
-        uint256 d = rng.magnitude(1, headroom > 400e18 ? 400e18 : headroom);
+        uint256 d = rng.magnitude(1, 400e18);
         if (d == 0) return;
 
-        uint256 expectedDelta = _shadowCost(mSupply, d);
+        uint256 supplyAfter = mSupply + d;
+        bool overCap = supplyAfter > mCap;
+        uint256 expectedDelta = overCap ? 0 : _shadowCost(mSupply, d);
         uint256 er = vault.exchangeRate();
-        uint256 expectedIn = _shadowCeilDiv(expectedDelta * WAD, er);
+        uint256 expectedIn = overCap ? type(uint256).max : _shadowCeilDiv(expectedDelta * WAD, er);
 
         if (mPaused) {
-            a0g.mint(a, expectedIn);
+            // `whenNotPaused` is a modifier, so it fires ahead of the body's own cap check.
+            if (!overCap) a0g.mint(a, expectedIn);
             vm.expectRevert(abi.encodeWithSignature("EnforcedPause()"));
             vm.prank(a);
             vault.mint(d, expectedIn, block.timestamp);
+            nRejections++;
+            return;
+        }
+
+        if (overCap) {
+            vm.expectRevert(abi.encodeWithSelector(IIAIVault.CapExceeded.selector, supplyAfter, mCap));
+            vm.prank(a);
+            vault.mint(d, expectedIn, block.timestamp);
+            nMintsRejectedByCap++;
             nRejections++;
             return;
         }
@@ -213,12 +274,74 @@ contract RandomSimTest is BaseTest {
         // The promise that redemption is never gated, held as a running property rather than
         // a single test: this line executes with the vault paused many times per run.
         if (mPaused) nBurnsWhilePaused++;
+        // The same promise against the other issuance switch: a cap below the live supply
+        // closes minting, and redemption has to stay open through it.
+        if (mSupply > mCap) nBurnsInBurnOnlyMode++;
 
         mLocked[a] -= expectedUnlock;
         mOutstanding[a] -= b;
         mTotalLocked -= expectedUnlock;
         mSupply -= b;
         nBurns++;
+    }
+
+    /**
+     * @notice Governance moves the ceiling, deliberately across the live supply.
+     *
+     * @dev Roughly two in five draws land below the current supply, which is the burn-only
+     *      mode: `mint` refuses, everything else carries on. Sampling it this often is the
+     *      point -- it is a state the system is expected to sit in during an emergency, so
+     *      thousands of operations run from inside it rather than one test poking at it.
+     *
+     *      `setCap` deliberately has no `newCap >= supply` guard. Adding one would make the
+     *      ceiling un-lowerable exactly when it needs lowering, so this operation exercises
+     *      the case that guard would have blocked, zero included.
+     */
+    function _opSetCap() internal {
+        uint256 newCap;
+        if (rng.chance(40) && mSupply != 0) {
+            newCap = rng.range(0, mSupply - 1); // below the live supply: burn-only
+        } else {
+            newCap = rng.range(mSupply, 2 * CAP);
+        }
+
+        vault.setCap(newCap);
+        mCap = newCap;
+        nCapChanges++;
+    }
+
+    /**
+     * @notice Governance swaps the pricing surface, in both directions.
+     *
+     * @dev The swap is free to make the curve cheaper or dearer, because the invariant that
+     *      would have forbidden one direction -- "the running total covers what the current
+     *      curve says the supply is worth" -- is not a property of a system whose curve can
+     *      change. It was never an accounting identity; it asserted that every wei in the
+     *      total had been priced by the curve in force, which stops being true the moment a
+     *      swap happens, with nobody having done anything. What actually matters survives
+     *      untouched and is still checked after every step: positions sum to the total (A),
+     *      the vault covers its obligations (C), and no position is half-cleared (F).
+     *
+     *      The shadow re-derives the slope rather than reading it back off the curve, so a
+     *      regression in `deriveSlope` shows up here as well as in its golden vectors.
+     */
+    function _opSetCurve() internal {
+        uint256 r0 = rng.range(1e21, 20e21);
+        // Keep the anchor fixed and vary the curvature: `extra` is the 0G the sloped part
+        // accounts for on top of the flat part, and it is what fixes the slope.
+        uint256 flat = (r0 * CAP) / WAD;
+        uint256 extra = rng.range(1e25, 3e26);
+
+        LinearMintCurve c = new LinearMintCurve(r0, CAP, flat + extra);
+        uint256 slope = _shadowSlope(r0, CAP, flat + extra);
+        assertEq(c.slope(), slope, "the shadow derives the same slope the library does");
+
+        vault.setCurve(IMintCurve(address(c)));
+
+        mR0 = r0;
+        mSlope = slope;
+        mCurve = address(c);
+        nCurveSwaps++;
     }
 
     /**
@@ -273,6 +396,10 @@ contract RandomSimTest is BaseTest {
         assertEq(got, expected, "harvest must sweep exactly the surplus");
         mHarvested += got;
         nHarvests++;
+        // `harvest` is gated by `pause`, not by the cap. Lowering the cap to zero therefore
+        // closes issuance while the sweep keeps running -- which is why the documented way
+        // to wind the system down is `pause()`, not `setCap(0)`.
+        if (mSupply > mCap) nHarvestsInBurnOnlyMode++;
     }
 
     function _opStake() internal {
@@ -387,9 +514,13 @@ contract RandomSimTest is BaseTest {
             vm.prank(a);
             vault.mint(0, type(uint256).max, block.timestamp);
         } else if (pick == 1) {
-            // One wei past the cap, priced from the live supply.
-            uint256 tooMuch = CAP - mSupply + 1;
-            vm.expectRevert(abi.encodeWithSelector(IIAIVault.CapExceeded.selector, CAP + 1, CAP));
+            // One wei past the ceiling. With the cap below the live supply there is no
+            // headroom to overshoot -- a single wei is already too much -- so the amount is
+            // relative to whichever side of the supply the cap currently sits on.
+            uint256 tooMuch = mCap > mSupply ? mCap - mSupply + 1 : 1;
+            vm.expectRevert(
+                abi.encodeWithSelector(IIAIVault.CapExceeded.selector, mSupply + tooMuch, mCap)
+            );
             vm.prank(a);
             vault.mint(tooMuch, type(uint256).max, block.timestamp);
         } else if (pick == 2) {
@@ -404,7 +535,7 @@ contract RandomSimTest is BaseTest {
             // Offering one wei less than the curve asks for. The headroom guard has to cover
             // the whole amount: with less than 1e18 left, `mint` hits its cap check -- which
             // precedes the slippage check -- and the wrong error comes back.
-            if (mSupply + 1e18 > CAP) return;
+            if (mSupply + 1e18 > mCap) return;
             uint256 needs = _shadowCeilDiv(_shadowCost(mSupply, 1e18) * WAD, vault.exchangeRate());
             if (needs == 0) return;
             a0g.mint(a, needs);
@@ -507,13 +638,17 @@ contract RandomSimTest is BaseTest {
         assertEq(vault.supply(), mSupply, "D: supply matches the model");
         assertEq(vault.supply(), iai.totalSupply(), "D: vault and token supply agree");
         assertEq(sumOutstanding, mSupply, "D: outstanding sums to supply");
-        assertLe(vault.supply(), CAP, "D: cap respected");
 
-        // B: redemption returns the burner's average while the curve gives back the top
-        // slice, so the aggregate can only sit at or above the curve, never below.
-        assertGe(vault.totalLocked0G(), vault.lockedAt(vault.supply()), "B: total covers the curve");
+        // The two governance-adjustable knobs are part of the compared state, so a swap or a
+        // resize that did not land is caught on the very next step. `supply <= cap` is
+        // deliberately *not* asserted: lowering the cap below the live supply is a supported
+        // operation, and `_opMint` pins the consequence -- which error comes back, with which
+        // numbers -- rather than the state.
+        assertEq(vault.cap(), mCap, "cap matches the model");
+        assertEq(address(vault.curve()), mCurve, "the curve in force matches the model");
 
-        // C: solvency.
+        // C: solvency. Independent of the curve by construction -- it is measured against
+        // `totalLocked0G`, which accumulates what was actually collected.
         uint256 owed = _shadowCeilDiv(vault.totalLocked0G() * WAD, vault.exchangeRate());
         assertGe(a0g.balanceOf(address(vault)), owed, "C: vault covers its obligations");
 
@@ -538,5 +673,13 @@ contract RandomSimTest is BaseTest {
         assertGt(nPauseToggles, 20, "coverage: pausing");
         assertGt(nBurnsWhilePaused, 10, "coverage: redemption while issuance is closed");
         assertGt(nRejections, 100, "coverage: rejected operations");
+        assertGt(nCapChanges, 100, "coverage: cap changes");
+        assertGt(nCurveSwaps, 50, "coverage: curve swaps");
+        assertGt(nMintsRejectedByCap, 100, "coverage: mints refused by the cap");
+        // These two are what make burn-only a run-time property rather than a claim: the
+        // system spent real time with issuance closed by the cap, and redemption and the
+        // sweep both kept working throughout.
+        assertGt(nBurnsInBurnOnlyMode, 100, "coverage: redemption while the cap is below supply");
+        assertGt(nHarvestsInBurnOnlyMode, 25, "coverage: harvest while the cap is below supply");
     }
 }

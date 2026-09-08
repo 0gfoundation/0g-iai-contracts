@@ -3,33 +3,25 @@ pragma solidity 0.8.25;
 
 import {BaseTest} from "../Base.t.sol";
 import {IAI} from "../../src/IAI.sol";
-import {IIAI} from "../../src/interfaces/IIAI.sol";
 import {IAccessControl} from "@openzeppelin/contracts/access/IAccessControl.sol";
-import {BeaconProxy} from "@openzeppelin/contracts/proxy/beacon/BeaconProxy.sol";
-import {UpgradeableBeacon} from "@openzeppelin/contracts/proxy/beacon/UpgradeableBeacon.sol";
 
 contract IAITest is BaseTest {
     function test_Metadata() public view {
         assertEq(iai.name(), "Infinite AI");
         assertEq(iai.symbol(), "iAI");
         assertEq(iai.decimals(), 18);
-        assertEq(iai.cap(), CAP);
-    }
-
-    function test_Initialize_RejectsZeroCap() public {
-        address beacon = address(new UpgradeableBeacon(address(new IAI()), admin));
-        vm.expectRevert(IIAI.ZeroCap.selector);
-        new BeaconProxy(beacon, abi.encodeCall(IAI.initialize, ("x", "x", 0)));
     }
 
     function test_Initialize_ImplementationIsLocked() public {
         IAI impl = new IAI();
         vm.expectRevert();
-        impl.initialize("x", "x", CAP);
+        impl.initialize("x", "x");
     }
 
     /// @dev The vault is the only issuer. Anything else would let total supply drift away
-    ///      from the vault's own accounting.
+    ///      from the vault's own accounting -- and total supply is what the vault prices
+    ///      against, so a second issuer moves the curve for everyone. With the token's own
+    ///      cap gone this role is unbounded, which makes who holds it matter more, not less.
     function test_MintAndBurn_OnlyByTheVault() public {
         bytes32 role = iai.MINTER_BURNER_ROLE();
         assertTrue(iai.hasRole(role, address(vault)));
@@ -60,14 +52,6 @@ contract IAITest is BaseTest {
         );
         vm.prank(alice);
         iai.burn(alice, 10e18);
-    }
-
-    function test_Cap_IsEnforcedIndependentlyOfTheVault() public {
-        // Grant the role to this test so the cap can be probed without the vault's own check.
-        iai.grantRole(iai.MINTER_BURNER_ROLE(), admin);
-        iai.mint(alice, CAP);
-        vm.expectRevert(abi.encodeWithSelector(IIAI.CapExceeded.selector, CAP + 1, CAP));
-        iai.mint(alice, 1);
     }
 
     /// @dev The compute entitlement is a bearer right, so transfer must stay unrestricted.

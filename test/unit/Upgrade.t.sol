@@ -2,6 +2,8 @@
 pragma solidity 0.8.25;
 
 import {BaseTest} from "../Base.t.sol";
+import {LinearMintCurve} from "../../src/curves/LinearMintCurve.sol";
+import {IMintCurve} from "../../src/interfaces/IMintCurve.sol";
 import {UpgradeChecker} from "../../script/deploy/UpgradeChecker.sol";
 import {IAI} from "../../src/IAI.sol";
 import {IAIVault} from "../../src/IAIVault.sol";
@@ -18,13 +20,21 @@ contract Anything {
 ///      describe. Only a changed implementation can produce this -- reading the live vault,
 ///      the quote and the curve evaluate the same storage and cannot disagree.
 contract MispricingVault {
-    uint256 public constant r0 = 4_330e18;
-    uint256 public constant slope = 2_021_598_247_004_348_741;
+    IMintCurve public curve;
+
+    constructor(IMintCurve curve_) {
+        curve = curve_;
+    }
 
     function supply() external pure returns (uint256) {
         return 0;
     }
 
+    function remainingCap() external pure returns (uint256) {
+        return 1e18;
+    }
+
+    /// @dev Answers a price of its own instead of the one the curve it names would give.
     function quoteMint(uint256) external pure returns (uint256, uint256) {
         return (1, 1);
     }
@@ -42,10 +52,6 @@ contract MispricingVault {
  *      honest upgrade must pass, and a moved value must be caught by name.
  */
 contract UpgradeTest is BaseTest, UpgradeChecker {
-    /// @dev The vault's ERC-7201 namespace. `r0` is its first field, so this exact slot holds it.
-    bytes32 internal constant VAULT_STORAGE =
-        0xc43d9fb2bb2c47f512fbd0909174d2bc8dc8e1a97639c38f8e1d6ca9884b0600;
-
     address internal holder = makeAddr("holder");
     address[] internal watched;
 
@@ -94,17 +100,29 @@ contract UpgradeTest is BaseTest, UpgradeChecker {
         _assertUnchanged(before_, _snap());
     }
 
-    /// @dev The failure the rehearsal exists to catch: the getter still answers, with a
-    ///      different number behind it. Writing the slot directly reproduces that without
-    ///      needing a contrived implementation.
-    function test_CatchesACurveConstantThatMoved() public {
+    /// @dev Pricing now lives outside the beacon, so the one thing an upgrade could do to
+    ///      reprice the system is repoint `curve`. If the rehearsal did not snapshot that
+    ///      address it would miss repricing entirely -- the loudest failure it exists to catch.
+    function test_CatchesACurveSwapAcrossAnUpgrade() public {
         Snapshot memory before_ = _snap();
 
-        vm.store(address(vault), VAULT_STORAGE, bytes32(uint256(R0 + 1)));
-        assertEq(vault.r0(), R0 + 1, "the stored constant did move");
+        address swapped = address(new LinearMintCurve(R0 * 2, CAP, TARGET));
+        vault.setCurve(IMintCurve(swapped));
+        assertEq(address(vault.curve()), swapped, "the curve really did move");
 
         Snapshot memory after_ = _snap();
-        vm.expectRevert(bytes("changed across upgrade: r0"));
+        vm.expectRevert(bytes("changed across upgrade: curve"));
+        this.assertUnchangedExternal(before_, after_);
+    }
+
+    /// @dev The other half of the same failure: the supply ceiling moving under an upgrade.
+    function test_CatchesACapThatMoved() public {
+        Snapshot memory before_ = _snap();
+
+        vault.setCap(CAP - 1);
+
+        Snapshot memory after_ = _snap();
+        vm.expectRevert(bytes("changed across upgrade: cap"));
         this.assertUnchangedExternal(before_, after_);
     }
 
@@ -124,7 +142,7 @@ contract UpgradeTest is BaseTest, UpgradeChecker {
     function test_CatchesAnImplementationThatPricesOffTheCurve() public {
         _assertPricingMatchesCurve(vault); // the real one agrees
 
-        IAIVault mispricer = IAIVault(address(new MispricingVault()));
+        IAIVault mispricer = IAIVault(address(new MispricingVault(vault.curve())));
         vm.expectRevert(bytes("pricing diverged from the curve"));
         this.assertPricingMatchesCurveExternal(mispricer);
     }
