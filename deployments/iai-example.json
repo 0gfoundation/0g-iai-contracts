@@ -8,10 +8,14 @@
   "Name": "Infinite AI",
   "Symbol": "iAI",
   "MintCurveKind": "LinearMintCurve",
-  "R0": "4330000000000000000000",
-  "CurveAnchorCap": "9270000000000000000000",
+  "CurveParams": {
+    "LinearMintCurve": {
+      "R0": "4330000000000000000000",
+      "AnchorCap": "9270000000000000000000",
+      "Target": "127000000000000000000000000"
+    }
+  },
   "Cap": "9270000000000000000000",
-  "Target": "127000000000000000000000000",
   "CooldownDuration": "86400",
   "MockInitialValue": "1000000000000000000",
   "MockApr": "36500000000000000000",

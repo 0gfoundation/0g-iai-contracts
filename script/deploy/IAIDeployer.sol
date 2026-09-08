@@ -34,28 +34,36 @@ abstract contract IAIDeployer {
     /// @param a0G              Collateral token. The live a0G on mainnet, a mock elsewhere.
     /// @param foundation       Recipient of harvested yield.
     /// @param curveKind        Which curve to deploy. Only `"LinearMintCurve"` exists today.
-    /// @param r0               Linear curve: marginal price at supply zero, 0G per iAI.
-    /// @param curveAnchorCap   Linear curve: the supply the slope is derived against, wei-iAI.
-    ///                         **Not the vault's cap**, even though a fresh deployment sets
-    ///                         both from the same number. The vault's cap is adjustable and
-    ///                         drifts; this one is burned into the curve at construction and
-    ///                         only records how the slope was reached. Feeding a moved cap in
-    ///                         here would silently derive a different curve from the same
-    ///                         published `r0` and `target`.
     /// @param cap              Starting supply ceiling, wei-iAI. Adjustable after launch.
-    /// @param target           Linear curve: 0G locked at `curveAnchorCap`; fixes the slope.
     /// @param cooldownDuration Withdrawal delay in the credit registry.
     struct Config {
         address a0G;
         address foundation;
         string curveKind;
-        uint256 r0;
-        uint256 curveAnchorCap;
         uint256 cap;
-        uint256 target;
         uint256 cooldownDuration;
         string name;
         string symbol;
+    }
+
+    /// @param r0        Marginal price at supply zero, 0G per iAI.
+    /// @param anchorCap The supply the slope is derived against, wei-iAI. **Not the vault's
+    ///                  cap**, even though a fresh deployment sets both from the same number.
+    ///                  The vault's cap is adjustable and drifts away; this one is burned into
+    ///                  the curve at construction and records only how the slope was reached.
+    ///                  Feeding a moved cap in here derives a different curve from the same
+    ///                  published `r0` and `target`, and every number involved still looks
+    ///                  plausible.
+    /// @param target    0G the curve accounts for at `anchorCap`; together with `r0` and
+    ///                  `anchorCap` this fixes the slope.
+    ///
+    /// @dev Parameters belong to a curve, not to a deployment. This struct is
+    ///      `LinearMintCurve`'s; a differently shaped curve brings its own rather than
+    ///      widening this one, which is what keeps adding a curve additive.
+    struct LinearCurveParams {
+        uint256 r0;
+        uint256 anchorCap;
+        uint256 target;
     }
 
     /// @param initialValue Starting exchange rate, 0G per a0G scaled by 1e18.
@@ -117,19 +125,23 @@ abstract contract IAIDeployer {
      *      records as admin. Reading `msg.sender` here would grant `PAUSER_ROLE` to an
      *      address that holds nothing and leave the real admin without it.
      */
-    function _deployIAISystem(Config memory c, address operator, address beaconOwner)
-        internal
-        returns (Deployment memory d)
-    {
+    function _deployIAISystem(
+        Config memory c,
+        IMintCurve curve,
+        address operator,
+        address beaconOwner
+    ) internal returns (Deployment memory d) {
         d.iaiImpl = address(new IAI());
         d.iaiBeacon = address(new UpgradeableBeacon(d.iaiImpl, beaconOwner));
         d.iai = address(
             new BeaconProxy(d.iaiBeacon, abi.encodeCall(IAI.initialize, (c.name, c.symbol)))
         );
 
-        // Before the vault: the curve is a constructor argument, and it is an immutable value
-        // rather than a proxy, so there is nothing to point at it afterwards.
-        d.curve = address(_deployCurve(c));
+        // Deployed by the caller, because only the caller knows what shape of curve it is
+        // building. It has to exist before the vault either way: the vault takes it as an
+        // initializer argument, and it is an immutable value rather than a proxy, so there is
+        // nothing to point at it afterwards.
+        d.curve = address(curve);
 
         d.vaultImpl = address(new IAIVault());
         d.vaultBeacon = address(new UpgradeableBeacon(d.vaultImpl, beaconOwner));
@@ -249,16 +261,18 @@ abstract contract IAIDeployer {
     }
 
     /**
-     * @param c Deployment parameters, including which curve to build.
+     * @param p The curve's own parameters.
      * @return The deployed curve.
-     * @dev Named rather than positional so a deployment record says which curve it is running,
-     *      and so a future curve arrives without disturbing this one.
+     *
+     * @dev One typed function per curve kind, rather than one function switching on a name.
+     *      A name-switched deployer has to accept the union of every curve's parameters, so
+     *      each new curve widens a struct every other curve then carries fields it has no use
+     *      for — and a caller that fills in the wrong subset gets a curve that constructs
+     *      cleanly and prices differently. A second curve adds `_deployExponentialCurve` beside
+     *      this one and touches nothing here.
      */
-    function _deployCurve(Config memory c) internal returns (IMintCurve) {
-        if (keccak256(bytes(c.curveKind)) == keccak256(bytes("LinearMintCurve"))) {
-            return new LinearMintCurve(c.r0, c.curveAnchorCap, c.target);
-        }
-        revert(string.concat("unknown curve kind: ", c.curveKind));
+    function _deployLinearCurve(LinearCurveParams memory p) internal returns (IMintCurve) {
+        return new LinearMintCurve(p.r0, p.anchorCap, p.target);
     }
 
     /**

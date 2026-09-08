@@ -69,14 +69,14 @@ abstract contract BaseTest is Test, IAIDeployer {
                 a0G: address(a0g),
                 foundation: foundation,
                 curveKind: "LinearMintCurve",
-                r0: R0,
-                curveAnchorCap: CAP,
                 cap: CAP,
-                target: TARGET,
                 cooldownDuration: COOLDOWN,
                 name: "Infinite AI",
                 symbol: "iAI"
             }),
+            // Typed, not name-dispatched: the fixture states which curve it wants and gives
+            // that curve's own parameters, exactly as the script does after resolving a kind.
+            _deployLinearCurve(LinearCurveParams({r0: R0, anchorCap: CAP, target: TARGET})),
             admin,
             admin
         );

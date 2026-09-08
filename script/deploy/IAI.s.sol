@@ -33,17 +33,14 @@ contract IAIScript is Script, JsonUtils, Constants, IAIDeployer {
             a0G: vm.parseJsonAddress(json, ".A0G"),
             foundation: vm.parseJsonAddress(json, ".Foundation"),
             curveKind: vm.parseJsonString(json, ".MintCurveKind"),
-            r0: vm.parseJsonUint(json, ".R0"),
-            curveAnchorCap: vm.parseJsonUint(json, ".CurveAnchorCap"),
             cap: vm.parseJsonUint(json, ".Cap"),
-            target: vm.parseJsonUint(json, ".Target"),
             cooldownDuration: vm.parseJsonUint(json, ".CooldownDuration"),
             name: vm.parseJsonString(json, ".Name"),
             symbol: vm.parseJsonString(json, ".Symbol")
         });
 
         vm.startBroadcast(pk);
-        Deployment memory d = _deployIAISystem(c, deployer, deployer);
+        Deployment memory d = _deployIAISystem(c, _curveOfKind(json, c.curveKind), deployer, deployer);
         vm.stopBroadcast();
 
         console.log("network        ", networkName());
@@ -65,10 +62,10 @@ contract IAIScript is Script, JsonUtils, Constants, IAIDeployer {
         vm.serializeAddress(obj, "A0G", c.a0G);
         vm.serializeAddress(obj, "Foundation", c.foundation);
         vm.serializeString(obj, "MintCurveKind", c.curveKind);
-        vm.serializeString(obj, "R0", vm.toString(c.r0));
-        vm.serializeString(obj, "CurveAnchorCap", vm.toString(c.curveAnchorCap));
+        // `Cap` is echoed because `setCap` rewrites it; the curve's own parameters under
+        // `CurveParams` are never written by any script, and seeding the object from the file
+        // above already carries them through untouched.
         vm.serializeString(obj, "Cap", vm.toString(c.cap));
-        vm.serializeString(obj, "Target", vm.toString(c.target));
         vm.serializeString(obj, "CooldownDuration", vm.toString(c.cooldownDuration));
         vm.serializeString(obj, "Name", c.name);
         vm.serializeString(obj, "Symbol", c.symbol);
@@ -156,21 +153,8 @@ contract IAIScript is Script, JsonUtils, Constants, IAIDeployer {
     function deployCurve(string memory kind) public {
         (string memory json, string memory path) = loadOrInitJson("iai");
 
-        Config memory c = Config({
-            a0G: vm.parseJsonAddress(json, ".A0G"),
-            foundation: vm.parseJsonAddress(json, ".Foundation"),
-            curveKind: kind,
-            r0: vm.parseJsonUint(json, ".R0"),
-            curveAnchorCap: vm.parseJsonUint(json, ".CurveAnchorCap"),
-            cap: vm.parseJsonUint(json, ".Cap"),
-            target: vm.parseJsonUint(json, ".Target"),
-            cooldownDuration: vm.parseJsonUint(json, ".CooldownDuration"),
-            name: vm.parseJsonString(json, ".Name"),
-            symbol: vm.parseJsonString(json, ".Symbol")
-        });
-
         vm.startBroadcast(vm.envUint("PRIVATE_KEY"));
-        address deployed = address(_deployCurve(c));
+        address deployed = address(_curveOfKind(json, kind));
         vm.stopBroadcast();
 
         string memory o = "iai";
@@ -180,6 +164,33 @@ contract IAIScript is Script, JsonUtils, Constants, IAIDeployer {
 
         console.log("deployed       ", kind, deployed);
         console.log("Not yet in service. Switch with --sig 'setCurve(string)' when ready.");
+    }
+
+    /**
+     * @param json The record as it stands.
+     * @param kind Curve contract name, e.g. `"LinearMintCurve"`.
+     * @return The freshly deployed curve.
+     *
+     * @dev The only place that knows a curve kind's name maps to a particular parameter
+     *      shape, and it lives in the script half because that is the half that reads files.
+     *      Each kind owns its own block under `CurveParams`, so its parameters are read with
+     *      the keys and the types that kind actually has -- a second curve adds a branch here
+     *      and a block in the record, and touches neither the other curve's parameters nor
+     *      the system deployer.
+     */
+    function _curveOfKind(string memory json, string memory kind) private returns (IMintCurve) {
+        string memory at = string.concat(".CurveParams.", kind, ".");
+
+        if (keccak256(bytes(kind)) == keccak256(bytes("LinearMintCurve"))) {
+            return _deployLinearCurve(
+                LinearCurveParams({
+                    r0: vm.parseJsonUint(json, string.concat(at, "R0")),
+                    anchorCap: vm.parseJsonUint(json, string.concat(at, "AnchorCap")),
+                    target: vm.parseJsonUint(json, string.concat(at, "Target"))
+                })
+            );
+        }
+        revert(string.concat("unknown curve kind: ", kind));
     }
 
     /**
@@ -278,10 +289,7 @@ contract IAIScript is Script, JsonUtils, Constants, IAIDeployer {
             a0G: vm.parseJsonAddress(json, ".A0G"),
             foundation: vm.parseJsonAddress(json, ".Foundation"),
             curveKind: vm.parseJsonString(json, ".MintCurveKind"),
-            r0: vm.parseJsonUint(json, ".R0"),
-            curveAnchorCap: vm.parseJsonUint(json, ".CurveAnchorCap"),
             cap: vm.parseJsonUint(json, ".Cap"),
-            target: vm.parseJsonUint(json, ".Target"),
             cooldownDuration: vm.parseJsonUint(json, ".CooldownDuration"),
             name: vm.parseJsonString(json, ".Name"),
             symbol: vm.parseJsonString(json, ".Symbol")

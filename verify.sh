@@ -31,10 +31,11 @@ verify() {
     --verifier-url "$VERIFIER_URL" --chain "$CHAIN_ID" "$@" || echo "  ... failed, continuing"
 }
 
-# The curve takes constructor arguments, so they have to be supplied to verify it. They are
-# read back off the deployed contract rather than out of the deployment record: `Cap` in the
-# record is the vault's cap, which is adjustable and drifts away from the `anchorCap` the curve
-# was actually constructed with. Reading the chain cannot drift.
+# The curve takes constructor arguments, so they have to be supplied to verify it. They are read
+# back off the deployed contract rather than out of the deployment record, because the record
+# describes the curve the parameters would build *now* while this verifies the one that is
+# actually deployed -- and after a parameter edit those are different curves. Reading the chain
+# cannot drift from the bytecode being verified.
 verify_curve() {
   local address; address=$(addr MintCurve)
   local kind; kind=$(addr MintCurveKind)

@@ -88,6 +88,15 @@ contract DeployScriptTest is Test {
         assertEq(vm.parseJsonString(json, ".MintCurveKind"), "LinearMintCurve");
         assertEq(vm.parseJsonUint(json, ".Cap"), vault.cap(), "inputs echoed back intact");
 
+        // The curve's own parameters are nested under its kind, and the script rewrites the
+        // record around them without flattening or dropping them. Worth an assertion because
+        // every other key in this file is a single flat level, so a future `serializeJson`
+        // change would take the nesting out silently and `deployCurve` would stop resolving.
+        string memory at = string.concat(".CurveParams.", vm.parseJsonString(json, ".MintCurveKind"), ".");
+        assertEq(vm.parseJsonUint(json, string.concat(at, "R0")), 4_330e18);
+        assertEq(vm.parseJsonUint(json, string.concat(at, "AnchorCap")), CAP);
+        assertEq(vm.parseJsonUint(json, string.concat(at, "Target")), 127_000_000e18);
+
         // A deployment that arrives open would be a launch incident.
         assertTrue(vault.paused(), "vault must arrive paused");
         assertFalse(CreditRegistry(registryAddr).paused(), "registry needs no launch gate");

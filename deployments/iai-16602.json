@@ -7,7 +7,6 @@
   "CreditRegistry": "0x4Cd9bF4643dA945331b04f816B5D3d209a72f253",
   "CreditRegistryBeacon": "0x7c12fcacC32cb0d19AC9e52f53dA28E130A8036F",
   "CreditRegistryImpl": "0x780aaee297848d81fccf62c239d6A700538cF63c",
-  "CurveAnchorCap": "9270000000000000000000",
   "Foundation": "0x0000000000000000000000000000000000011111",
   "Guardian": "0x0000000000000000000000000000000000000000",
   "IAI": "0x92d4E1481435Ac7876819b6E42dF8Eb8b9e5F031",
@@ -19,14 +18,19 @@
   "LinearMintCurve": "0xB00bb4BCc4A3Fa8d5Fde30dDb5F2Fa9c24cf69A2",
   "MintCurve": "0xB00bb4BCc4A3Fa8d5Fde30dDb5F2Fa9c24cf69A2",
   "MintCurveKind": "LinearMintCurve",
+  "CurveParams": {
+    "LinearMintCurve": {
+      "R0": "4330000000000000000000",
+      "AnchorCap": "9270000000000000000000",
+      "Target": "127000000000000000000000000"
+    }
+  },
   "MockA0G": "0xb14f55a5faD338514D87A150b277105529f44834",
   "MockA0GOracle": "0x8Fabb9b812cA6812E6385F4c838ae8f6071828f3",
   "MockApr": "36500000000000000000",
   "MockInitialValue": "1000000000000000000",
   "MockOracleMaxAge": "1814400",
   "Name": "Infinite AI",
-  "R0": "4330000000000000000000",
   "Rescuer": "0x0000000000000000000000000000000000000000",
-  "Symbol": "iAI",
-  "Target": "127000000000000000000000000"
+  "Symbol": "iAI"
 }

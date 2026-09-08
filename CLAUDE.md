@@ -273,12 +273,27 @@ Each of those answers a different question, and conflating them has already caus
   curve still priced real mints and is still live on chain; reconciling those mints needs its
   address.
 
-**`CurveAnchorCap` is not `Cap`, even though a fresh deployment sets both from one number.**
-`Cap` is the vault's ceiling and moves with `setCap`; `CurveAnchorCap` is the supply a curve's slope
-was derived against, burned in at construction. They shared a key once, so deploying a curve after
-any cap change silently derived a *different* curve from the same published `R0` and `Target` —
-double the cap and the slope came out 271850478687441015 instead of 2021598247004348741, with every
-number involved still looking plausible. Never feed the vault's cap to a curve constructor.
+**A curve's parameters belong to the curve, and the record says so.** Everything a curve needs to
+be constructed sits under `CurveParams.<Kind>` — for the linear curve, `R0`, `AnchorCap` and
+`Target`. This is the one nested object in an otherwise flat file, and it earns the exception:
+those keys are meaningless to any other curve, and a second kind adds its own block rather than
+piling more top-level keys into a shared namespace. `Cap` stays at the top level because it is the
+*vault's* ceiling, not a curve's.
+
+`AnchorCap` and `Cap` start life as the same number and then part company. `Cap` moves with
+`setCap`; `AnchorCap` is the supply a curve's slope was derived against, burned into the curve at
+construction. They shared a key once, so deploying a curve after any cap change silently derived a
+*different* curve from the same published `R0` and `Target` — double the cap and the slope came out
+271850478687441015 instead of 2021598247004348741, with every number involved still looking
+plausible. **Never feed the vault's cap to a curve constructor.**
+
+The same split runs through the code: `Config` carries only what every deployment needs, each curve
+kind gets its own parameter struct, and `IAIDeployer` exposes one typed `_deploy<Kind>Curve` rather
+than one function switching on a name. A name-switched deployer has to accept the union of every
+curve's parameters, so each new curve widens a struct the others then carry fields they have no use
+for — and a caller filling in the wrong subset gets a curve that constructs cleanly and prices
+differently. The name-to-parameter-shape mapping lives in exactly one place, `_curveOfKind` in
+`IAI.s.sol`, because that is the half that reads records.
 
 **Deploy scripts that touch collateral must be idempotent.** `Mock.s.sol` reuses an already-recorded
 `MockA0G` instead of deploying a new one. An unconditional redeploy is silent and total: every
