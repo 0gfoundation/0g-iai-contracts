@@ -23,6 +23,11 @@ contract LinearCurveMathTest is Test {
     ///      Nothing may assert `lockedAt(cap) == target`; this is the exact gap.
     uint256 internal constant CAP_SHORTFALL = 37_260_550;
 
+    /// @dev The library is `internal`, so a revert from it has no call frame for
+    ///      `vm.expectRevert` or `try` to latch onto. Deployed once here rather than per fuzz
+    ///      run, which would dominate the cost of a 1,024-run test.
+    LinearCurveMathHarness internal harness = new LinearCurveMathHarness();
+
     function test_DeriveSlope_MatchesGoldenValue() public pure {
         assertEq(LinearCurveMath.deriveSlope(R0, CAP, TARGET), SLOPE, "slope");
     }
@@ -62,6 +67,63 @@ contract LinearCurveMathTest is Test {
         assertEq(LinearCurveMath.cost(R0, SLOPE, 0, CAP), 126_999_999_999_999_999_962_739_450, "full cap");
         // A one-iAI mint at the midpoint costs the average rate, as the linear curve requires.
         assertEq(LinearCurveMath.cost(R0, SLOPE, 4_635e18, 1e18), 13_701_118_673_988_658_588_906, "midpoint");
+    }
+
+    // -------------------------------------------------------------------------
+    // deriveSlope and lockedAt are inverses, and maxFlooringGap says by how much
+    // -------------------------------------------------------------------------
+
+    /// @dev The production anchor's quantum, stated as a number so a change to the formula has
+    ///      to come here and say so.
+    function test_MaxFlooringGap_GoldenValue() public pure {
+        assertEq(LinearCurveMath.maxFlooringGap(CAP), 42_966_451);
+        // It is quadratic in the anchor: ten thousand times the supply, a hundred million
+        // times the gap. This is why the constructor computes it rather than fixing it.
+        assertEq(LinearCurveMath.maxFlooringGap(CAP * 10_000), 4_296_645_000_000_001);
+    }
+
+    /**
+     * @dev The property the curve constructor's consistency check rests on: compose
+     *      `deriveSlope` with `lockedAt` and you land back within one flooring step of the
+     *      target you started from. If this ever fails, the two formulas have stopped being
+     *      inverses and every published `target` is a number the curve does not account for.
+     */
+    function testFuzz_DeriveSlopeAndLockedAtAreInverses(uint256 r0, uint256 cap, uint256 target)
+        public
+    {
+        cap = bound(cap, 1e15, 2 ** 100);
+        r0 = bound(r0, 0, 1e25);
+        uint256 flat = (r0 * cap) / WAD;
+        target = bound(target, flat + 1, type(uint160).max);
+
+        uint256 slope;
+        try harness.deriveSlope(r0, cap, target) returns (uint256 s) {
+            slope = s;
+        } catch {
+            return; // rejected upstream; nothing to say about it here
+        }
+
+        uint256 atCap = LinearCurveMath.lockedAt(r0, slope, cap);
+        assertLe(atCap, target, "composing the two can never overshoot the target");
+        assertLe(
+            target - atCap,
+            LinearCurveMath.maxFlooringGap(cap),
+            "and never undershoots by more than one flooring step"
+        );
+    }
+
+    /// @dev The bound is not slack: a target sitting just under the next slope unit uses
+    ///      almost all of it. A looser bound would still pass the fuzz above while letting a
+    ///      genuinely broken pair of formulas through.
+    function test_MaxFlooringGap_IsTight() public pure {
+        uint256 quantum = (CAP * CAP) / (2 * WAD * WAD);
+        uint256 target = (R0 * CAP) / WAD + (SLOPE + 1) * quantum - 1;
+
+        uint256 slope = LinearCurveMath.deriveSlope(R0, CAP, target);
+        uint256 shortfall = target - LinearCurveMath.lockedAt(R0, slope, CAP);
+
+        assertEq(shortfall, quantum - 1, "one wei inside the bound");
+        assertLe(shortfall, LinearCurveMath.maxFlooringGap(CAP));
     }
 
     function test_LockedAt_IsShortOfTargetByExactlyTheKnownGap() public pure {

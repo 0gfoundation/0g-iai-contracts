@@ -34,8 +34,9 @@ contract LinearMintCurve is IMintCurve {
     /// @notice The 0G this curve locks at `anchorCap`. Provenance only.
     uint256 public immutable target;
 
-    /// @notice A curve whose closed form does not reach its own target is malformed.
-    error CurveMissesTarget(uint256 lockedAtCap, uint256 target);
+    /// @notice `deriveSlope` and `lockedAt` stopped being inverses of one another. Not
+    ///         reachable from any parameters a caller can supply -- see the constructor.
+    error CurveFormulasDisagree(uint256 lockedAtCap, uint256 target);
     /// @notice A curve that charges nothing for a real amount would hand out free iAI.
     error CurveChargesNothing();
 
@@ -50,12 +51,11 @@ contract LinearMintCurve is IMintCurve {
      *
      *      Malformed parameters are already rejected by `deriveSlope` (zero or oversized cap,
      *      a target the flat portion alone would exceed, a slope that floors to zero). What is
-     *      added here is what `deriveSlope` cannot see: that the curve actually reaches its
-     *      target, that it charges something for a single wei, and that both the top of the
-     *      curve and the root solver are evaluable without an intermediate product
-     *      overflowing. The last one matters because `quoteForValue` squares
-     *      `k ~= s + r0*WAD/slope`, which depends on the parameters rather than on supply, so
-     *      `maxSafeSupply()` does not cover it.
+     *      added here is what `deriveSlope` cannot see: that the curve charges something for a
+     *      single wei, and that both the top of the curve and the root solver are evaluable
+     *      without an intermediate product overflowing. The last one matters because
+     *      `quoteForValue` squares `k ~= s + r0*WAD/slope`, which depends on the parameters
+     *      rather than on supply, so `maxSafeSupply()` does not cover it.
      */
     constructor(uint256 r0_, uint256 cap_, uint256 target_) {
         uint256 slope_ = LinearCurveMath.deriveSlope(r0_, cap_, target_);
@@ -65,10 +65,24 @@ contract LinearMintCurve is IMintCurve {
         anchorCap = cap_;
         target = target_;
 
+        // Not a check on the parameters -- it cannot be one. `slope` is derived *from*
+        // `target_`, so composing `deriveSlope` with `lockedAt` returns the target it started
+        // from, to within the single flooring step each performs. Every triple that survives
+        // `deriveSlope` therefore passes this, provably: no caller can trip it.
+        //
+        // What it guards is the pair of formulas. `deriveSlope` and `lockedAt` are inverses,
+        // stated once in `LinearCurveMath` and nowhere enforced; edit either so they stop
+        // agreeing and construction fails here rather than shipping a curve whose published
+        // `target` is not the 0G it accounts for. Deploying a curve is the moment to notice.
+        //
+        // The tolerance is the exact flooring quantum, not a round number. It scales with
+        // `cap^2` -- roughly 4.3e7 wei-0G at the production anchor and 5e15 at a hundred
+        // million iAI -- so a constant chosen for one anchor is either blind or spuriously
+        // strict at the other.
         uint256 atCap = LinearCurveMath.lockedAt(r0_, slope_, cap_);
-        // Flooring `slope` puts `lockedAt(cap)` a hair under `target`; anything further off
-        // means the three numbers do not describe the curve they claim to.
-        if (atCap > target_ || target_ - atCap >= 1e12) revert CurveMissesTarget(atCap, target_);
+        if (atCap > target_ || target_ - atCap > LinearCurveMath.maxFlooringGap(cap_)) {
+            revert CurveFormulasDisagree(atCap, target_);
+        }
         if (LinearCurveMath.cost(r0_, slope_, 0, 1) == 0) revert CurveChargesNothing();
 
         // Evaluable at the extremes: the top of the curve, and the root solver's squared term.

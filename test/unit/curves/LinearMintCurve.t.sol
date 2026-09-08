@@ -117,11 +117,39 @@ contract LinearMintCurveTest is CurveConformanceTest {
         new LinearMintCurve(R0, CAP, (R0 * CAP) / WAD + 1);
     }
 
-    /// @dev A curve whose closed form does not land on its own target is not the curve its
-    ///      three numbers claim. Only flooring may separate them, and only by a hair.
-    function test_Constructor_ReachesItsOwnTarget() public view {
+    /// @dev The production curve lands on its target bar the flooring step -- 37,260,550 wei
+    ///      of 127,000,000 0G. Asserted against the quantum for this anchor rather than a round
+    ///      number, because the quantum is what the constructor compares against.
+    function test_ProductionCurveLandsOnItsTargetWithinTheFlooringQuantum() public view {
         uint256 shortfall = curve.target() - curve.lockedAt(curve.anchorCap());
-        assertLt(shortfall, 1e12, "lockedAt(cap) must land on target, bar the flooring gap");
+        assertEq(shortfall, CAP_SHORTFALL);
+        assertLe(shortfall, (CAP * CAP) / (WAD * WAD) / 2 + 1, "within one flooring step");
+    }
+
+    /**
+     * @dev The whole observable effect of computing the tolerance instead of fixing it at
+     *      1e12: a curve anchored far above production now constructs.
+     *
+     *      This one is production's exact price shape -- `r0` of 4,330 0G and a slope in the
+     *      same 2.02e18 band -- anchored at 100,000,000 iAI. Its flooring shortfall is
+     *      2.5e15 wei-0G, which sounds enormous and is 2.5e-19 of the target: the quantum
+     *      grows with `cap^2` while the target grows with it too, so the *relative* error is
+     *      unchanged from production's 2.9e-19. A fixed 1e12 rejected it anyway.
+     *
+     *      Nothing today needs an anchor this large. It is here because the failure it
+     *      replaces was silent in the worst way -- a well-formed curve refused at construction
+     *      with an error saying it missed a target it in fact hits.
+     */
+    function test_Constructor_AcceptsAWellFormedCurveAtAFarLargerAnchor() public {
+        uint256 largeCap = 100_000_000e18;
+        uint256 largeTarget = 10_108_424_235_021_743_707_500_000_000_000_000;
+
+        LinearMintCurve big = new LinearMintCurve(R0, largeCap, largeTarget);
+
+        assertEq(big.slope(), SLOPE, "the same slope as production, at 10,787x the anchor");
+        uint256 shortfall = big.target() - big.lockedAt(big.anchorCap());
+        assertEq(shortfall, 2_500_000_000_000_000, "far above the old fixed 1e12 tolerance");
+        assertLe(shortfall, (largeCap * largeCap) / (WAD * WAD) / 2 + 1, "within its own quantum");
     }
 
     /**

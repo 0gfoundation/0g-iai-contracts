@@ -273,6 +273,21 @@ Each of those answers a different question, and conflating them has already caus
   curve still priced real mints and is still live on chain; reconciling those mints needs its
   address.
 
+**A curve's constructor cannot validate its own parameters, and must not pretend to.** `slope` is
+derived *from* `target`, so composing `deriveSlope` with `lockedAt` returns the target it started
+from — every triple that survives `deriveSlope` hits its own target by construction. The
+consistency check in `LinearMintCurve`'s constructor is therefore provably unreachable from any
+caller, and that is fine: what it guards is that the two formulas stay inverses of one another.
+Edit either so they stop agreeing and the next deployment fails instead of shipping a curve whose
+published `target` is not the 0G it accounts for.
+
+Its tolerance is `LinearCurveMath.maxFlooringGap(cap)` — the exact quantum a single flooring step
+can lose, `cap^2 / (2*WAD^2) + 1` — and never a round number. The quantum is quadratic in the
+anchor: about 4.3e7 wei-0G at 9,270 iAI and 5e15 at 100,000,000 iAI. A constant picked for one
+anchor is blind at the other or rejects well-formed curves whose relative error is around 1e-19.
+The bound lives beside the formulas it is derived from, so the golden vectors cover it and there is
+only one definition of `WAD`.
+
 **A curve's parameters belong to the curve, and the record says so.** Everything a curve needs to
 be constructed sits under `CurveParams.<Kind>` — for the linear curve, `R0`, `AnchorCap` and
 `Target`. This is the one nested object in an otherwise flat file, and it earns the exception:
