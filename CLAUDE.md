@@ -217,6 +217,10 @@ Two Foundry behaviours worth knowing before writing tests here:
   call. `vault.grantRole(vault.PAUSER_ROLE(), x)` pranks `PAUSER_ROLE()`; `beacon.upgradeTo(address(
   new Impl()))` pranks the deployment. This has cost time three times in this repo. Hoist role
   constants and freshly deployed addresses into locals first.
+- **`vm.getRecordedLogs()` drains the buffer.** A second call after the same `vm.recordLogs()`
+  returns an empty array, so a helper that fetches internally can only be used once per
+  transaction. A test needing two events out of one call must fetch the logs itself and search the
+  array — that is what `_onlyIn` is for in `test/unit/Events.t.sol`.
 - **`setUp()` runs once**, and every test starts from a snapshot of the state it left. A value
   computed there is therefore identical in every test — including `vm.randomUint()`, which does vary
   when called from a test body but not from `setUp`. That is why the script tests take the directory
@@ -254,9 +258,27 @@ Note the last line's comment: `vm.serializeXxx` returns the completed document o
 call, so capturing it early silently drops everything serialized afterwards.
 
 **Curves are recorded by kind as well as by role.** A record carries `MintCurveKind` (which kind is
-in force), `MintCurve` (its address), and the address again under the kind's own name — today
-`LinearMintCurve`, tomorrow `ExponentialMintCurve` alongside it. That lets one record hold several
-deployed curves and still say which one is pricing, which is what `./run.sh setCurve <kind>` reads.
+in force), `MintCurve` (its address), the address again under the kind's own name — today
+`LinearMintCurve`, tomorrow `ExponentialMintCurve` alongside it — and `MintCurveHistory`, every
+curve the record has ever named. `./run.sh setCurve <kind>` reads the kind key.
+
+Each of those answers a different question, and conflating them has already caused two bugs:
+
+- The **kind key holds the newest curve of that kind**, not the active one. `deployCurve` and
+  `setCurve` are two steps on purpose, and between them the two disagree — so **`checkDeployment`
+  must compare the active curve against `MintCurve` only.** Requiring it to equal the kind key made
+  `./run.sh check` fail by construction in the window where an operator most wants to inspect a
+  curve before putting it in service.
+- A same-kind redeploy overwrites the kind key, which is why `MintCurveHistory` exists. A superseded
+  curve still priced real mints and is still live on chain; reconciling those mints needs its
+  address.
+
+**`CurveAnchorCap` is not `Cap`, even though a fresh deployment sets both from one number.**
+`Cap` is the vault's ceiling and moves with `setCap`; `CurveAnchorCap` is the supply a curve's slope
+was derived against, burned in at construction. They shared a key once, so deploying a curve after
+any cap change silently derived a *different* curve from the same published `R0` and `Target` —
+double the cap and the slope came out 271850478687441015 instead of 2021598247004348741, with every
+number involved still looking plausible. Never feed the vault's cap to a curve constructor.
 
 **Deploy scripts that touch collateral must be idempotent.** `Mock.s.sol` reuses an already-recorded
 `MockA0G` instead of deploying a new one. An unconditional redeploy is silent and total: every

@@ -9,6 +9,7 @@
   "Symbol": "iAI",
   "MintCurveKind": "LinearMintCurve",
   "R0": "4330000000000000000000",
+  "CurveAnchorCap": "9270000000000000000000",
   "Cap": "9270000000000000000000",
   "Target": "127000000000000000000000000",
   "CooldownDuration": "86400"

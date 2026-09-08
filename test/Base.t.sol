@@ -70,6 +70,7 @@ abstract contract BaseTest is Test, IAIDeployer {
                 foundation: foundation,
                 curveKind: "LinearMintCurve",
                 r0: R0,
+                curveAnchorCap: CAP,
                 cap: CAP,
                 target: TARGET,
                 cooldownDuration: COOLDOWN,

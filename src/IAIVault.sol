@@ -121,8 +121,16 @@ contract IAIVault is IIAIVault, AccessControlUpgradeable, PausableUpgradeable, R
         $.iai = IIAI(p.iai);
         $.a0G = IA0G(p.a0G);
         $.foundation = p.foundation;
+        // `_setCurve` validates the cap against the incoming curve's domain, so `_setCap`
+        // has nothing left to check here -- it only needs to store the value.
         _setCurve($, IMintCurve(p.curve), p.cap);
-        _setCap($, p.cap);
+        $.cap = p.cap;
+
+        // Emitted from the zero value, so the log stream alone carries the starting curve and
+        // ceiling. Without these an indexer would have to read the chain to learn where the
+        // later `CurveUpdated` / `CapUpdated` deltas began.
+        emit CurveUpdated(address(0), p.curve);
+        emit CapUpdated(0, p.cap);
 
         IA0GOracle o = IA0G(p.a0G).oracle();
         if (address(o) == address(0)) revert ZeroAddress();
@@ -288,7 +296,12 @@ contract IAIVault is IIAIVault, AccessControlUpgradeable, PausableUpgradeable, R
      * @param newCap The ceiling to install.
      */
     function _setCap(VaultStorage storage $, uint256 newCap) private {
-        _requireWithinDomain($.curve, newCap);
+        // Only a raise can leave the domain: the cap is already inside it, and both setters
+        // keep it there. Skipping the check when lowering is not an optimisation -- it is
+        // what keeps `setCap(0)` reachable when the curve in force reverts on every call.
+        // Otherwise closing issuance would depend on the very contract that has broken, and
+        // the only way out would be to first install a working curve.
+        if (newCap > $.cap) _requireWithinDomain($.curve, newCap);
         $.cap = newCap;
     }
 

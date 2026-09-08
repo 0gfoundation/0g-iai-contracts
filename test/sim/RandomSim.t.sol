@@ -22,7 +22,7 @@ import {LinearMintCurve} from "../../src/curves/LinearMintCurve.sol";
  *         simulation is for. It does **not** catch an algebraic one: it evaluates the same
  *         expansion the contract does, `R0*d + slope*d*(2s+d)/2`, rather than the equivalent
  *         `lockedAt(s+d) - lockedAt(s)`. The algebra is pinned elsewhere, by golden vectors
- *         computed outside this codebase and asserted in `test/unit/LinearCurveMath.t.sol`. Stating
+ *         computed outside this codebase and asserted in `test/unit/curves/LinearCurveMath.t.sol`. Stating
  *         this plainly because "independent shadow" would overclaim what these steps prove.
  *
  *      2. **State is compared after every operation, not at the end.** A mismatch then

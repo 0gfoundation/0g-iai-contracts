@@ -9,6 +9,7 @@ import {IAI} from "../../src/IAI.sol";
 import {IAIVault} from "../../src/IAIVault.sol";
 import {CreditRegistry} from "../../src/CreditRegistry.sol";
 import {MockA0G} from "../../src/mocks/MockA0G.sol";
+import {LinearMintCurve} from "../../src/curves/LinearMintCurve.sol";
 
 /**
  * @title DeployScriptTest
@@ -25,6 +26,8 @@ import {MockA0G} from "../../src/mocks/MockA0G.sol";
 contract DeployScriptTest is Test {
     uint256 internal constant DEPLOYER_PK =
         0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80;
+
+    uint256 internal constant CAP = 9_270e18;
 
     string internal dir;
     string internal file;
@@ -142,6 +145,77 @@ contract DeployScriptTest is Test {
         assertEq(
             vm.parseJsonAddress(vm.readFile(file), ".A0G"), mockA0G, "redeployed against the same a0G"
         );
+    }
+
+    /**
+     * @dev The curve's anchor and the vault's cap start life as the same number and then part
+     *      company: `setCap` moves the vault's, while the anchor is burned into a deployed
+     *      curve and only records how its slope was reached.
+     *
+     *      They used to share one record key, so deploying a curve after any cap change
+     *      derived a **different curve** from the same published `R0` and `Target` -- silently,
+     *      since every number involved still looked reasonable. Doubling the cap and
+     *      redeploying produced a slope of 271850478687441015 instead of
+     *      2021598247004348741: a curve nobody asked for, and one the golden vectors would
+     *      never be checked against because they only ever run against the constants.
+     */
+    function test_DeployCurve_IsUnaffectedByACapChange() public {
+        _bootstrap("curve-anchor");
+        _MockScript().run();
+        _IAIScript().run();
+
+        address original = vm.parseJsonAddress(vm.readFile(file), ".MintCurve");
+        uint256 slope = LinearMintCurve(original).slope();
+        assertEq(slope, 2_021_598_247_004_348_741, "the deployed curve is the published one");
+
+        // Governance moves the ceiling; the record follows.
+        _IAIScript().setCap(CAP * 2);
+        assertEq(vm.parseJsonUint(vm.readFile(file), ".Cap"), CAP * 2, "the vault's cap moved");
+
+        _IAIScript().deployCurve("LinearMintCurve");
+
+        LinearMintCurve redeployed =
+            LinearMintCurve(vm.parseJsonAddress(vm.readFile(file), ".LinearMintCurve"));
+        assertTrue(address(redeployed) != original, "a new curve was deployed");
+        assertEq(redeployed.slope(), slope, "the same parameters produced the same curve");
+        assertEq(redeployed.anchorCap(), CAP, "the anchor did not follow the cap");
+    }
+
+    /**
+     * @dev `deployCurve` and `setCurve` are two steps on purpose, and the check has to work in
+     *      between them -- that gap is precisely where an operator wants to look at a curve
+     *      before putting it in service. The check used to require the active curve to equal
+     *      whatever the kind key named, which is false by construction in that window.
+     *
+     *      Also asserts no address is lost. The kind key holds only the newest curve of its
+     *      kind, so a same-kind redeploy overwrites it; the history list is what keeps the
+     *      previous one, which still priced real mints and is still live on chain.
+     */
+    function test_DeployCurve_LeavesTheCheckWorkingAndLosesNoAddress() public {
+        _bootstrap("curve-two-step");
+        _MockScript().run();
+        _IAIScript().run();
+
+        address first = vm.parseJsonAddress(vm.readFile(file), ".MintCurve");
+        _IAIScript().checkDeployment();
+
+        _IAIScript().setCap(CAP * 2); // makes the second curve a different contract
+        _IAIScript().deployCurve("LinearMintCurve");
+        address second = vm.parseJsonAddress(vm.readFile(file), ".LinearMintCurve");
+        assertTrue(second != first, "the kind key now names the newer curve");
+
+        // The window between the two steps: still checkable.
+        _IAIScript().checkDeployment();
+        assertEq(vm.parseJsonAddress(vm.readFile(file), ".MintCurve"), first, "still pricing on the first");
+
+        _IAIScript().setCurve("LinearMintCurve");
+        assertEq(vm.parseJsonAddress(vm.readFile(file), ".MintCurve"), second, "now pricing on the second");
+        _IAIScript().checkDeployment();
+
+        address[] memory history = vm.parseJsonAddressArray(vm.readFile(file), ".MintCurveHistory");
+        assertEq(history.length, 2, "both curves are still named");
+        assertEq(history[0], first, "the superseded curve was not dropped");
+        assertEq(history[1], second);
     }
 
     function test_Scripts_ProduceASystemThatActuallyWorks() public {

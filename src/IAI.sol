@@ -54,7 +54,6 @@ contract IAI is IIAI, ERC20Upgradeable, AccessControlUpgradeable {
         _grantRole(DEFAULT_ADMIN_ROLE, _msgSender());
     }
 
-
     /// @inheritdoc IIAI
     function mint(address to, uint256 amount) external onlyRole(MINTER_BURNER_ROLE) {
         _mint(to, amount);

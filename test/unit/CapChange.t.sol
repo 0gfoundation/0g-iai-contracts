@@ -9,6 +9,38 @@ import {UpgradeChecker} from "../../script/deploy/UpgradeChecker.sol";
 import {IAccessControl} from "@openzeppelin/contracts/access/IAccessControl.sol";
 
 /**
+ * @dev A curve that answers normally until it is broken, standing in for one that stops
+ *      working after it is already in service.
+ *
+ *      It has to break *after* installation rather than before, because `setCurve` validates
+ *      the curve coming in -- a curve that reverts from the start simply cannot be installed.
+ *      That is not a contrived shape either: a curve behind a proxy can be upgraded into this
+ *      state, and the vault cannot tell a plain curve from a proxied one.
+ */
+contract BreakableCurve is IMintCurve {
+    bool public broken;
+
+    function breakIt() external {
+        broken = true;
+    }
+
+    function cost(uint256, uint256 amount) external view returns (uint256) {
+        require(!broken, "broken");
+        return amount;
+    }
+
+    function quoteForValue(uint256, uint256 delta0G) external view returns (uint256) {
+        require(!broken, "broken");
+        return delta0G;
+    }
+
+    function maxSafeSupply() external view returns (uint256) {
+        require(!broken, "broken");
+        return 2 ** 127;
+    }
+}
+
+/**
  * @title CapChangeTest
  * @notice Moving the supply ceiling, in both directions, including below the live supply.
  *
@@ -193,6 +225,34 @@ contract CapChangeTest is BaseTest, UpgradeChecker {
             abi.encodeWithSelector(IIAIVault.CapAboveCurveDomain.selector, domain + 1, domain)
         );
         vault.setCap(domain + 1);
+    }
+
+    /**
+     * @dev Lowering the cap must not depend on the curve in force answering a call. The domain
+     *      check exists to stop a *raise* leaving the range the curve can be evaluated in, and
+     *      the cap is already inside that range, so lowering cannot leave it.
+     *
+     *      What makes this load-bearing rather than tidy: closing issuance is the emergency
+     *      lever, and one of the emergencies is a curve that reverts on every call. If
+     *      `setCap` consulted the curve unconditionally, `setCap(0)` would be unreachable in
+     *      exactly that situation -- governance would have to install a working curve first,
+     *      briefly reopening issuance on a system it is trying to close.
+     */
+    function test_SetCap_CanBeLoweredWhileTheCurveIsBroken() public {
+        BreakableCurve curve = new BreakableCurve();
+        vault.setCurve(IMintCurve(address(curve)));
+        curve.breakIt();
+
+        vault.setCap(0);
+        assertEq(vault.cap(), 0, "issuance closed without the curve's cooperation");
+
+        // Raising still consults the curve, so a broken one blocks it -- which is the right
+        // way round: the check is there to keep a raise inside the curve's domain.
+        vm.expectRevert(bytes("broken"));
+        vault.setCap(CAP);
+
+        // Redemption carried on throughout.
+        _burnFor(alice, 100e18);
     }
 
     // -------------------------------------------------------------------------

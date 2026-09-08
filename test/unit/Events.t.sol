@@ -7,6 +7,10 @@ import {BaseTest} from "../Base.t.sol";
 import {ICreditRegistry} from "../../src/interfaces/ICreditRegistry.sol";
 import {IMintCurve} from "../../src/interfaces/IMintCurve.sol";
 import {LinearMintCurve} from "../../src/curves/LinearMintCurve.sol";
+import {IAIVault} from "../../src/IAIVault.sol";
+import {IIAIVault} from "../../src/interfaces/IIAIVault.sol";
+import {BeaconProxy} from "@openzeppelin/contracts/proxy/beacon/BeaconProxy.sol";
+import {UpgradeableBeacon} from "@openzeppelin/contracts/proxy/beacon/UpgradeableBeacon.sol";
 
 /**
  * @title EventsTest
@@ -39,8 +43,17 @@ contract EventsTest is BaseTest {
 
     /// @param topic0 Signature hash of the event to find.
     /// @return log The single matching entry. Reverts the test if there is not exactly one.
+    /// @dev Drains the recorded buffer, so it can only be called once per `recordLogs()`.
+    ///      When a test needs two events from one transaction, fetch the logs yourself and
+    ///      use `_onlyIn`.
     function _only(bytes32 topic0) internal returns (Vm.Log memory log) {
-        Vm.Log[] memory logs = vm.getRecordedLogs();
+        return _onlyIn(vm.getRecordedLogs(), topic0);
+    }
+
+    /// @param logs   Logs already fetched from the recorder.
+    /// @param topic0 Signature hash of the event to find.
+    /// @return log The single matching entry. Fails if there is not exactly one.
+    function _onlyIn(Vm.Log[] memory logs, bytes32 topic0) internal pure returns (Vm.Log memory log) {
         uint256 found;
         for (uint256 i = 0; i < logs.length; i++) {
             if (logs[i].topics[0] == topic0) {
@@ -48,7 +61,7 @@ contract EventsTest is BaseTest {
                 found++;
             }
         }
-        assertEq(found, 1, "expected exactly one matching event");
+        require(found == 1, "expected exactly one matching event");
     }
 
     function test_Minted_CarriesTheStateItLeft() public {
@@ -289,6 +302,38 @@ contract EventsTest is BaseTest {
         assertEq(previous, previousValue, "previous");
         assertEq(current, previousValue / 2, "current");
         assertEq(current, vault.cap(), "and matches storage");
+    }
+
+    /**
+     * @dev The starting curve and ceiling are logged too, from the zero value. Without them
+     *      the later `CurveUpdated` / `CapUpdated` deltas would have no origin, and an indexer
+     *      claiming to rebuild pricing from the log stream alone would have to go and read the
+     *      chain for the one value it cannot derive.
+     */
+    function test_Initialize_LogsTheStartingCurveAndCap() public {
+        UpgradeableBeacon beacon = new UpgradeableBeacon(address(new IAIVault()), admin);
+        IIAIVault.InitParams memory p = IIAIVault.InitParams({
+            iai: address(iai),
+            a0G: address(a0g),
+            foundation: foundation,
+            curve: address(mintCurve),
+            cap: CAP
+        });
+
+        vm.recordLogs();
+        new BeaconProxy(address(beacon), abi.encodeCall(IAIVault.initialize, (p)));
+        // Fetched once: `vm.getRecordedLogs()` drains the buffer, so calling `_only` twice
+        // here would search an empty array the second time.
+        Vm.Log[] memory logs = vm.getRecordedLogs();
+
+        Vm.Log memory curveLog = _onlyIn(logs, CURVE_UPDATED);
+        assertEq(address(uint160(uint256(curveLog.topics[1]))), address(0), "no previous curve");
+        assertEq(address(uint160(uint256(curveLog.topics[2]))), address(mintCurve));
+
+        (uint256 previous, uint256 current) =
+            abi.decode(_onlyIn(logs, CAP_UPDATED).data, (uint256, uint256));
+        assertEq(previous, 0, "no previous cap");
+        assertEq(current, CAP);
     }
 
     /// @dev The running totals have to stay continuous across a sequence, or an indexer cannot

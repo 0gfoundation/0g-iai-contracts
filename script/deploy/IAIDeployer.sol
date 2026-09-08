@@ -35,14 +35,22 @@ abstract contract IAIDeployer {
     /// @param foundation       Recipient of harvested yield.
     /// @param curveKind        Which curve to deploy. Only `"LinearMintCurve"` exists today.
     /// @param r0               Linear curve: marginal price at supply zero, 0G per iAI.
+    /// @param curveAnchorCap   Linear curve: the supply the slope is derived against, wei-iAI.
+    ///                         **Not the vault's cap**, even though a fresh deployment sets
+    ///                         both from the same number. The vault's cap is adjustable and
+    ///                         drifts; this one is burned into the curve at construction and
+    ///                         only records how the slope was reached. Feeding a moved cap in
+    ///                         here would silently derive a different curve from the same
+    ///                         published `r0` and `target`.
     /// @param cap              Starting supply ceiling, wei-iAI. Adjustable after launch.
-    /// @param target           Linear curve: 0G locked at `cap`; fixes the slope.
+    /// @param target           Linear curve: 0G locked at `curveAnchorCap`; fixes the slope.
     /// @param cooldownDuration Withdrawal delay in the credit registry.
     struct Config {
         address a0G;
         address foundation;
         string curveKind;
         uint256 r0;
+        uint256 curveAnchorCap;
         uint256 cap;
         uint256 target;
         uint256 cooldownDuration;
@@ -248,7 +256,7 @@ abstract contract IAIDeployer {
      */
     function _deployCurve(Config memory c) internal returns (IMintCurve) {
         if (keccak256(bytes(c.curveKind)) == keccak256(bytes("LinearMintCurve"))) {
-            return new LinearMintCurve(c.r0, c.cap, c.target);
+            return new LinearMintCurve(c.r0, c.curveAnchorCap, c.target);
         }
         revert(string.concat("unknown curve kind: ", c.curveKind));
     }

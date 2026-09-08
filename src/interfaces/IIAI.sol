@@ -5,12 +5,11 @@ import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 
 /**
  * @title IIAI
- * @notice The iAI token: a plain, freely transferable ERC-20; the supply ceiling is the vault's
- *         whose issuance is controlled entirely by the vault.
+ * @notice The iAI token: a plain, freely transferable ERC-20 whose issuance is controlled
+ *         entirely by the vault. It has no supply ceiling of its own -- the cap lives in the
+ *         vault, where it is adjustable, rather than being fixed here.
  */
 interface IIAI is IERC20 {
-
-
     /// @notice Role held only by the vault; there is no other issuance path.
     function MINTER_BURNER_ROLE() external view returns (bytes32);
 

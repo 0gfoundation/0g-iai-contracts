@@ -34,6 +34,7 @@ contract IAIScript is Script, JsonUtils, Constants, IAIDeployer {
             foundation: vm.parseJsonAddress(json, ".Foundation"),
             curveKind: vm.parseJsonString(json, ".MintCurveKind"),
             r0: vm.parseJsonUint(json, ".R0"),
+            curveAnchorCap: vm.parseJsonUint(json, ".CurveAnchorCap"),
             cap: vm.parseJsonUint(json, ".Cap"),
             target: vm.parseJsonUint(json, ".Target"),
             cooldownDuration: vm.parseJsonUint(json, ".CooldownDuration"),
@@ -65,6 +66,7 @@ contract IAIScript is Script, JsonUtils, Constants, IAIDeployer {
         vm.serializeAddress(obj, "Foundation", c.foundation);
         vm.serializeString(obj, "MintCurveKind", c.curveKind);
         vm.serializeString(obj, "R0", vm.toString(c.r0));
+        vm.serializeString(obj, "CurveAnchorCap", vm.toString(c.curveAnchorCap));
         vm.serializeString(obj, "Cap", vm.toString(c.cap));
         vm.serializeString(obj, "Target", vm.toString(c.target));
         vm.serializeString(obj, "CooldownDuration", vm.toString(c.cooldownDuration));
@@ -81,9 +83,12 @@ contract IAIScript is Script, JsonUtils, Constants, IAIDeployer {
         vm.serializeAddress(obj, "CreditRegistryBeacon", d.registryBeacon);
         vm.serializeAddress(obj, "CreditRegistry", d.registry);
 
-        // The active curve, and the same address under its own kind so a record can hold more
-        // than one deployed curve at a time.
+        // The active curve, the same address under its own kind, and the running list of
+        // every curve this record has named -- the kind key holds only the newest of its
+        // kind, so without the list a redeploy would drop an address that historical mints
+        // were priced by and that is still live on chain.
         vm.serializeAddress(obj, c.curveKind, d.curve);
+        vm.serializeAddress(obj, "MintCurveHistory", _appendCurve(json, d.curve));
         // Only the last `serialize` call returns the completed document.
         string memory finalJson = vm.serializeAddress(obj, "MintCurve", d.curve);
 
@@ -156,6 +161,7 @@ contract IAIScript is Script, JsonUtils, Constants, IAIDeployer {
             foundation: vm.parseJsonAddress(json, ".Foundation"),
             curveKind: kind,
             r0: vm.parseJsonUint(json, ".R0"),
+            curveAnchorCap: vm.parseJsonUint(json, ".CurveAnchorCap"),
             cap: vm.parseJsonUint(json, ".Cap"),
             target: vm.parseJsonUint(json, ".Target"),
             cooldownDuration: vm.parseJsonUint(json, ".CooldownDuration"),
@@ -169,10 +175,43 @@ contract IAIScript is Script, JsonUtils, Constants, IAIDeployer {
 
         string memory o = "iai";
         vm.serializeJson(o, json);
-        vm.writeJson(vm.serializeAddress(o, kind, deployed), path);
+        vm.serializeAddress(o, kind, deployed);
+        vm.writeJson(vm.serializeAddress(o, "MintCurveHistory", _appendCurve(json, deployed)), path);
 
         console.log("deployed       ", kind, deployed);
         console.log("Not yet in service. Switch with --sig 'setCurve(string)' when ready.");
+    }
+
+    /**
+     * @param json     The record as it stands.
+     * @param deployed The curve just deployed.
+     * @return next Every curve this record has ever named, with `deployed` appended.
+     *
+     * @dev The kind key holds only the newest curve of its kind, and `MintCurve` only the
+     *      active one, so without this a redeploy of the same kind would drop an address that
+     *      is still needed: reconciling historical mints means knowing which curve priced
+     *      them, and that curve is still live on chain whether or not the record names it.
+     */
+    function _appendCurve(string memory json, address deployed)
+        private
+        pure
+        returns (address[] memory next)
+    {
+        address[] memory previous;
+        try vm.parseJsonAddressArray(json, ".MintCurveHistory") returns (address[] memory a) {
+            previous = a;
+        } catch {
+            previous = new address[](0);
+        }
+        for (uint256 i = 0; i < previous.length; i++) {
+            if (previous[i] == deployed) return previous; // re-running a script, not a new curve
+        }
+
+        next = new address[](previous.length + 1);
+        for (uint256 i = 0; i < previous.length; i++) {
+            next[i] = previous[i];
+        }
+        next[previous.length] = deployed;
     }
 
     /**
@@ -240,6 +279,7 @@ contract IAIScript is Script, JsonUtils, Constants, IAIDeployer {
             foundation: vm.parseJsonAddress(json, ".Foundation"),
             curveKind: vm.parseJsonString(json, ".MintCurveKind"),
             r0: vm.parseJsonUint(json, ".R0"),
+            curveAnchorCap: vm.parseJsonUint(json, ".CurveAnchorCap"),
             cap: vm.parseJsonUint(json, ".Cap"),
             target: vm.parseJsonUint(json, ".Target"),
             cooldownDuration: vm.parseJsonUint(json, ".CooldownDuration"),
@@ -260,10 +300,6 @@ contract IAIScript is Script, JsonUtils, Constants, IAIDeployer {
         });
 
         _assertWiring(c, d);
-        require(
-            address(IAIVault(d.vault).curve()) == vm.parseJsonAddress(json, string.concat(".", c.curveKind)),
-            "the active curve is not the one recorded under its kind"
-        );
 
         console.log("network        ", networkName());
         console.log("every recorded address holds code and the wiring matches the file.");
