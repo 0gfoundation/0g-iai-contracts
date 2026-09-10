@@ -10,6 +10,10 @@ import {IAIVault} from "../../src/IAIVault.sol";
 import {CreditRegistry} from "../../src/CreditRegistry.sol";
 import {MockA0G} from "../../src/mocks/MockA0G.sol";
 import {LinearMintCurve} from "../../src/curves/LinearMintCurve.sol";
+import {ExponentialMintCurve} from "../../src/curves/ExponentialMintCurve.sol";
+import {ExponentialTable} from "../unit/curves/ExponentialTable.sol";
+import {IIAIVault} from "../../src/interfaces/IIAIVault.sol";
+import {IMintCurve} from "../../src/interfaces/IMintCurve.sol";
 import {MockW0G} from "../../src/mocks/MockW0G.sol";
 
 /**
@@ -85,18 +89,37 @@ contract DeployScriptTest is Test {
         // record can hold several deployed curves and still say which one is pricing.
         address recordedCurve = vm.parseJsonAddress(json, ".MintCurve");
         assertEq(recordedCurve, address(vault.curve()), "recorded curve matches the chain");
-        assertEq(vm.parseJsonAddress(json, ".LinearMintCurve"), recordedCurve, "recorded under its kind");
-        assertEq(vm.parseJsonString(json, ".MintCurveKind"), "LinearMintCurve");
+        assertEq(vm.parseJsonAddress(json, ".ExponentialMintCurve"), recordedCurve, "recorded under its kind");
+        assertEq(vm.parseJsonString(json, ".MintCurveKind"), "ExponentialMintCurve", "the default kind");
         assertEq(vm.parseJsonUint(json, ".Cap"), vault.cap(), "inputs echoed back intact");
 
         // The curve's own parameters are nested under its kind, and the script rewrites the
         // record around them without flattening or dropping them. Worth an assertion because
         // every other key in this file is a single flat level, so a future `serializeJson`
         // change would take the nesting out silently and `deployCurve` would stop resolving.
+        // The exponential block carries a 371-entry array, which is the shape most at risk.
         string memory at = string.concat(".CurveParams.", vm.parseJsonString(json, ".MintCurveKind"), ".");
-        assertEq(vm.parseJsonUint(json, string.concat(at, "R0")), 4_330e18);
-        assertEq(vm.parseJsonUint(json, string.concat(at, "AnchorCap")), CAP);
-        assertEq(vm.parseJsonUint(json, string.concat(at, "Target")), 127_000_000e18);
+        assertEq(vm.parseJsonUint(json, string.concat(at, "BucketWidth")), 25e18);
+        assertEq(vm.parseJsonUint(json, string.concat(at, "Base")), 3237.4e18);
+        assertEq(vm.parseJsonUint(json, string.concat(at, "Exponent")), 3.419e18);
+        assertEq(vm.parseJsonUint(json, string.concat(at, "Target")), CAP);
+        uint256[] memory prices = vm.parseJsonUintArray(json, string.concat(at, "Prices"));
+        assertEq(prices.length, 371, "the whole table survived the rewrite");
+        assertEq(prices[0], 3_237_400_217_108_237_297_865, "and so did its entries");
+        assertEq(prices[370], 99_415_286_098_687_872_720_911);
+
+        // The other kind's block is carried along too, so `deployCurve("LinearMintCurve")`
+        // keeps resolving on a record whose default is the exponential curve.
+        assertEq(vm.parseJsonUint(json, ".CurveParams.LinearMintCurve.R0"), 4330e18);
+        assertEq(vm.parseJsonUint(json, ".CurveParams.LinearMintCurve.AnchorCap"), CAP);
+        assertEq(vm.parseJsonUint(json, ".CurveParams.LinearMintCurve.Target"), 127_000_000e18);
+
+        // And the deployed curve is the table the record describes, entry for entry -- which
+        // is also what `checkDeployment` re-verifies on every run.
+        ExponentialMintCurve deployedCurve = ExponentialMintCurve(recordedCurve);
+        assertEq(deployedCurve.bucketCount(), 371);
+        assertEq(deployedCurve.priceAt(80), prices[80]);
+        assertEq(deployedCurve.maxSafeSupply(), 9275e18, "the table's top, five iAI above the cap");
 
         // A deployment that arrives open would be a launch incident.
         assertTrue(vault.paused(), "vault must arrive paused");
@@ -174,13 +197,18 @@ contract DeployScriptTest is Test {
         _MockScript().run();
         _IAIScript().run();
 
-        address original = vm.parseJsonAddress(vm.readFile(file), ".MintCurve");
+        // The default deployment is the exponential curve; the linear one is deployed on the
+        // side, from the block the record still carries for it.
+        _IAIScript().deployCurve("LinearMintCurve");
+        address original = vm.parseJsonAddress(vm.readFile(file), ".LinearMintCurve");
         uint256 slope = LinearMintCurve(original).slope();
         assertEq(slope, 2_021_598_247_004_348_741, "the deployed curve is the published one");
 
-        // Governance moves the ceiling; the record follows.
-        _IAIScript().setCap(CAP * 2);
-        assertEq(vm.parseJsonUint(vm.readFile(file), ".Cap"), CAP * 2, "the vault's cap moved");
+        // Governance moves the ceiling; the record follows. Lowered rather than raised: the
+        // exponential curve in force prices up to 9,275 iAI and the vault refuses a cap above
+        // that, while lowering never consults the curve.
+        _IAIScript().setCap(CAP / 2);
+        assertEq(vm.parseJsonUint(vm.readFile(file), ".Cap"), CAP / 2, "the vault's cap moved");
 
         _IAIScript().deployCurve("LinearMintCurve");
 
@@ -209,23 +237,109 @@ contract DeployScriptTest is Test {
         address first = vm.parseJsonAddress(vm.readFile(file), ".MintCurve");
         _IAIScript().checkDeployment();
 
-        _IAIScript().setCap(CAP * 2); // makes the second curve a different contract
+        _IAIScript().setCap(CAP / 2); // the record changes underneath; the curve does not care
         _IAIScript().deployCurve("LinearMintCurve");
         address second = vm.parseJsonAddress(vm.readFile(file), ".LinearMintCurve");
-        assertTrue(second != first, "the kind key now names the newer curve");
+        assertTrue(second != first, "the linear kind key names a curve the default never deployed");
 
-        // The window between the two steps: still checkable.
+        // The window between the two steps: still checkable, and the exponential table check
+        // still runs against the exponential kind key, which is still the deployed curve.
         _IAIScript().checkDeployment();
         assertEq(vm.parseJsonAddress(vm.readFile(file), ".MintCurve"), first, "still pricing on the first");
 
         _IAIScript().setCurve("LinearMintCurve");
         assertEq(vm.parseJsonAddress(vm.readFile(file), ".MintCurve"), second, "now pricing on the second");
+        assertEq(vm.parseJsonString(vm.readFile(file), ".MintCurveKind"), "LinearMintCurve");
+        _IAIScript().checkDeployment();
+
+        // And back: the testnet swap, rehearsed in both directions.
+        _IAIScript().setCurve("ExponentialMintCurve");
+        assertEq(vm.parseJsonAddress(vm.readFile(file), ".MintCurve"), first, "pricing on the exponential curve again");
         _IAIScript().checkDeployment();
 
         address[] memory history = vm.parseJsonAddressArray(vm.readFile(file), ".MintCurveHistory");
         assertEq(history.length, 2, "both curves are still named");
         assertEq(history[0], first, "the superseded curve was not dropped");
         assertEq(history[1], second);
+    }
+
+    /**
+     * @dev The table is constructor data, so nothing on chain can say whether a deployed curve
+     *      is the one the record describes -- except this check. Edit a parameter beside the
+     *      table without regenerating and redeploying, and `check` must refuse until the
+     *      record and the chain agree again.
+     */
+    function test_CheckDeployment_RefusesATableThatDisagreesWithItsParameters() public {
+        _bootstrap("curve-table-check");
+        _MockScript().run();
+        _IAIScript().run();
+        _IAIScript().checkDeployment();
+
+        string memory key = ".CurveParams.ExponentialMintCurve.BucketWidth";
+        vm.writeJson(vm.toString(uint256(50e18)), file, key);
+
+        IAIScript checker = _IAIScript();
+        vm.expectRevert(bytes("curve bucket width differs from the record"));
+        checker.checkDeployment();
+
+        // Restoring the record restores the check.
+        vm.writeJson(vm.toString(uint256(25e18)), file, key);
+        _IAIScript().checkDeployment();
+    }
+
+    /**
+     * @dev The consequence operators will meet first: the exponential curve prices up to the
+     *      top of its table and no further, so a cap above it cannot be paired with it in
+     *      either order. Raising the cap past the table means deploying a taller table first.
+     */
+    function test_SetCurve_ExponentialRefusesACapAboveItsTable() public {
+        _bootstrap("curve-domain");
+        _MockScript().run();
+        _IAIScript().run();
+
+        // The reverts are provoked on the vault directly, as the deployer: a revert inside a
+        // script leaves forge's broadcast open and the next script call trips over it.
+        IAIVault vault = IAIVault(vm.parseJsonAddress(vm.readFile(file), ".IAIVault"));
+        address deployer = vm.addr(DEPLOYER_PK);
+        vm.prank(deployer);
+        vm.expectRevert(abi.encodeWithSelector(IIAIVault.CapAboveCurveDomain.selector, CAP * 2, 9275e18));
+        vault.setCap(CAP * 2);
+
+        // The linear curve has room to spare, so the cap can move once it is in force ...
+        _IAIScript().deployCurve("LinearMintCurve");
+        _IAIScript().setCurve("LinearMintCurve");
+        _IAIScript().setCap(CAP * 2);
+
+        // ... but the exponential curve then cannot come back until the cap is inside its table.
+        address exponentialCurve = vm.parseJsonAddress(vm.readFile(file), ".ExponentialMintCurve");
+        vm.prank(deployer);
+        vm.expectRevert(abi.encodeWithSelector(IIAIVault.CapAboveCurveDomain.selector, CAP * 2, 9275e18));
+        vault.setCurve(IMintCurve(exponentialCurve));
+
+        _IAIScript().setCap(9275e18);
+        _IAIScript().setCurve("ExponentialMintCurve");
+        _IAIScript().checkDeployment();
+        assertEq(address(vault.curve()), exponentialCurve, "back on the table, with the cap at its top");
+    }
+
+    /// @dev The unit tests may not read files, so they use a generated Solidity copy of the
+    ///      table. This is the one place both are in reach; if they ever differ, the copy is
+    ///      stale and `gen_exponential_table.py --solidity` regenerates it.
+    function test_ExponentialTableLibrary_MatchesTheRecord() public view {
+        string memory template = vm.readFile(string.concat(vm.projectRoot(), "/deployments/iai-example.json"));
+        string memory at = ".CurveParams.ExponentialMintCurve.";
+        uint256[] memory recorded = vm.parseJsonUintArray(template, string.concat(at, "Prices"));
+        uint128[] memory library_ = ExponentialTable.prices();
+
+        assertEq(library_.length, recorded.length, "same number of buckets");
+        for (uint256 i = 0; i < recorded.length; i++) {
+            assertEq(uint256(library_[i]), recorded[i], "same price");
+        }
+        assertEq(ExponentialTable.BUCKET_WIDTH, vm.parseJsonUint(template, string.concat(at, "BucketWidth")));
+        assertEq(ExponentialTable.BASE, vm.parseJsonUint(template, string.concat(at, "Base")));
+        assertEq(ExponentialTable.EXPONENT, vm.parseJsonUint(template, string.concat(at, "Exponent")));
+        assertEq(ExponentialTable.TARGET, vm.parseJsonUint(template, string.concat(at, "Target")));
+        assertEq(ExponentialTable.CAP, vm.parseJsonUint(template, ".Cap"));
     }
 
     /**
@@ -250,7 +364,7 @@ contract DeployScriptTest is Test {
         vm.writeJson("[]", file, ".MintCurveHistory");
         assertEq(vm.parseJsonAddressArray(vm.readFile(file), ".MintCurveHistory").length, 0);
 
-        _IAIScript().setCap(CAP * 2); // makes the next curve a distinct contract
+        _IAIScript().setCap(CAP / 2); // lowered: the curve in force does not price above its table
         _IAIScript().deployCurve("LinearMintCurve");
 
         address[] memory history = vm.parseJsonAddressArray(vm.readFile(file), ".MintCurveHistory");

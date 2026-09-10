@@ -42,12 +42,13 @@ abstract contract CurveConformanceTest is Test {
     ///      the failure is silent and unrecoverable.
     function test_Conformance_CostIsNeverZero() public {
         IMintCurve c = _curve();
+        uint256 top = c.maxSafeSupply();
         uint256[] memory s = _supplies();
         uint256[] memory d = _amounts();
 
         for (uint256 i = 0; i < s.length; i++) {
             for (uint256 j = 0; j < d.length; j++) {
-                if (d[j] == 0) continue;
+                if (d[j] == 0 || s[i] + d[j] > top) continue;
                 assertGt(c.cost(s[i], d[j]), 0, "a positive amount must cost something");
             }
         }
@@ -55,18 +56,26 @@ abstract contract CurveConformanceTest is Test {
 
     /// @dev The marginal price may never fall as supply rises. A curve that dipped would let
     ///      a minter wait for someone else to push the supply up and then pay less.
+    ///
+    ///      Pairs that end past `maxSafeSupply()` are skipped rather than evaluated: rule 6
+    ///      scopes every promise to `[0, maxSafeSupply()]`, and a tabulated curve has a real
+    ///      edge there where the linear curve's arithmetic bound never came into view.
     function test_Conformance_CostIsMonotonicInSupply() public {
         IMintCurve c = _curve();
+        uint256 top = c.maxSafeSupply();
         uint256[] memory s = _supplies();
         uint256[] memory d = _amounts();
 
         for (uint256 j = 0; j < d.length; j++) {
             if (d[j] == 0) continue;
-            uint256 previous = c.cost(s[0], d[j]);
-            for (uint256 i = 1; i < s.length; i++) {
+            bool seen;
+            uint256 previous;
+            for (uint256 i = 0; i < s.length; i++) {
+                if (s[i] + d[j] > top) continue;
                 uint256 current = c.cost(s[i], d[j]);
-                assertGe(current, previous, "cost fell as supply rose");
+                if (seen) assertGe(current, previous, "cost fell as supply rose");
                 previous = current;
+                seen = true;
             }
         }
     }
@@ -77,6 +86,7 @@ abstract contract CurveConformanceTest is Test {
     ///      direction fails here rather than being noticed years later on a chain.
     function test_Conformance_SplittingIsNeverCheaper() public {
         IMintCurve c = _curve();
+        uint256 top = c.maxSafeSupply();
         uint256[] memory s = _supplies();
         uint256[] memory d = _amounts();
 
@@ -87,6 +97,7 @@ abstract contract CurveConformanceTest is Test {
                     uint256 b = d[k];
                     if (a == 0 || b == 0) continue;
                     if (s[i] > type(uint256).max - a - b) continue;
+                    if (s[i] + a + b > top) continue;
 
                     assertGe(
                         c.cost(s[i], a) + c.cost(s[i] + a, b),

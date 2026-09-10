@@ -4,8 +4,8 @@
 set -euo pipefail
 cd "$(dirname "$0")"
 
-source ./config.sh
-set -a; source .env; set +a
+source "${IAI_CONFIG:-./config.sh}"
+set -a; source "${IAI_ENV:-.env}"; set +a
 
 case "$CHAIN_ID" in
   16661) VERIFIER_URL="https://chainscan.0g.ai/open/api" ;;
@@ -35,7 +35,8 @@ verify() {
 # back off the deployed contract rather than out of the deployment record, because the record
 # describes the curve the parameters would build *now* while this verifies the one that is
 # actually deployed -- and after a parameter edit those are different curves. Reading the chain
-# cannot drift from the bytecode being verified.
+# cannot drift from the bytecode being verified. (The exponential table is the one exception,
+# noted below.)
 verify_curve() {
   local address; address=$(addr MintCurve)
   local kind; kind=$(addr MintCurveKind)
@@ -44,11 +45,31 @@ verify_curve() {
   fi
   [ -n "$kind" ] || { echo "skip MintCurve (no MintCurveKind recorded)"; return; }
 
-  local r0 anchor target args
-  r0=$(cast call "$address" "r0()(uint256)" --rpc-url "$RPC" | awk "{print \$1}")
-  anchor=$(cast call "$address" "anchorCap()(uint256)" --rpc-url "$RPC" | awk "{print \$1}")
-  target=$(cast call "$address" "target()(uint256)" --rpc-url "$RPC" | awk "{print \$1}")
-  args=$(cast abi-encode "constructor(uint256,uint256,uint256)" "$r0" "$anchor" "$target")
+  local args
+  case "$kind" in
+    LinearMintCurve)
+      local r0 anchor target
+      r0=$(cast call "$address" "r0()(uint256)" --rpc-url "$RPC" | awk "{print \$1}")
+      anchor=$(cast call "$address" "anchorCap()(uint256)" --rpc-url "$RPC" | awk "{print \$1}")
+      target=$(cast call "$address" "target()(uint256)" --rpc-url "$RPC" | awk "{print \$1}")
+      args=$(cast abi-encode "constructor(uint256,uint256,uint256)" "$r0" "$anchor" "$target")
+      ;;
+    ExponentialMintCurve)
+      # The scalars come off the chain as above. The table is 371 entries; `cast call` prints
+      # arrays annotated for humans and not re-encodable, so it is taken from the record instead
+      # -- which is safe only because `run.sh check` has compared the record's table with the
+      # chain's entry by entry. Run that first.
+      local width base exponent target prices
+      width=$(cast call "$address" "bucketWidth()(uint256)" --rpc-url "$RPC" | awk "{print \$1}")
+      base=$(cast call "$address" "base()(uint256)" --rpc-url "$RPC" | awk "{print \$1}")
+      exponent=$(cast call "$address" "exponent()(uint256)" --rpc-url "$RPC" | awk "{print \$1}")
+      target=$(cast call "$address" "target()(uint256)" --rpc-url "$RPC" | awk "{print \$1}")
+      prices=$(jq -r '.CurveParams.ExponentialMintCurve.Prices | "[" + join(",") + "]"' "$JSON")
+      args=$(cast abi-encode "constructor(uint256,uint128[],uint256,uint256,uint256)" \
+        "$width" "$prices" "$base" "$exponent" "$target")
+      ;;
+    *) echo "skip MintCurve (unknown kind $kind)"; return ;;
+  esac
 
   verify MintCurve "$kind" --constructor-args "$args"
 }

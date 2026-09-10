@@ -190,7 +190,40 @@ contract IAIScript is Script, JsonUtils, Constants, IAIDeployer {
                 })
             );
         }
+        if (keccak256(bytes(kind)) == keccak256(bytes(EXPONENTIAL))) {
+            return _deployExponentialCurve(_exponentialParamsOf(json));
+        }
         revert(string.concat("unknown curve kind: ", kind));
+    }
+
+    string private constant EXPONENTIAL = "ExponentialMintCurve";
+
+    /**
+     * @param json The record as it stands.
+     * @return p The exponential curve's block, table included.
+     *
+     * @dev Shared by `deployCurve` and `checkDeployment`, so the two cannot read the table
+     *      differently. The record stores every integer as a decimal string and forge coerces
+     *      those when parsing, the same way `Cap` is read; a value that does not fit the
+     *      contract's `uint128` entries is refused here rather than truncated.
+     */
+    function _exponentialParamsOf(
+        string memory json
+    ) private pure returns (ExponentialCurveParams memory p) {
+        string memory at = string.concat(".CurveParams.", EXPONENTIAL, ".");
+        uint256[] memory raw = vm.parseJsonUintArray(json, string.concat(at, "Prices"));
+        uint128[] memory prices = new uint128[](raw.length);
+        for (uint256 i = 0; i < raw.length; i++) {
+            require(raw[i] <= type(uint128).max, "ExponentialMintCurve price does not fit uint128");
+            prices[i] = uint128(raw[i]);
+        }
+        p = ExponentialCurveParams({
+            bucketWidth: vm.parseJsonUint(json, string.concat(at, "BucketWidth")),
+            prices: prices,
+            base: vm.parseJsonUint(json, string.concat(at, "Base")),
+            exponent: vm.parseJsonUint(json, string.concat(at, "Exponent")),
+            target: vm.parseJsonUint(json, string.concat(at, "Target"))
+        });
     }
 
     /**
@@ -329,6 +362,17 @@ contract IAIScript is Script, JsonUtils, Constants, IAIDeployer {
         });
 
         _assertWiring(c, d);
+
+        // The exponential curve is a table, and a table can only be checked entry by entry.
+        // Compared against the *kind key*, not `MintCurve`: the active curve may legitimately
+        // be an older one, while the kind key is by definition the newest curve built from the
+        // parameters beside it. Editing the parameters without redeploying makes this fail,
+        // which is the point -- `run.sh genCurve` then `deployCurve` is the way to change them.
+        string memory expAt = string.concat(".CurveParams.", EXPONENTIAL);
+        if (vm.keyExistsJson(json, expAt) && vm.keyExistsJson(json, string.concat(".", EXPONENTIAL))) {
+            address newest = vm.parseJsonAddress(json, string.concat(".", EXPONENTIAL));
+            if (newest != address(0)) _assertExponentialCurveMatches(newest, _exponentialParamsOf(json));
+        }
 
         console.log("network        ", networkName());
         console.log("every recorded address holds code and the wiring matches the file.");

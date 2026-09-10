@@ -166,6 +166,15 @@ IAIVault.quoteMint(uint256 d) view returns (uint256 delta0G, uint256 a0GIn)
 This is a `view` call — free, no gas, no wallet prompt. Re-run it whenever the input changes and
 again right before submitting, because the price rises as other people mint.
 
+**The price is a staircase, not a slope.** The curve in force is a table: supply is cut into buckets
+of 25 iAI and every bucket has one flat price, so the marginal price is constant inside a bucket and
+steps up at each boundary — by at most 2.8% on the current table, and by a fraction of a percent
+where the supply is today. `quoteMint` already accounts for a mint that straddles a boundary (it
+sums the two bucket prices exactly), so nothing changes in how you *call* it. What changes is how
+you *explain* it: "3,354.86 0G per iAI until 2,025 iAI are out, then 3,359.35" is a truer sentence
+than a smooth curve would allow. For a chart or a "next price" hint the curve exposes the table
+directly — see the companions in §4.
+
 **Quotes fail wherever the action they price would fail**, with the identical error. `quoteMint`
 raises `CapExceeded` and `quoteBurn` raises `BurnExceedsPosition` exactly where `mint` and `burn`
 do. That is deliberate: a quote that answered anyway would hand you a number the contract refuses a
@@ -209,6 +218,13 @@ transaction landing. Pass the quoted `a0GIn` widened by a tolerance. Too tight a
 reverts with `ExcessiveInput` on a busy block; too loose and the user can overpay. It is a hard cap
 on what leaves the wallet, so it can be reasoned about directly: the transaction will spend at most
 `maxA0GIn`, never more. `50` bps is a reasonable starting point.
+
+One case to be aware of with a stepped price: if the supply sits just under a bucket boundary and a
+competing mint crosses it first, your mint is repriced by a whole step rather than by a sliver. Near
+the top of the table a step is up to 2.8%, wider than 50 bps. The remedy is the same one already
+recommended — re-quote right before sending — and, if you want the tolerance to be exact, size it
+from the next bucket's price: `priceAt(bucketOf(supply) + 1)` against `priceAt(bucketOf(supply))`
+(§4) tells you precisely how much one step costs at the current supply.
 
 ```ts
 const TOLERANCE_BPS = 50n;                                   // 0.5%
@@ -259,9 +275,25 @@ IAIVault.remainingCap() view returns (uint256)   // headroom left to mint; 0 whe
 IAIVault.curve()        view returns (address)   // the pricing contract currently in force
 ```
 
+The curve in force, `ExponentialMintCurve`, also exposes its table, for charts and "next price"
+hints. These are on the curve contract (the address `IAIVault.curve()` returns), not on the vault:
+
+```solidity
+ExponentialMintCurve.bucketWidth()   view returns (uint256)    // 25e18: iAI per bucket
+ExponentialMintCurve.bucketCount()   view returns (uint256)    // 371
+ExponentialMintCurve.priceAt(i)      view returns (uint256)    // 0G per iAI in bucket i, 1e18-scaled
+ExponentialMintCurve.prices()        view returns (uint128[])  // the whole table, one call
+ExponentialMintCurve.bucketOf(s)     view returns (uint256)    // which bucket supply s is in
+ExponentialMintCurve.rateAt(s)       view returns (uint256)    // the marginal price at supply s
+```
+
+Treat these as optional and curve-specific: governance can point the vault at a curve of a
+different shape, in which case they will not exist. Check `curve()` and degrade to the vault's own
+quotes, which every curve supports.
+
 **Read these; never hard-code them.** The ceiling is adjustable in both directions and the pricing
 curve can be replaced, both by governance and without an upgrade. A UI that bakes in "9,270 iAI" or
-the curve's coefficients will silently show wrong numbers after either change. Always use
+the curve's table will silently show wrong numbers after either change. Always use
 `remainingCap()` rather than subtracting: the supply is allowed to be *above* the cap, so
 `cap() - totalSupply()` underflows and throws in JS `bigint`. `remainingCap()` saturates at `0`.
 
@@ -524,6 +556,8 @@ IAIVault.exchangeRate()                          -> uint256          // 0G per a
 IAIVault.cap()                                   -> uint256          // adjustable; read it, do not hard-code
 IAIVault.remainingCap()                          -> uint256          // headroom; 0 = minting closed
 IAIVault.curve()                                 -> address          // the pricing contract in force
+ExponentialMintCurve.priceAt(uint256 i)          -> uint256          // on curve(): bucket i's price, optional
+ExponentialMintCurve.rateAt(uint256 s)           -> uint256          // on curve(): marginal price at supply s, optional
 IAI.balanceOf(address) / totalSupply()           -> uint256
 CreditRegistry.stakedOf(address)                 -> uint256
 CreditRegistry.stakedInfoOf(address)             -> StakedInfo       // OBJECT: .amountStaked .coolDownAmount .coolDownEnd

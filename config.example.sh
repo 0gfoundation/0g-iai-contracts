@@ -1,6 +1,10 @@
 #!/usr/bin/env bash
 # Copy to config.sh and edit. config.sh is gitignored: each developer keeps their own
 # endpoints, and nothing here should ever reach the repository.
+#
+# The shells source `./config.sh` and `.env` unless IAI_CONFIG / IAI_ENV name other files. That
+# is how a rehearsal against a local anvil runs from a scratch directory (with DEPLOYMENT_PATH
+# pointing at a scratch record) without touching the real config or the real record.
 
 # The chain every script in this directory talks to. Everything else follows from it:
 # which deployments/iai-<chainid>.json is read, and which explorer verifies contracts.

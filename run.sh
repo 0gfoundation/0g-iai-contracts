@@ -11,15 +11,20 @@
 #   ./run.sh harvest      sweep accrued yield to the foundation
 #   ./run.sh redeployMock  replace the mock collateral -- ABANDONS every balance on the
 #                          old token; only for when the mock itself must change shape
+#   ./run.sh genCurve [flags]     (re)generate the ExponentialMintCurve price table into the
+#                                 record from its parameters (see script/curve/gen_exponential_table.py)
 #   ./run.sh deployCurve <Kind>   deploy a curve and record it under its kind name
 #   ./run.sh setCurve <Kind>      point the vault at a previously deployed curve
 #   ./run.sh setCap <amount>      move the supply ceiling (wei-iAI; below the live supply
 #                                 closes issuance and leaves redemption open)
+#
+# IAI_CONFIG and IAI_ENV override which config.sh and .env are sourced, so a rehearsal against
+# a local anvil can run from a scratch directory without editing the real ones.
 set -euo pipefail
 cd "$(dirname "$0")"
 
-source ./config.sh
-set -a; source .env; set +a
+source "${IAI_CONFIG:-./config.sh}"
+set -a; source "${IAI_ENV:-.env}"; set +a
 
 # Tests run under the default profile, where `deployments/` is read-only so a stray test
 # cannot overwrite a deployment record. Writing those records is this script's job.
@@ -33,8 +38,14 @@ CONFIG="${DEPLOYMENT_PATH:-deployments}/iai-${CHAIN_ID}.json"
 send() { forge script "$1" --rpc-url "$RPC" --broadcast $GAS_FLAGS "${@:2}"; }
 read_only() { forge script "$1" --rpc-url "$RPC" "${@:2}"; }
 
+# The exponential curve's table is derived from the parameters beside it, never hand-edited.
+# Re-derive and compare before anything reads it, so a stale table cannot be deployed or pass
+# a check. A record without the block passes trivially.
+check_table() { python3 script/curve/gen_exponential_table.py "$CONFIG" --check; }
+
 case "${1:-deploy}" in
   deploy)
+    check_table
     # Mock collateral exists only off mainnet; the script refuses to run there, so skip it
     # rather than let a non-zero exit stop the deployment.
     if [ "$CHAIN_ID" != "16661" ]; then
@@ -56,16 +67,25 @@ case "${1:-deploy}" in
     send script/deploy/Mock.s.sol --sig "redeploy()"
     ;;
   status)   read_only script/deploy/IAI.s.sol --sig "status()" ;;
-  check)    read_only script/deploy/IAI.s.sol --sig "checkDeployment()" ;;
+  check)
+    check_table
+    read_only script/deploy/IAI.s.sol --sig "checkDeployment()"
+    ;;
+  genCurve)
+    python3 script/curve/gen_exponential_table.py "$CONFIG" "${@:2}"
+    echo "Regenerated. The chain still has the old table: 'run.sh deployCurve ExponentialMintCurve'"
+    echo "then 'run.sh setCurve ExponentialMintCurve' puts the new one in service."
+    ;;
   unpause)  send script/deploy/IAI.s.sol --sig "unpause()" ;;
   pause)    send script/deploy/IAI.s.sol --sig "pause()" ;;
   harvest)  send script/deploy/IAI.s.sol --sig "harvest()" ;;
   deployCurve)
-    [ $# -eq 2 ] || { echo "usage: ./run.sh deployCurve <Kind>   e.g. LinearMintCurve"; exit 1; }
+    [ $# -eq 2 ] || { echo "usage: ./run.sh deployCurve <Kind>   e.g. ExponentialMintCurve"; exit 1; }
+    check_table
     send script/deploy/IAI.s.sol --sig "deployCurve(string)" "$2"
     ;;
   setCurve)
-    [ $# -eq 2 ] || { echo "usage: ./run.sh setCurve <Kind>   e.g. LinearMintCurve"; exit 1; }
+    [ $# -eq 2 ] || { echo "usage: ./run.sh setCurve <Kind>   e.g. ExponentialMintCurve"; exit 1; }
     send script/deploy/IAI.s.sol --sig "setCurve(string)" "$2"
     read_only script/deploy/IAI.s.sol --sig "checkDeployment()"
     ;;
@@ -73,5 +93,5 @@ case "${1:-deploy}" in
     [ $# -eq 2 ] || { echo "usage: ./run.sh setCap <amount in wei-iAI>"; exit 1; }
     send script/deploy/IAI.s.sol --sig "setCap(uint256)" "$2"
     ;;
-  *) echo "unknown command: $1"; sed -n '2,12p' "$0"; exit 1 ;;
+  *) echo "unknown command: $1"; sed -n '2,19p' "$0"; exit 1 ;;
 esac
