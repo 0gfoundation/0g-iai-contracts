@@ -257,6 +257,20 @@ vm.writeJson(finalJson, path);            // only the LAST serialize call return
 Note the last line's comment: `vm.serializeXxx` returns the completed document only from the final
 call, so capturing it early silently drops everything serialized afterwards.
 
+**Never `forge script --resume` a script that writes its own record.** These scripts write the
+deployment file during *simulation*, before broadcasting. `--resume` re-simulates from scratch and
+then sends only the transactions the previous broadcast never got to — so the record ends up naming
+a fresh set of addresses that were never deployed, while the pending transactions land on the
+previous set. It has happened: a run died on 0G's null-receipt flakiness after deploying every
+contract but before three role grants, and the resume left the record pointing at phantoms while
+correctly finishing the real system. `./run.sh check` caught it, which is what it is for.
+
+Recover by reading the true addresses out of `broadcast/<Script>/<chainId>/run-<ts>.json` — the
+`CREATE` entries carry `contractName` and `contractAddress` in deployment order — writing them back
+into the record, and then running `./run.sh check` so the chain, not the file, has the last word.
+The alternative, simply rerunning the whole deployment, is also fine and is usually quicker to
+reason about.
+
 **Curves are recorded by kind as well as by role.** A record carries `MintCurveKind` (which kind is
 in force), `MintCurve` (its address), the address again under the kind's own name — today
 `LinearMintCurve`, tomorrow `ExponentialMintCurve` alongside it — and `MintCurveHistory`, every
