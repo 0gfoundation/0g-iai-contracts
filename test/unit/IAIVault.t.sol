@@ -163,7 +163,7 @@ contract IAIVaultTest is BaseTest {
         (, uint256 nowCosts) = vault.quoteMint(d);
         assertGt(nowCosts, quoted, "the curve did move");
 
-        a0g.mint(alice, nowCosts);
+        a0g.faucetMint(alice, nowCosts);
         vm.prank(alice);
         a0g.approve(address(vault), type(uint256).max);
 
@@ -189,7 +189,7 @@ contract IAIVaultTest is BaseTest {
         (, uint256 nowCosts) = vault.quoteMint(d);
         assertGt(nowCosts, quoted, "the rate move raised the cost");
 
-        a0g.mint(alice, nowCosts);
+        a0g.faucetMint(alice, nowCosts);
         vm.expectRevert(abi.encodeWithSelector(IIAIVault.ExcessiveInput.selector, nowCosts, quoted));
         vm.prank(alice);
         vault.mint(d, quoted, block.timestamp);
@@ -198,7 +198,7 @@ contract IAIVaultTest is BaseTest {
     function test_Mint_TakesNoMoreThanQuoted() public {
         uint256 d = 5e18;
         (, uint256 a0GIn) = vault.quoteMint(d);
-        a0g.mint(alice, a0GIn * 2);
+        a0g.faucetMint(alice, a0GIn * 2);
         vm.prank(alice);
         a0g.approve(address(vault), type(uint256).max);
         vm.prank(alice);

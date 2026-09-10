@@ -27,7 +27,7 @@ locked, and the yield the collateral earned in the meantime is swept to the foun
 | `src/interfaces/IMintCurve.sol` | The pricing surface the vault calls. Three `view` functions, so a curve reaches the vault by `STATICCALL` and can neither write state nor reenter. |
 | `src/curves/LinearMintCurve.sol` | The curve in force. Every parameter `immutable`, zero storage — a curve is a value, and replacing one means deploying another and repointing the vault. |
 | `src/curves/LinearCurveMath.sol` | The linear curve's closed form. A library: no storage, no state. |
-| `src/mocks/` | Stand-in a0G and its oracle, for networks without the real thing. In `src/` rather than `test/` because they are deployed and verified on testnets. |
+| `src/mocks/` | Stand-in a0G, its oracle, and a W0G for the a0G vault to sit over, for networks without the real things. In `src/` rather than `test/` because they are deployed and verified on testnets. `MockA0G` mirrors the real token's shape: an ERC-4626 whose share price comes from the oracle, not from what it holds. |
 
 ### The curve
 
@@ -122,7 +122,7 @@ addresses of what was deployed come back into the same file. `iai-example.json` 
 
 ```bash
 forge build
-forge test                      # 182 tests, a few seconds
+forge test                      # 196 tests, a few seconds
 SIM_LONG=1 forge test --match-test test_Sim_Long   # 100k-operation simulation
 ```
 

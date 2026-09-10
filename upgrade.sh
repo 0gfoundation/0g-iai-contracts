@@ -42,19 +42,26 @@ if [ "${1:-}" = "rehearse" ]; then
   # The layout diff needs the *current* on-chain build, so capture it before recompiling.
   forge inspect "$NAME" storageLayout > /tmp/iai-layout-before.json
 
+  # The rehearsal calls the same entry point a real upgrade does, and that entry point records
+  # the implementation address it just deployed. On a fork that address exists nowhere else,
+  # so letting it write the real record would replace a live implementation with one that has
+  # no code -- silently, until `./run.sh check` refused to pass. Point the whole rehearsal at
+  # a throwaway copy of the record instead; the snapshot lands there too, so nothing the fork
+  # produces can outlive it.
+  REHEARSAL_DIR="cache/upgrade-rehearsal-${CHAIN_ID}"
+  rm -rf "$REHEARSAL_DIR"; mkdir -p "$REHEARSAL_DIR"
+  cp "${DEPLOYMENT_PATH:-deployments}/iai-${CHAIN_ID}.json" "$REHEARSAL_DIR/"
+  export DEPLOYMENT_PATH="$REHEARSAL_DIR"
+
   echo "Forking $RPC as chain $CHAIN_ID ..."
   anvil --fork-url "$RPC" --chain-id "$CHAIN_ID" --silent &
   ANVIL_PID=$!
-  trap 'kill $ANVIL_PID 2>/dev/null || true' EXIT
+  trap 'kill $ANVIL_PID 2>/dev/null || true; rm -rf "$REHEARSAL_DIR"' EXIT
   until cast block-number --rpc-url "$FORK_RPC" >/dev/null 2>&1; do sleep 1; done
 
   forge script script/Upgrade.s.sol --sig "snapshot()"         --rpc-url "$FORK_RPC"
   forge script script/Upgrade.s.sol --sig "$SIG"               --rpc-url "$FORK_RPC" --broadcast
   forge script script/Upgrade.s.sol --sig "postUpgradeCheck()" --rpc-url "$FORK_RPC"
-
-  # The snapshot the fork wrote is not the live chain's; drop it so a later real upgrade
-  # cannot compare against it by accident.
-  rm -f "deployments/upgrade-snapshot-${CHAIN_ID}.json"
 
   forge inspect "$NAME" storageLayout > /tmp/iai-layout-after.json
   echo

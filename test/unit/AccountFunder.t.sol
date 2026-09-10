@@ -24,8 +24,8 @@ contract AccountFunderTest is Test, IAIDeployer, AccountFunder {
     MockA0G internal a0g;
 
     function setUp() public {
-        (, a0g) = _deployMockCollateral(
-            MockConfig({initialValue: 1e18, apr: 0.15e18, maxAge: 21 days}), address(this)
+        (, a0g,) = _deployMockCollateral(
+            MockConfig({asset: address(0), initialValue: 1e18, apr: 0.15e18, maxAge: 21 days}), address(this)
         );
         vm.deal(address(this), 1000 ether);
     }

@@ -257,6 +257,28 @@ vm.writeJson(finalJson, path);            // only the LAST serialize call return
 Note the last line's comment: `vm.serializeXxx` returns the completed document only from the final
 call, so capturing it early silently drops everything serialized afterwards.
 
+**A rehearsal must not be able to write the real deployment record.** `./upgrade.sh rehearse`
+calls the same entry point a real upgrade does, and that entry point records the implementation
+address it just deployed — on a fork, an address that exists nowhere else. It used to write that
+into the live record, replacing a working implementation with one that has no code, and nothing
+said so until `./run.sh check` refused to pass. The rehearsal now redirects `DEPLOYMENT_PATH` to a
+throwaway copy under `cache/`, so the snapshot and the record it produces both die with it. Any
+future script that both forks and records needs the same treatment.
+
+**Never `forge script --resume` a script that writes its own record.** These scripts write the
+deployment file during *simulation*, before broadcasting. `--resume` re-simulates from scratch and
+then sends only the transactions the previous broadcast never got to — so the record ends up naming
+a fresh set of addresses that were never deployed, while the pending transactions land on the
+previous set. It has happened: a run died on 0G's null-receipt flakiness after deploying every
+contract but before three role grants, and the resume left the record pointing at phantoms while
+correctly finishing the real system. `./run.sh check` caught it, which is what it is for.
+
+Recover by reading the true addresses out of `broadcast/<Script>/<chainId>/run-<ts>.json` — the
+`CREATE` entries carry `contractName` and `contractAddress` in deployment order — writing them back
+into the record, and then running `./run.sh check` so the chain, not the file, has the last word.
+The alternative, simply rerunning the whole deployment, is also fine and is usually quicker to
+reason about.
+
 **Curves are recorded by kind as well as by role.** A record carries `MintCurveKind` (which kind is
 in force), `MintCurve` (its address), the address again under the kind's own name — today
 `LinearMintCurve`, tomorrow `ExponentialMintCurve` alongside it — and `MintCurveHistory`, every
@@ -316,6 +338,24 @@ balance ever minted stays in the old token while the new system points at an emp
 reverts, and on a testnet with funded accounts it destroys all of them. Redeploying the *system*
 against existing collateral is a supported operation and is how the testnet gets a rebuilt vault
 without re-funding accounts.
+
+There is one way past that guard, `./run.sh redeployMock`, for the case the guard cannot serve:
+the mock itself has to change shape. It is a separate named entry point rather than a flag,
+because nothing should reach it by rerunning a deployment, and it prints what it abandons before
+it does anything. Using it commits you to the rest of the sequence — the vault caches its
+collateral address at `initialize` and has no setter, so a new token means a new vault, which
+means the whole system is redeployed and the accounts refunded from the new token.
+
+**A mock's share price comes from the oracle, never from what it holds.** `MockA0G` is an ERC-4626
+over W0G, and the only conversion input it overrides is `totalAssets() = totalSupply() *
+oracle.getValue() / 1e18` — which is exactly, and only, what the real token (Mellow's
+`SourceCore`) overrides. Everything else is OpenZeppelin's and follows from that one number.
+Deriving the price from the balance held instead would break an identity that holds on mainnet:
+`oracle.getValue()`, `convertToAssets(1e18)` and `totalAssets/totalSupply` are all the same
+number there, because W0G is one-for-one with 0G. A caller sizing a deposit from `previewDeposit`
+would then be handed an amount the vault values differently. It also means the unrestricted
+faucet is harmless to the accounting: minting shares with nothing behind them leaves
+`totalAssets` consistent, because it was never counting the balance.
 
 ## Secrets
 

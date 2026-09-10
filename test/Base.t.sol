@@ -60,8 +60,8 @@ abstract contract BaseTest is Test, IAIDeployer {
     function setUp() public virtual {
         // Same helper the testnet script uses, so the fixture cannot drift from what gets
         // deployed. Only the numbers differ, and they come from the deployment file there.
-        (oracle, a0g) = _deployMockCollateral(
-            MockConfig({initialValue: ER0, apr: DEFAULT_APR, maxAge: ORACLE_MAX_AGE}), admin
+        (oracle, a0g,) = _deployMockCollateral(
+            MockConfig({asset: address(0), initialValue: ER0, apr: DEFAULT_APR, maxAge: ORACLE_MAX_AGE}), admin
         );
 
         Deployment memory d = _deployIAISystem(
@@ -114,7 +114,7 @@ abstract contract BaseTest is Test, IAIDeployer {
     /// @notice Funds `who` with enough a0G to mint `d` iAI and approves the vault.
     function _fund(address who, uint256 d) internal returns (uint256 a0GIn) {
         (, a0GIn) = vault.quoteMint(d);
-        a0g.mint(who, a0GIn);
+        a0g.faucetMint(who, a0GIn);
         vm.prank(who);
         a0g.approve(address(vault), a0GIn);
     }

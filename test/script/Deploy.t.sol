@@ -10,6 +10,7 @@ import {IAIVault} from "../../src/IAIVault.sol";
 import {CreditRegistry} from "../../src/CreditRegistry.sol";
 import {MockA0G} from "../../src/mocks/MockA0G.sol";
 import {LinearMintCurve} from "../../src/curves/LinearMintCurve.sol";
+import {MockW0G} from "../../src/mocks/MockW0G.sol";
 
 /**
  * @title DeployScriptTest
@@ -139,7 +140,7 @@ contract DeployScriptTest is Test {
 
         // Someone holds collateral in it, the way the funded test accounts do.
         address holder = makeAddr("funded account");
-        MockA0G(mockA0G).mint(holder, 400_000e18);
+        MockA0G(mockA0G).faucetMint(holder, 400_000e18);
 
         _MockScript().run();
 
@@ -258,6 +259,59 @@ contract DeployScriptTest is Test {
         assertEq(history[1], vm.parseJsonAddress(vm.readFile(file), ".LinearMintCurve"));
     }
 
+    /**
+     * @dev The deliberate way past the reuse guard, for the one case that needs it: the mock
+     *      itself changed shape. It must actually replace the token and rewrite every key
+     *      that names it, or the system would be redeployed against a stale address.
+     */
+    function test_MockScript_RedeployReplacesTheCollateralAndRewritesEveryKey() public {
+        _bootstrap("mock-redeploy");
+        _MockScript().run();
+
+        string memory json = vm.readFile(file);
+        address first = vm.parseJsonAddress(json, ".MockA0G");
+        address holder = makeAddr("funded account");
+        MockA0G(first).faucetMint(holder, 400_000e18);
+
+        _MockScript().redeploy();
+
+        string memory json2 = vm.readFile(file);
+        address second = vm.parseJsonAddress(json2, ".MockA0G");
+        assertTrue(second != first, "the mock really was replaced");
+        assertEq(vm.parseJsonAddress(json2, ".A0G"), second, "and the system will wire to it");
+        assertTrue(vm.parseJsonAddress(json2, ".MockA0GOracle") != address(0), "oracle recorded");
+        assertEq(MockA0G(second).asset(), vm.parseJsonAddress(json2, ".W0G"), "underlying recorded");
+
+        // The point of the guard this walked past: the old balance is gone, not migrated.
+        assertEq(MockA0G(second).balanceOf(holder), 0, "nothing migrates -- this is the cost");
+        assertEq(MockA0G(first).balanceOf(holder), 400_000e18, "it is stranded on the old token");
+    }
+
+    /**
+     * @dev A network that already has the real W0G names it in the record, and the script
+     *      must build the vault over that rather than deploying a stand-in beside it. Getting
+     *      this wrong would give the testnet an a0G whose underlying nobody holds, so the
+     *      wrapping hop it exists to exercise would not work.
+     */
+    function test_MockScript_UsesTheRecordedW0GAndNeverOverwritesIt() public {
+        _bootstrap("mock-real-w0g");
+
+        MockW0G real = new MockW0G();
+        vm.writeJson(vm.toString(address(real)), file, ".W0G");
+
+        _MockScript().run();
+
+        string memory json = vm.readFile(file);
+        assertEq(vm.parseJsonAddress(json, ".W0G"), address(real), "the recorded W0G stands");
+        assertEq(MockA0G(vm.parseJsonAddress(json, ".MockA0G")).asset(), address(real));
+
+        // And a redeploy keeps using it: the underlying is not ours to replace.
+        _MockScript().redeploy();
+        string memory json2 = vm.readFile(file);
+        assertEq(vm.parseJsonAddress(json2, ".W0G"), address(real), "still the recorded one");
+        assertEq(MockA0G(vm.parseJsonAddress(json2, ".MockA0G")).asset(), address(real));
+    }
+
     function test_Scripts_ProduceASystemThatActuallyWorks() public {
         _bootstrap("works");
         _MockScript().run();
@@ -277,7 +331,7 @@ contract DeployScriptTest is Test {
         // Mint through the deployed system.
         address user = makeAddr("user");
         (, uint256 a0GIn) = vault.quoteMint(1e18);
-        a0g.mint(user, a0GIn);
+        a0g.faucetMint(user, a0GIn);
         vm.prank(user);
         a0g.approve(address(vault), a0GIn);
         vm.prank(user);
