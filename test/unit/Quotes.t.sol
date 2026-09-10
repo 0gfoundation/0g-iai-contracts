@@ -24,7 +24,7 @@ contract QuotesTest is BaseTest {
         (, uint256 quotedIn) = vault.quoteMint(d);
 
         // Funded with exactly `x`: if the quote asked for a wei more, the mint cannot pay.
-        a0g.mint(alice, x);
+        a0g.faucetMint(alice, x);
         vm.prank(alice);
         a0g.approve(address(vault), x);
         vm.prank(alice);
@@ -50,7 +50,7 @@ contract QuotesTest is BaseTest {
         uint256 d = vault.quoteMintForA0G(x);
         if (d == 0) return;
 
-        a0g.mint(alice, x);
+        a0g.faucetMint(alice, x);
         vm.prank(alice);
         a0g.approve(address(vault), x);
         vm.prank(alice);
@@ -69,7 +69,7 @@ contract QuotesTest is BaseTest {
         assertEq(vault.quoteMintForA0G(forEverything * 10), headroom, "clamped to what is left");
 
         // And the clamped amount is still mintable, which is the point of clamping.
-        a0g.mint(alice, forEverything * 10);
+        a0g.faucetMint(alice, forEverything * 10);
         vm.prank(alice);
         a0g.approve(address(vault), type(uint256).max);
         vm.prank(alice);
@@ -154,7 +154,7 @@ contract QuotesTest is BaseTest {
     function test_Mint_UnderfundedRaisesTheCollateralTokensOwnError() public {
         (, uint256 needs) = vault.quoteMint(1e18);
 
-        a0g.mint(alice, needs - 1);
+        a0g.faucetMint(alice, needs - 1);
         vm.prank(alice);
         a0g.approve(address(vault), type(uint256).max);
 
@@ -170,7 +170,7 @@ contract QuotesTest is BaseTest {
     /// @dev And a missing approval raises a0G's allowance error, not a vault error.
     function test_Mint_WithoutApprovalRaisesTheAllowanceError() public {
         (, uint256 needs) = vault.quoteMint(1e18);
-        a0g.mint(alice, needs);
+        a0g.faucetMint(alice, needs);
 
         vm.expectRevert(
             abi.encodeWithSignature(

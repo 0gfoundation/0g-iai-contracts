@@ -18,9 +18,13 @@ import {IA0GOracle} from "./IA0GOracle.sol";
  *      - It has **no `permit`** (`ERC4626Upgradeable` does not inherit `ERC20Permit`),
  *        so every deposit needs a separate `approve` transaction.
  *
- *      Deliberately omits the ERC-4626 surface. `withdraw`/`redeem` revert on a0G, and
- *      `maxWithdraw`/`maxRedeem` return non-zero anyway, so exposing them would invite
- *      a caller to trust numbers that do not hold.
+ *      Deliberately omits the ERC-4626 surface, which iAI never calls. Note what that
+ *      omission does *not* mean: a0G is redeemable. It reverts in `_withdraw`, so ERC-4626's
+ *      `withdraw` and `redeem` do not work, but redemption goes through `requestWithdrawal`
+ *      into an epoch-based queue instead. `maxWithdraw`/`maxRedeem` still return non-zero,
+ *      describing an exit that is not the one a holder actually takes — which is the reason
+ *      to leave the whole surface out rather than expose numbers that do not mean what they
+ *      appear to.
  */
 interface IA0G is IERC20 {
     /// @notice The oracle whose value prices a0G against 0G. Fixed at construction upstream.

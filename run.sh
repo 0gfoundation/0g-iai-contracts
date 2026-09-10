@@ -9,6 +9,8 @@
 #   ./run.sh unpause      open issuance
 #   ./run.sh pause        close issuance
 #   ./run.sh harvest      sweep accrued yield to the foundation
+#   ./run.sh redeployMock  replace the mock collateral -- ABANDONS every balance on the
+#                          old token; only for when the mock itself must change shape
 #   ./run.sh deployCurve <Kind>   deploy a curve and record it under its kind name
 #   ./run.sh setCurve <Kind>      point the vault at a previously deployed curve
 #   ./run.sh setCap <amount>      move the supply ceiling (wei-iAI; below the live supply
@@ -48,6 +50,11 @@ case "${1:-deploy}" in
     echo "the multisig before launch."
     ;;
   accounts) send script/deploy/Accounts.s.sol ;;
+  redeployMock)
+    # Deliberately not part of `deploy`: it walks past the guard that stops a rerun from
+    # orphaning every balance on the existing mock.
+    send script/deploy/Mock.s.sol --sig "redeploy()"
+    ;;
   status)   read_only script/deploy/IAI.s.sol --sig "status()" ;;
   check)    read_only script/deploy/IAI.s.sol --sig "checkDeployment()" ;;
   unpause)  send script/deploy/IAI.s.sol --sig "unpause()" ;;

@@ -218,7 +218,7 @@ contract RandomSimTest is BaseTest {
 
         if (mPaused) {
             // `whenNotPaused` is a modifier, so it fires ahead of the body's own cap check.
-            if (!overCap) a0g.mint(a, expectedIn);
+            if (!overCap) a0g.faucetMint(a, expectedIn);
             vm.expectRevert(abi.encodeWithSignature("EnforcedPause()"));
             vm.prank(a);
             vault.mint(d, expectedIn, block.timestamp);
@@ -238,7 +238,7 @@ contract RandomSimTest is BaseTest {
         // Funded with exactly the shadow's price, so the balance must come back to where it
         // started: a wei more and the transfer fails, a wei less and this assertion does.
         uint256 heldBefore = a0g.balanceOf(a);
-        a0g.mint(a, expectedIn);
+        a0g.faucetMint(a, expectedIn);
         vm.prank(a);
         vault.mint(d, expectedIn, block.timestamp);
 
@@ -538,7 +538,7 @@ contract RandomSimTest is BaseTest {
             if (mSupply + 1e18 > mCap) return;
             uint256 needs = _shadowCeilDiv(_shadowCost(mSupply, 1e18) * WAD, vault.exchangeRate());
             if (needs == 0) return;
-            a0g.mint(a, needs);
+            a0g.faucetMint(a, needs);
             vm.expectRevert(abi.encodeWithSelector(IIAIVault.ExcessiveInput.selector, needs, needs - 1));
             vm.prank(a);
             vault.mint(1e18, needs - 1, block.timestamp);

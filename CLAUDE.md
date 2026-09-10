@@ -317,6 +317,24 @@ reverts, and on a testnet with funded accounts it destroys all of them. Redeploy
 against existing collateral is a supported operation and is how the testnet gets a rebuilt vault
 without re-funding accounts.
 
+There is one way past that guard, `./run.sh redeployMock`, for the case the guard cannot serve:
+the mock itself has to change shape. It is a separate named entry point rather than a flag,
+because nothing should reach it by rerunning a deployment, and it prints what it abandons before
+it does anything. Using it commits you to the rest of the sequence — the vault caches its
+collateral address at `initialize` and has no setter, so a new token means a new vault, which
+means the whole system is redeployed and the accounts refunded from the new token.
+
+**A mock's share price comes from the oracle, never from what it holds.** `MockA0G` is an ERC-4626
+over W0G, and the only conversion input it overrides is `totalAssets() = totalSupply() *
+oracle.getValue() / 1e18` — which is exactly, and only, what the real token (Mellow's
+`SourceCore`) overrides. Everything else is OpenZeppelin's and follows from that one number.
+Deriving the price from the balance held instead would break an identity that holds on mainnet:
+`oracle.getValue()`, `convertToAssets(1e18)` and `totalAssets/totalSupply` are all the same
+number there, because W0G is one-for-one with 0G. A caller sizing a deposit from `previewDeposit`
+would then be handed an amount the vault values differently. It also means the unrestricted
+faucet is harmless to the accounting: minting shares with nothing behind them leaves
+`totalAssets` consistent, because it was never counting the balance.
+
 ## Secrets
 
 - **`deployments/test-accounts-*.json` contains private keys** and is gitignored. `Accounts.s.sol`

@@ -65,7 +65,47 @@ verify CreditRegistryBeacon UpgradeableBeacon
 verify CreditRegistryImpl   CreditRegistry
 verify_curve
 
+# The mocks take constructor arguments too, and never had them supplied -- so their
+# verification has been quietly falling into the "failed, continuing" branch. Same approach as
+# the curve: read the values back off the deployed contracts, which cannot drift from the
+# bytecode being verified the way the record can.
+verify_mocks() {
+  local a0g asset oracle
+  a0g=$(addr MockA0G)
+  if [ -z "$a0g" ] || [ "$a0g" = "0x0000000000000000000000000000000000000000" ]; then
+    echo "skip MockA0G (not deployed)"; return
+  fi
+
+  asset=$(cast call "$a0g" "asset()(address)" --rpc-url "$RPC")
+  oracle=$(cast call "$a0g" "oracle()(address)" --rpc-url "$RPC")
+  verify MockA0G MockA0G \
+    --constructor-args "$(cast abi-encode "constructor(address,address)" "$asset" "$oracle")"
+
+  # `baseValue` is what the constructor was given only while nobody has moved the rate --
+  # `setValue` and `setApr` both re-anchor it. If this one fails, that is the first thing
+  # to check.
+  local base apr maxAge owner
+  base=$(cast call "$oracle" "baseValue()(uint256)" --rpc-url "$RPC" | awk "{print \$1}")
+  apr=$(cast call "$oracle" "apr()(uint256)" --rpc-url "$RPC" | awk "{print \$1}")
+  maxAge=$(cast call "$oracle" "maxAge()(uint256)" --rpc-url "$RPC" | awk "{print \$1}")
+  owner=$(cast call "$oracle" "owner()(address)" --rpc-url "$RPC")
+  verify MockA0GOracle MockA0GOracle \
+    --constructor-args "$(cast abi-encode "constructor(uint256,uint256,uint256,address)" \
+      "$base" "$apr" "$maxAge" "$owner")"
+
+  # The underlying is only ours to verify when we deployed it. On a network that already had
+  # the real W0G the record names that instead, and it is somebody else's contract. Decide by
+  # comparing the deployed code with our own build rather than by matching an address.
+  local onchain ours
+  onchain=$(cast code "$asset" --rpc-url "$RPC")
+  ours=$(jq -r '.deployedBytecode.object' out/MockW0G.sol/MockW0G.json)
+  if [ "$onchain" = "$ours" ]; then
+    verify W0G MockW0G
+  else
+    echo "skip W0G ($asset is not our MockW0G)"
+  fi
+}
+
 if [ "$CHAIN_ID" != "16661" ]; then
-  verify MockA0G       MockA0G
-  verify MockA0GOracle MockA0GOracle
+  verify_mocks
 fi

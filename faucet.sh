@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Mints mock a0G on a test network. The mock's mint is deliberately open, so this works
+# Mints mock a0G on a test network. The mock's faucet is deliberately open, so this works
 # from any funded key, not only the deployer's.
 #
 #   ./faucet.sh 0xRecipient            1,000,000 a0G
@@ -19,7 +19,7 @@ CONFIG="${DEPLOYMENT_PATH:-deployments}/iai-${CHAIN_ID}.json"
 A0G=$(jq -r '.MockA0G // empty' "$CONFIG" 2>/dev/null)
 [ -n "$A0G" ] || { echo "no MockA0G in $CONFIG -- run ./run.sh first"; exit 1; }
 
-cast send "$A0G" "mint(address,uint256)" "$TO" "$(cast to-wei "$AMOUNT")" \
+cast send "$A0G" "faucetMint(address,uint256)" "$TO" "$(cast to-wei "$AMOUNT")" \
   --rpc-url "$RPC" --private-key "$PRIVATE_KEY" ${CAST_GAS_FLAGS:-}
 
 echo "balance: $(cast to-unit "$(cast call "$A0G" 'balanceOf(address)(uint256)' "$TO" --rpc-url "$RPC" | awk '{print $1}')" ether) a0G"

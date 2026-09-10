@@ -6,6 +6,7 @@ import {UpgradeableBeacon} from "@openzeppelin/contracts/proxy/beacon/Upgradeabl
 
 import {IAI} from "../../src/IAI.sol";
 import {MockA0G} from "../../src/mocks/MockA0G.sol";
+import {MockW0G} from "../../src/mocks/MockW0G.sol";
 import {MockA0GOracle} from "../../src/mocks/MockA0GOracle.sol";
 import {IAIVault} from "../../src/IAIVault.sol";
 import {CreditRegistry} from "../../src/CreditRegistry.sol";
@@ -66,11 +67,15 @@ abstract contract IAIDeployer {
         uint256 target;
     }
 
+    /// @param asset        Underlying the mock a0G is a vault over. Zero deploys a `MockW0G`;
+    ///                      a network that already has the real W0G names it here instead, so
+    ///                      the wrapping hop can be exercised against the actual token.
     /// @param initialValue Starting exchange rate, 0G per a0G scaled by 1e18.
     /// @param apr          Simple annual accrual, scaled by 1e18. Test networks want this far
     ///                     above production so the rate visibly moves within a session.
     /// @param maxAge       Seconds before `getValue()` starts reverting as stale.
     struct MockConfig {
+        address asset;
         uint256 initialValue;
         uint256 apr;
         uint256 maxAge;
@@ -91,20 +96,25 @@ abstract contract IAIDeployer {
 
     /**
      * @notice Deploys stand-in collateral for a network that has no real a0G.
-     * @param c     Oracle parameters.
+     * @param c     Oracle parameters, and the underlying to build the vault over.
      * @param owner Account that may pin the rate afterwards, via `setValue` / `setApr`.
      * @return oracle The rate source.
-     * @return a0g    The collateral token, already pointing at `oracle`.
+     * @return a0g    The collateral token, already pointing at `oracle` and `asset`.
+     * @return asset  The underlying, either `c.asset` or a freshly deployed `MockW0G`.
      *
      * @dev Lives beside the system wiring, and is used by both the script and the test
      *      fixture, so the collateral the tests run against is the collateral a testnet gets.
+     *
+     *      The underlying comes first: a0G takes it as a constructor argument, and like the
+     *      real token it has no setter for it afterwards.
      */
     function _deployMockCollateral(MockConfig memory c, address owner)
         internal
-        returns (MockA0GOracle oracle, MockA0G a0g)
+        returns (MockA0GOracle oracle, MockA0G a0g, address asset)
     {
+        asset = c.asset == address(0) ? address(new MockW0G()) : c.asset;
         oracle = new MockA0GOracle(c.initialValue, c.apr, c.maxAge, owner);
-        a0g = new MockA0G(address(oracle));
+        a0g = new MockA0G(asset, address(oracle));
     }
 
     /**
