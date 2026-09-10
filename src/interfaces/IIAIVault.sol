@@ -110,6 +110,12 @@ interface IIAIVault {
      * @param d        Amount of iAI to mint, in wei-iAI.
      * @param maxA0GIn Maximum a0G the caller accepts spending, in wei-a0G.
      * @param deadline Latest block timestamp the caller accepts, in seconds.
+     *
+     * @dev Reverts `EnforcedPause` while issuance is paused, unless the caller holds the
+     *      vault's `PAUSE_EXEMPT_MINTER_ROLE`. That exemption changes nothing else: the price,
+     *      the supply ceiling, the slippage bound and the recipient are all the same. A client
+     *      deciding whether to offer minting therefore needs `paused()` **and** `hasRole` for
+     *      that account, not `paused()` alone.
      */
     function mint(uint256 d, uint256 maxA0GIn, uint256 deadline) external;
 

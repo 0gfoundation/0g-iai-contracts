@@ -239,6 +239,13 @@ abstract contract IAIDeployer {
         require(vault_.hasRole(vault_.PAUSER_ROLE(), operator), "nobody can unpause the vault");
         require(registry_.hasRole(registry_.PAUSER_ROLE(), operator), "nobody can unpause the registry");
         require(vault_.hasRole(0x00, operator), "deployer is not the vault admin");
+        // ...and nobody may mint through the pause it just came up in. `hasRole` cannot
+        // enumerate, but the deployer is the only account anything here could have granted to,
+        // so checking it is the whole statement.
+        require(
+            !vault_.hasRole(vault_.PAUSE_EXEMPT_MINTER_ROLE(), operator),
+            "deployer must not hold the paused-mint exemption"
+        );
     }
 
     /**

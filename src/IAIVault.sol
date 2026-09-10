@@ -35,10 +35,10 @@ import {IMintCurve} from "./interfaces/IMintCurve.sol";
  *      interleaving of mint, redeem and harvest, and it also means splitting a mint into
  *      pieces is never cheaper than doing it at once.
  *
- *      **Redemption is never pausable.** `pause()` stops issuance and harvesting; it must
- *      never be able to trap collateral. Redemption also takes no oracle-independent path
- *      around a stale price — that dependency is accepted and documented, not silently
- *      worked around.
+ *      **Redemption is never pausable.** `pause()` stops harvesting, and stops issuance for
+ *      everyone but a holder of `PAUSE_EXEMPT_MINTER_ROLE`; it must never be able to trap
+ *      collateral. Redemption also takes no oracle-independent path around a stale price —
+ *      that dependency is accepted and documented, not silently worked around.
  */
 contract IAIVault is IIAIVault, AccessControlUpgradeable, PausableUpgradeable, ReentrancyGuardUpgradeable {
     using SafeERC20 for IA0G;
@@ -58,6 +58,27 @@ contract IAIVault is IIAIVault, AccessControlUpgradeable, PausableUpgradeable, R
      *      take anything.
      */
     bytes32 public constant RESCUE_ROLE = keccak256("RESCUE_ROLE");
+
+    /**
+     * @notice May mint while issuance is paused. Grants no other power at all.
+     * @dev The exempt mint is the *same* mint: same curve, same cap check, same slippage and
+     *      deadline bounds, same position accounting, and both the collateral and the iAI still
+     *      move on the caller. The only thing the role removes is the pause gate, and only on
+     *      `mint` -- `harvest` stays closed while paused, and `burn`/`burnFor` were never gated.
+     *
+     *      It exists because the vault deploys paused and the only two states it had were
+     *      "closed to everyone" and "open to everyone". Admitting one nominated address
+     *      otherwise means unpausing and re-pausing around the transaction, which opens the
+     *      base of the curve to everyone for the width of a block.
+     *
+     *      Held by nobody at deployment, like `RESCUE_ROLE`, so it opens as an explicit act of
+     *      governance -- and is meant to be revoked once the operation it was granted for is
+     *      done. What it costs: `pause()` is the response to an a0G exchange-rate move, and
+     *      while this role is held that response no longer stops issuance at a manipulated
+     *      rate, so revoking it is part of that response rather than a follow-up to it.
+     *      `setCap(0)` still binds a holder, because the ceiling check sits inside `mint`.
+     */
+    bytes32 public constant PAUSE_EXEMPT_MINTER_ROLE = keccak256("PAUSE_EXEMPT_MINTER_ROLE");
 
     /**
      * @dev Hard bound on the supply the vault will price at, independent of what a curve
@@ -139,6 +160,24 @@ contract IAIVault is IIAIVault, AccessControlUpgradeable, PausableUpgradeable, R
         _pause();
     }
 
+    /**
+     * @dev `whenNotPaused` for issuance only, with one exemption. Named for issuance rather
+     *      than for pausing so nobody reaches for it to gate something else: it sits on `mint`
+     *      and on nothing else. Redemption carries no pause modifier of any kind and must not
+     *      acquire one.
+     *
+     *      `paused()` is tested first on purpose. While issuance is open the conjunction
+     *      short-circuits before any role lookup, so an ordinary mint costs what it always did.
+     *
+     *      Reverts with OpenZeppelin's own `EnforcedPause` rather than a new error: for
+     *      everyone without the role the behaviour is unchanged, and it should decode
+     *      unchanged too.
+     */
+    modifier whenIssuanceOpen() {
+        if (paused() && !hasRole(PAUSE_EXEMPT_MINTER_ROLE, _msgSender())) revert EnforcedPause();
+        _;
+    }
+
     // -------------------------------------------------------------------------
     // Issuance
     // -------------------------------------------------------------------------
@@ -155,8 +194,13 @@ contract IAIVault is IIAIVault, AccessControlUpgradeable, PausableUpgradeable, R
      * @param deadline Latest block timestamp at which the caller still accepts execution,
      *                 in seconds. Bounds how long a signed transaction may sit in the
      *                 mempool while the price moves.
+     *
+     * @dev Gated by `whenIssuanceOpen`, not `whenNotPaused`: while paused, a holder of
+     *      `PAUSE_EXEMPT_MINTER_ROLE` still gets through here and everyone else still gets
+     *      `EnforcedPause`. Nothing below that line knows the difference, which is the point --
+     *      an exempt mint is priced, capped, bounded and recorded by exactly this code.
      */
-    function mint(uint256 d, uint256 maxA0GIn, uint256 deadline) external nonReentrant whenNotPaused {
+    function mint(uint256 d, uint256 maxA0GIn, uint256 deadline) external nonReentrant whenIssuanceOpen {
         if (block.timestamp > deadline) revert Expired(deadline, block.timestamp);
         if (d == 0) revert ZeroAmount();
 
@@ -383,7 +427,10 @@ contract IAIVault is IIAIVault, AccessControlUpgradeable, PausableUpgradeable, R
      *      point.
      *
      *      Note that `harvest` is not cap-gated either, so lowering the cap alone does not
-     *      stop yield being swept. `pause()` is the lever that stops everything except exit.
+     *      stop yield being swept -- and `pause()` is not the whole answer on its own either,
+     *      because it leaves a `PAUSE_EXEMPT_MINTER_ROLE` holder able to mint. A full stop is
+     *      `pause()` plus revoking that role; `setCap(0)` is the one switch that closes
+     *      issuance to everyone. Neither reaches exit, by design.
      */
     function setCap(uint256 newCap) external onlyRole(DEFAULT_ADMIN_ROLE) {
         VaultStorage storage $ = _s();

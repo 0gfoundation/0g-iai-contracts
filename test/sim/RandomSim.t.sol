@@ -258,7 +258,8 @@ contract RandomSimTest is BaseTest {
         uint256 expectedIn = overCap ? type(uint256).max : _shadowCeilDiv(expectedDelta * WAD, er);
 
         if (mPaused) {
-            // `whenNotPaused` is a modifier, so it fires ahead of the body's own cap check.
+            // `whenIssuanceOpen` is a modifier, so it fires ahead of the body's own cap
+            // check. No actor here holds `PAUSE_EXEMPT_MINTER_ROLE`, so it never lets one past.
             if (!overCap) a0g.faucetMint(a, expectedIn);
             vm.expectRevert(abi.encodeWithSignature("EnforcedPause()"));
             vm.prank(a);
@@ -574,9 +575,10 @@ contract RandomSimTest is BaseTest {
         uint256 pick = rng.next() % 8;
         address a = _actor();
 
-        // `whenNotPaused` is a modifier, so while issuance is closed every mint reverts with
-        // `EnforcedPause` before the body's own checks are reached. That case is already
-        // asserted in `_opMint`; here it would just mask the guard under test.
+        // `whenIssuanceOpen` is a modifier, so while issuance is closed every mint reverts
+        // with `EnforcedPause` before the body's own checks are reached -- no actor holds the
+        // pause exemption. That case is already asserted in `_opMint`; here it would just mask
+        // the guard under test.
         if (mPaused && pick <= 3) return;
 
         if (pick == 0) {

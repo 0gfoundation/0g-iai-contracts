@@ -3,6 +3,7 @@ pragma solidity 0.8.25;
 
 import {IAccessControl} from "@openzeppelin/contracts/access/IAccessControl.sol";
 import {UpgradeableBeacon} from "@openzeppelin/contracts/proxy/beacon/UpgradeableBeacon.sol";
+import {PausableUpgradeable} from "@openzeppelin/contracts-upgradeable/utils/PausableUpgradeable.sol";
 
 import {BaseTest} from "../Base.t.sol";
 import {RoleHandover} from "../../script/deploy/RoleHandover.sol";
@@ -30,6 +31,7 @@ contract HandoverTest is BaseTest, RoleHandover {
     ///      the `vm.prank` or `vm.expectRevert` meant for that call.
     bytes32 internal PAUSER;
     bytes32 internal RESCUE;
+    bytes32 internal EXEMPTION;
 
     function setUp() public override {
         super.setUp();
@@ -46,6 +48,7 @@ contract HandoverTest is BaseTest, RoleHandover {
 
         PAUSER = vault.PAUSER_ROLE();
         RESCUE = vault.RESCUE_ROLE();
+        EXEMPTION = vault.PAUSE_EXEMPT_MINTER_ROLE();
 
         // Something to lose: an occupied system makes "still works afterwards" meaningful.
         _mintFor(alice, 3e18);
@@ -203,6 +206,44 @@ contract HandoverTest is BaseTest, RoleHandover {
         vm.prank(timelock);
         vault.burnFor(alice, 1e18, block.timestamp);
         assertGt(a0g.balanceOf(alice), before, "collateral went to the position owner");
+    }
+
+    /// @dev Unlike `RESCUE_ROLE`, the paused-mint exemption is **not** part of the handover:
+    ///      it is granted for one operation and revoked afterwards, so it has no target holder
+    ///      to move. Step 1 must therefore leave it shut, and only an explicit grant opens it.
+    function test_ThePausedMintExemptionOpensOnlyByAnExplicitGrant() public {
+        vm.prank(guardian);
+        vault.pause();
+        _fund(carol, 1e18);
+
+        _grantGovernance(c, g);
+        assertFalse(vault.hasRole(EXEMPTION, timelock), "the handover grants it to nobody");
+        assertFalse(vault.hasRole(EXEMPTION, multisig));
+        assertFalse(vault.hasRole(EXEMPTION, ops));
+
+        vm.expectRevert(PausableUpgradeable.EnforcedPause.selector);
+        vm.prank(carol);
+        vault.mint(1e18, type(uint256).max, block.timestamp);
+
+        // Admin has moved to the multisig by now, so the grant comes from there.
+        vm.prank(multisig);
+        vault.grantRole(EXEMPTION, carol);
+        vm.prank(carol);
+        vault.mint(1e18, type(uint256).max, block.timestamp);
+        assertEq(iai.balanceOf(carol), 1e18, "open only once someone said so");
+    }
+
+    /// @dev Nothing grants the exemption at deployment, so this is normally vacuous -- but a
+    ///      deployer that ever opened it to itself must not keep a key that mints through a
+    ///      pause after standing down.
+    function test_Renounce_GivesUpThePausedMintExemptionIfTheDeployerEverHeldIt() public {
+        vault.grantRole(EXEMPTION, admin);
+
+        _grantGovernance(c, g);
+        _renounceDeployer(c, g, admin);
+
+        assertFalse(vault.hasRole(EXEMPTION, admin), "the deployer stood down from it too");
+        _assertHandoverComplete(c, g, admin);
     }
 
     /// @dev Nothing in the handover touches the vault's minter role, but losing it would stop

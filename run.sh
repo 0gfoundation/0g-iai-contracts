@@ -17,6 +17,12 @@
 #   ./run.sh setCurve <Kind>      point the vault at a previously deployed curve
 #   ./run.sh setCap <amount>      move the supply ceiling (wei-iAI; below the live supply
 #                                 closes issuance and leaves redemption open)
+#   ./run.sh quote <amount>       what minting that much iAI costs right now (wei-iAI in,
+#                                 0G value and a0G out; works while paused)
+#   ./run.sh mint <amount> <maxA0GIn>   mint to the broadcasting key, approving first
+#   ./run.sh pausedMinter <addr>        may that address mint while issuance is paused?
+#   ./run.sh grantPausedMinter <addr>   let it -- a governance transaction of its own
+#   ./run.sh revokePausedMinter <addr>  take it back; do this when the operation is done
 #
 # IAI_CONFIG and IAI_ENV override which config.sh and .env are sourced (see below).
 set -euo pipefail
@@ -64,8 +70,9 @@ case "${1:-deploy}" in
     read_only script/deploy/IAI.s.sol --sig "checkDeployment()"
     echo
     echo "Deployed and PAUSED. Review 'run.sh status', then 'run.sh unpause' to open issuance."
-    echo "DEFAULT_ADMIN, PAUSER and beacon ownership are all on the deployer -- hand them to"
-    echo "the multisig before launch."
+    echo "Nobody holds RESCUE_ROLE or the paused-mint exemption; both open only on an explicit"
+    echo "grant. DEFAULT_ADMIN, PAUSER and beacon ownership are all on the deployer -- hand them"
+    echo "to the multisig before launch."
     ;;
   accounts) send script/deploy/Accounts.s.sol ;;
   redeployMock)
@@ -103,5 +110,29 @@ case "${1:-deploy}" in
     [ $# -eq 2 ] || { echo "usage: ./run.sh setCap <amount in wei-iAI>"; exit 1; }
     send script/deploy/IAI.s.sol --sig "setCap(uint256)" "$2"
     ;;
-  *) echo "unknown command: $1"; sed -n '2,19p' "$0"; exit 1 ;;
+  quote)
+    [ $# -eq 2 ] || { echo "usage: ./run.sh quote <amount in wei-iAI>"; exit 1; }
+    read_only script/deploy/IAI.s.sol --sig "quoteMint(uint256)" "$2"
+    ;;
+  mint)
+    [ $# -eq 3 ] || { echo "usage: ./run.sh mint <amount in wei-iAI> <maxA0GIn in wei-a0G>"; exit 1; }
+    send script/deploy/IAI.s.sol --sig "mint(uint256,uint256)" "$2" "$3"
+    ;;
+  pausedMinter)
+    [ $# -eq 2 ] || { echo "usage: ./run.sh pausedMinter <address>"; exit 1; }
+    read_only script/deploy/IAI.s.sol --sig "pausedMintExemption(address)" "$2"
+    ;;
+  grantPausedMinter)
+    [ $# -eq 2 ] || { echo "usage: ./run.sh grantPausedMinter <address>"; exit 1; }
+    send script/deploy/IAI.s.sol --sig "grantPausedMintExemption(address)" "$2"
+    # Read the chain back, the way setCurve re-checks itself: the state this command leaves
+    # behind is the whole point of running it, and it is not recorded anywhere on disk.
+    read_only script/deploy/IAI.s.sol --sig "pausedMintExemption(address)" "$2"
+    ;;
+  revokePausedMinter)
+    [ $# -eq 2 ] || { echo "usage: ./run.sh revokePausedMinter <address>"; exit 1; }
+    send script/deploy/IAI.s.sol --sig "revokePausedMintExemption(address)" "$2"
+    read_only script/deploy/IAI.s.sol --sig "pausedMintExemption(address)" "$2"
+    ;;
+  *) echo "unknown command: $1"; sed -n '2,26p' "$0"; exit 1 ;;
 esac

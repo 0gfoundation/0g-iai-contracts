@@ -207,6 +207,120 @@ contract IAIVaultTest is BaseTest {
     }
 
     // -------------------------------------------------------------------------
+    // Minting while issuance is paused
+    // -------------------------------------------------------------------------
+
+    /// @dev The role's whole purpose: one address gets through the pause. Note the vault is
+    ///      still paused afterwards -- the exemption is not an unpause.
+    function test_Mint_SucceedsWhilePausedForAnExemptHolder() public {
+        bytes32 exemption = vault.PAUSE_EXEMPT_MINTER_ROLE();
+        vault.grantRole(exemption, carol);
+        vm.prank(guardian);
+        vault.pause();
+
+        uint256 d = 10e18;
+        _mintFor(carol, d);
+
+        assertTrue(vault.paused(), "the exemption is not an unpause");
+        assertEq(iai.balanceOf(carol), d, "the iAI went to the caller");
+        (, uint256 outstanding,) = vault.positionOf(carol);
+        assertEq(outstanding, d, "and so did the position");
+    }
+
+    /// @dev Granting it to one address must not open issuance for anyone else. Alice is funded
+    ///      and approved first, so what stops her is the pause gate and not a missing
+    ///      allowance.
+    function test_Mint_StillRevertsWhilePausedForEveryoneElse() public {
+        bytes32 exemption = vault.PAUSE_EXEMPT_MINTER_ROLE();
+        vault.grantRole(exemption, carol);
+        uint256 d = 10e18;
+        _fund(alice, d);
+        vm.prank(guardian);
+        vault.pause();
+
+        vm.expectRevert(PausableUpgradeable.EnforcedPause.selector);
+        vm.prank(alice);
+        vault.mint(d, type(uint256).max, block.timestamp);
+    }
+
+    /// @dev An exempt mint runs the same code as any other, so a quote taken while paused must
+    ///      hold to the wei. `quoteMint` is not pause-gated, which is what makes this
+    ///      checkable from inside the paused state rather than by comparison with a second
+    ///      run.
+    function test_Mint_ExemptMintIsPricedAndAccountedIdenticallyWhilePaused() public {
+        bytes32 exemption = vault.PAUSE_EXEMPT_MINTER_ROLE();
+        vault.grantRole(exemption, carol);
+        vm.prank(guardian);
+        vault.pause();
+
+        uint256 d = 250e18;
+        (uint256 expected0G, uint256 expectedA0G) = vault.quoteMint(d);
+        _fund(carol, d);
+        uint256 heldBefore = a0g.balanceOf(carol);
+
+        vm.prank(carol);
+        vault.mint(d, type(uint256).max, block.timestamp);
+
+        assertEq(heldBefore - a0g.balanceOf(carol), expectedA0G, "took exactly the quoted collateral");
+        (uint256 locked, uint256 outstanding,) = vault.positionOf(carol);
+        assertEq(locked, expected0G, "recorded the curve's 0G value, not the a0G amount");
+        assertEq(outstanding, d);
+        assertEq(vault.totalLocked0G(), expected0G, "the aggregate moved by the same amount");
+        assertEq(vault.supply(), d);
+        _assertSolvent();
+    }
+
+    /// @dev The exemption is not a cap bypass. The ceiling check sits inside `mint`'s body,
+    ///      below the gate, so `setCap(0)` is the one switch that closes issuance to everyone.
+    function test_Mint_ExemptHolderIsStillBoundByTheCapWhilePaused() public {
+        bytes32 exemption = vault.PAUSE_EXEMPT_MINTER_ROLE();
+        vault.grantRole(exemption, carol);
+        uint256 d = 10e18;
+        // Funded before the cap moves: quoting past the ceiling reverts, and the point here is
+        // the mint's own guard.
+        _fund(carol, d);
+        vault.setCap(0);
+        vm.prank(guardian);
+        vault.pause();
+
+        vm.expectRevert(abi.encodeWithSelector(IIAIVault.CapExceeded.selector, d, 0));
+        vm.prank(carol);
+        vault.mint(d, type(uint256).max, block.timestamp);
+    }
+
+    /// @dev Nor a bypass of the caller's own bounds. Both guards live below the gate.
+    function test_Mint_ExemptHolderStillObeysSlippageAndDeadlineWhilePaused() public {
+        bytes32 exemption = vault.PAUSE_EXEMPT_MINTER_ROLE();
+        vault.grantRole(exemption, carol);
+        uint256 d = 10e18;
+        uint256 a0GIn = _fund(carol, d);
+        vm.prank(guardian);
+        vault.pause();
+
+        vm.expectRevert(abi.encodeWithSelector(IIAIVault.ExcessiveInput.selector, a0GIn, a0GIn - 1));
+        vm.prank(carol);
+        vault.mint(d, a0GIn - 1, block.timestamp);
+
+        vm.warp(block.timestamp + 1);
+        uint256 past = block.timestamp - 1;
+        vm.expectRevert(abi.encodeWithSelector(IIAIVault.Expired.selector, past, block.timestamp));
+        vm.prank(carol);
+        vault.mint(d, type(uint256).max, past);
+    }
+
+    /// @dev A deployment must not ship with anybody able to mint through the pause it comes up
+    ///      in. `initialize` grants `DEFAULT_ADMIN_ROLE` and nothing else, so the exemption
+    ///      opens only on a later, explicit grant.
+    function test_Mint_NobodyIsExemptOnAFreshlyDeployedVault() public {
+        IAIVault fresh = _newVault(_params(address(iai), address(a0g), foundation));
+        bytes32 exemption = fresh.PAUSE_EXEMPT_MINTER_ROLE();
+
+        assertTrue(fresh.paused(), "and it deploys paused");
+        assertFalse(fresh.hasRole(exemption, admin), "not even the account that deployed it");
+        assertFalse(fresh.hasRole(exemption, alice));
+    }
+
+    // -------------------------------------------------------------------------
     // Burn
     // -------------------------------------------------------------------------
 
@@ -453,6 +567,71 @@ contract IAIVaultTest is BaseTest {
         );
         vm.prank(alice);
         vault.pause();
+    }
+
+    /// @dev A grant is meant to be temporary, so the revoke is the half worth pinning: it has
+    ///      to close issuance again for the same address, from the same paused state.
+    function test_PausedMintExemption_GrantAndRevokeRoundTripClosesIssuanceAgain() public {
+        bytes32 exemption = vault.PAUSE_EXEMPT_MINTER_ROLE();
+        uint256 d = 10e18;
+        vm.prank(guardian);
+        vault.pause();
+
+        _fund(carol, d);
+        vm.expectRevert(PausableUpgradeable.EnforcedPause.selector);
+        vm.prank(carol);
+        vault.mint(d, type(uint256).max, block.timestamp);
+
+        vault.grantRole(exemption, carol);
+        vm.prank(carol);
+        vault.mint(d, type(uint256).max, block.timestamp);
+        assertEq(vault.supply(), d, "open for that address");
+
+        vault.revokeRole(exemption, carol);
+        _fund(carol, d);
+        vm.expectRevert(PausableUpgradeable.EnforcedPause.selector);
+        vm.prank(carol);
+        vault.mint(d, type(uint256).max, block.timestamp);
+    }
+
+    /// @dev Only admin opens it. The pauser especially must not: it closes issuance, and being
+    ///      able to grant a way around its own switch would make that switch meaningless.
+    function test_PausedMintExemption_OnlyAdminCanGrantIt() public {
+        bytes32 exemption = vault.PAUSE_EXEMPT_MINTER_ROLE();
+
+        vm.expectRevert(
+            abi.encodeWithSelector(
+                IAccessControl.AccessControlUnauthorizedAccount.selector, alice, bytes32(0)
+            )
+        );
+        vm.prank(alice);
+        vault.grantRole(exemption, alice);
+
+        vm.expectRevert(
+            abi.encodeWithSelector(
+                IAccessControl.AccessControlUnauthorizedAccount.selector, guardian, bytes32(0)
+            )
+        );
+        vm.prank(guardian);
+        vault.grantRole(exemption, guardian);
+
+        vault.grantRole(exemption, carol);
+        assertTrue(vault.hasRole(exemption, carol));
+    }
+
+    /// @dev The exemption covers `mint` and nothing else. Harvesting stays closed to a holder,
+    ///      which is the scope decision made executable.
+    function test_Harvest_StillRevertsWhilePausedForAnExemptHolder() public {
+        bytes32 exemption = vault.PAUSE_EXEMPT_MINTER_ROLE();
+        vault.grantRole(exemption, carol);
+        _mintFor(alice, 100e18);
+        vm.warp(block.timestamp + 30 days);
+        vm.prank(guardian);
+        vault.pause();
+
+        vm.expectRevert(PausableUpgradeable.EnforcedPause.selector);
+        vm.prank(carol);
+        vault.harvest();
     }
 
     function test_SetFoundation_OnlyAdminAndNonZero() public {

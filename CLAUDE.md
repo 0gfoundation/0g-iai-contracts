@@ -41,13 +41,31 @@ Write all state before any external call. `mint`, `burn`, `burnFor`, `harvest`, 
 
 **4. `burn` and `burnFor` must never become pausable.** Redemption is a promise to users and the pause
 switch must not be able to reach it. `test_Burn_SucceedsWhilePaused` encodes this as an executable
-assertion; if you add a shared modifier, check it did not sweep redemption in with it.
+assertion; if you add a shared modifier, check it did not sweep redemption in with it. `mint` no
+longer carries `whenNotPaused` but `whenIssuanceOpen` (rule 5), so that check spans both names --
+and it has to be anchored to signatures, because the modifier's own definition and two `@dev`
+blocks mention them too, so a plain grep returns five lines on a healthy tree and the rule stops
+telling signal from noise:
+
+```bash
+grep -nE "^\s*function .*(whenNotPaused|whenIssuanceOpen)" src/IAIVault.sol
+```
+
+The right answer is exactly two, `mint` and `harvest`. `burn` and `burnFor` must never appear.
 
 **5. Roles, not owners.** `AccessControlUpgradeable` with one role per responsibility:
 `DEFAULT_ADMIN_ROLE` (grant/revoke, `setFoundation`, `setCurve`, `setCap`), `PAUSER_ROLE` (pause/unpause only),
-`RESCUE_ROLE` (`burnFor` only), `MINTER_BURNER_ROLE` (held solely by the vault), and beacon
-ownership (upgrades). Deployment puts admin, pauser and the beacons on the deploying account and
-`RESCUE_ROLE` on nobody, so the rescue path opens as an explicit act of governance.
+`RESCUE_ROLE` (`burnFor` only), `PAUSE_EXEMPT_MINTER_ROLE` (`mint` while paused, and nothing else),
+`MINTER_BURNER_ROLE` (held solely by the vault), and beacon ownership (upgrades). Deployment puts
+admin, pauser and the beacons on the deploying account and both `RESCUE_ROLE` and
+`PAUSE_EXEMPT_MINTER_ROLE` on nobody, so the rescue path and the paused-mint path each open as an
+explicit act of governance.
+
+`PAUSE_EXEMPT_MINTER_ROLE` is a permission for one operation, not a seat, and it is deliberately
+**not** part of the handover: `RoleHandover` has no target field for it and the deployment record no
+key, so there is nowhere for a stale holder to be written down. Governance grants it with
+`./run.sh grantPausedMinter <addr>` and takes it back with `revokePausedMinter`; the handover only
+checks that the *deployer* is not left holding it. Its cost to `pause()` is R10.
 
 **`DEFAULT_ADMIN_ROLE` on the vault is an upgrade-grade key and must go to the same multisig as
 beacon ownership.** It was not always: before the curve moved out of the vault, admin could not touch
@@ -73,8 +91,11 @@ and nothing else consults the cap. `test_SetCap_MayGoBelowTheLiveSupply` and `te
 fail if anyone adds one.
 
 Note what burn-only does **not** stop: `harvest` is gated by `pause`, not by the cap, so
-`setCap(0)` closes issuance while the sweep keeps running. `pause()` is the wind-down switch;
-`setCap(0)` on its own is not.
+`setCap(0)` closes issuance while the sweep keeps running. Neither switch is a wind-down on its own,
+and they fail in opposite directions: `setCap(0)` leaves the sweep running, and `pause()` leaves a
+`PAUSE_EXEMPT_MINTER_ROLE` holder able to mint. A full stop is `pause()` plus revoking that role, or
+`setCap(0)` plus `pause()` — and `setCap(0)` is the only single switch that closes issuance to
+everyone, because the ceiling check sits inside `mint`'s body rather than in a modifier.
 
 **8. Do not add redundant state.** A field that mirrors something another contract already knows is a
 liability, not a safety net — it costs gas on every write and creates a divergence that has to be
@@ -444,8 +465,10 @@ monotonicity requirement, no rate limit and no timelock. Set the rate absurdly h
 for dust, restore it, redeem: the collateral is gone. iAI does not defend against this, because the
 root cause is the combination of yield-bearing collateral and recording curve value rather than
 deposited tokens — both deliberate. **Operational requirement:** monitor the oracle's `ValueSet`
-events and `pause()` on any move outside the expected daily band. `pause()` stops minting but not
-redemption, so the window between alert and human response is the exposure. Note the cap is not a
+events and, on any move outside the expected daily band, `pause()` **and** revoke
+`PAUSE_EXEMPT_MINTER_ROLE` if anyone holds it (R10) — the second is part of the response, not a
+follow-up to it. `pause()` stops minting but not redemption, so the window between alert and human
+response is the exposure. Note the cap is not a
 bound on this: it is adjustable upward, so "mint to the cap" is not a fixed quantity of damage.
 
 **R2 — a mint and an immediate full burn costs 1 wei.** Round-trips are effectively free, so a large
@@ -467,7 +490,8 @@ and do not reintroduce a numeric ceiling in its place.
 redemption becomes first come, first served. Accepted on the premise that a0G does not depreciate;
 `test_RateFall_SweepGoesQuietButLateRedeemersAreLeftShort` pins the actual behaviour so it is a known
 quantity rather than a surprise. Lowering the cap to wind the system down makes this worse rather
-than better — the sweep is gated by `pause`, not by the cap, so it keeps running. Use `pause()`.
+than better — the sweep is gated by `pause`, not by the cap, so it keeps running. Use `pause()`,
+and revoke `PAUSE_EXEMPT_MINTER_ROLE` with it if anyone holds it (R10).
 
 **R6 — governance can reprice all future issuance, and lower the curve at existing holders' profit.**
 `setCurve` takes any contract satisfying `IMintCurve`. Lowering the curve lets an existing holder
@@ -509,6 +533,21 @@ The mitigation got cheap in the same change, though, and should be taken: **`IAI
 admin-settable state at all**, so `DEFAULT_ADMIN_ROLE` on the token does nothing except grant
 `MINTER_BURNER_ROLE`. Renouncing it, or moving it behind a timelock, costs nothing operationally.
 That was not true before.
+
+**R10 — a pause-exempt minter narrows what `pause()` guarantees.** `PAUSE_EXEMPT_MINTER_ROLE` is
+held by nobody at deployment, so by default `pause()` means exactly what it always did. Once
+granted, `pause()` closes issuance to the public and to nothing else, and every risk whose stated
+mitigation is `pause()` — R1 above, and R5's wind-down — is weakened by precisely that much. Note
+what the role does *not* do: it removes a mitigation, it does not add a capability. An exempt mint
+runs the same code as any other, so the damage bound is the one an unpaused vault already has, which
+R1 already says the cap does not fix.
+
+Accepted deliberately, with the power kept as narrow as the code can make it — same curve, same cap
+check, same slippage bound, same recipient, `mint` only — and with two operational consequences.
+First, a grant is for one operation and should be revoked when that operation is done; a holder left
+in place is a standing hole in the pause switch, which is why nothing records the holder on disk and
+why `./run.sh grantPausedMinter` reads the chain back. Second, `setCap(0)` is the only single switch
+that closes issuance to everyone, so it is what to reach for when the answer has to be total.
 
 ## Conventions
 
