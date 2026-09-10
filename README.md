@@ -144,7 +144,7 @@ addresses of what was deployed come back into the same file. `iai-example.json` 
 
 ```bash
 forge build
-forge test                      # 219 tests, a few seconds
+forge test                      # 223 tests, a few seconds
 SIM_LONG=1 forge test --match-test test_Sim_Long   # 100k-operation simulation
 python3 script/curve/gen_exponential_table.py deployments/iai-example.json --check   # the table is its parameters'
 ```
