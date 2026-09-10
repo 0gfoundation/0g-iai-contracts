@@ -390,7 +390,7 @@
       "Target": "127000000000000000000000000"
     }
   },
-  "Foundation": "0x07458e5F2e1b7d0aB0e6Aae55B9e0ce2424fc514",
+  "Foundation": "0x383452DC859f87D5197C03d8E11Fc9D38e714fF2",
   "Guardian": "0x0000000000000000000000000000000000000000",
   "MintCurveKind": "ExponentialMintCurve",
   "Name": "Infinite AI",
