@@ -18,9 +18,15 @@
 #   ./run.sh setCap <amount>      move the supply ceiling (wei-iAI; below the live supply
 #                                 closes issuance and leaves redemption open)
 #
-# IAI_CONFIG and IAI_ENV override which config.sh and .env are sourced, so a rehearsal against
-# a local anvil can run from a scratch directory without editing the real ones.
+# IAI_CONFIG and IAI_ENV override which config.sh and .env are sourced (see below).
 set -euo pipefail
+# IAI_CONFIG / IAI_ENV point the script at another config.sh and .env -- how a rehearsal against a
+# local anvil runs from a scratch directory. Resolved to absolute paths *before* the cd below;
+# resolved after it, a relative path would be looked up inside the repository, and one that
+# happened to be named config.sh or .env would silently source the real files, real key included.
+_abs() { case "$1" in /*) printf '%s' "$1" ;; *) printf '%s/%s' "$PWD" "$1" ;; esac; }
+if [ -n "${IAI_CONFIG:-}" ]; then IAI_CONFIG=$(_abs "$IAI_CONFIG"); fi
+if [ -n "${IAI_ENV:-}" ]; then IAI_ENV=$(_abs "$IAI_ENV"); fi
 cd "$(dirname "$0")"
 
 source "${IAI_CONFIG:-./config.sh}"
@@ -40,8 +46,9 @@ read_only() { forge script "$1" --rpc-url "$RPC" "${@:2}"; }
 
 # The exponential curve's table is derived from the parameters beside it, never hand-edited.
 # Re-derive and compare before anything reads it, so a stale table cannot be deployed or pass
-# a check. A record without the block passes trivially.
-check_table() { python3 script/curve/gen_exponential_table.py "$CONFIG" --check; }
+# a check. A record without the block passes unless the block is required: because the kind
+# in force is the exponential one, or because it is about to be deployed (--require).
+check_table() { python3 script/curve/gen_exponential_table.py "$CONFIG" --check "$@"; }
 
 case "${1:-deploy}" in
   deploy)
@@ -74,14 +81,17 @@ case "${1:-deploy}" in
   genCurve)
     python3 script/curve/gen_exponential_table.py "$CONFIG" "${@:2}"
     echo "Regenerated. The chain still has the old table: 'run.sh deployCurve ExponentialMintCurve'"
-    echo "then 'run.sh setCurve ExponentialMintCurve' puts the new one in service."
+    echo "then 'run.sh setCurve ExponentialMintCurve' puts the new one in service. The vault's cap"
+    echo "must fit under the table in force: a taller table is deployCurve, setCurve, then setCap;"
+    echo "a table whose top is below the current cap needs setCap (to at most the new top) first."
     ;;
   unpause)  send script/deploy/IAI.s.sol --sig "unpause()" ;;
   pause)    send script/deploy/IAI.s.sol --sig "pause()" ;;
   harvest)  send script/deploy/IAI.s.sol --sig "harvest()" ;;
   deployCurve)
     [ $# -eq 2 ] || { echo "usage: ./run.sh deployCurve <Kind>   e.g. ExponentialMintCurve"; exit 1; }
-    check_table
+    # Only the exponential kind reads the table; a stale block must not block a linear deploy.
+    if [ "$2" = ExponentialMintCurve ]; then check_table --require; fi
     send script/deploy/IAI.s.sol --sig "deployCurve(string)" "$2"
     ;;
   setCurve)

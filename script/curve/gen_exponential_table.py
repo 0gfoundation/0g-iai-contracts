@@ -46,6 +46,10 @@ from decimal import ROUND_CEILING, Decimal, getcontext
 
 WAD = 10**18
 BLOCK = "ExponentialMintCurve"
+KEYS = {"base": "Base", "exponent": "Exponent", "target": "Target", "width": "BucketWidth"}
+
+# Every Decimal operation in this file, flag parsing included, runs at 60 significant digits.
+getcontext().prec = 60
 
 # The proposal's constants: 3,237.4 0G at zero supply, e^3.419 = 30.5x at the target of
 # 9,270 iAI, 25 iAI per bucket.
@@ -54,7 +58,6 @@ DEFAULTS = {"base": "3237.4", "exponent": "3.419", "target": "9270", "width": "2
 
 def price_table(base_wei: int, exponent_wad: int, target_wei: int, width_wei: int) -> list[int]:
     """The whole derivation. Everything else in this file is plumbing."""
-    getcontext().prec = 60
     base = Decimal(base_wei)
     k = Decimal(exponent_wad) / WAD
     target = Decimal(target_wei)
@@ -91,9 +94,8 @@ def save(path: str, record: dict) -> None:
 def parameters(record: dict, args: argparse.Namespace) -> dict:
     """Flags win; otherwise the block already in the record; otherwise the proposal's defaults."""
     block = record.get("CurveParams", {}).get(BLOCK, {})
-    keys = {"base": "Base", "exponent": "Exponent", "target": "Target", "width": "BucketWidth"}
     out = {}
-    for flag, key in keys.items():
+    for flag, key in KEYS.items():
         given = getattr(args, flag)
         if given is not None:
             out[key] = to_wad(given)
@@ -104,7 +106,17 @@ def parameters(record: dict, args: argparse.Namespace) -> dict:
     return out
 
 
-def solidity_library(prices: list[int], params: dict) -> str:
+def recorded_parameters(record: dict, path: str) -> dict:
+    """For --check: every parameter must come from the block itself. A default or a flag standing
+    in for a missing key would let the check agree with something the record does not say."""
+    block = record.get("CurveParams", {}).get(BLOCK, {})
+    missing = [key for key in KEYS.values() if key not in block]
+    if missing:
+        sys.exit(f"{path}: {BLOCK} block lacks {', '.join(missing)}; run without --check to regenerate it")
+    return {key: int(block[key]) for key in KEYS.values()}
+
+
+def solidity_library(prices: list[int], params: dict, record_path: str) -> str:
     packed = b"".join(p.to_bytes(16, "big") for p in prices)
     chunks = [packed[i : i + 64].hex() for i in range(0, len(packed), 64)]
     body = "\n".join(f'        hex"{c}"' for c in chunks)
@@ -117,7 +129,7 @@ pragma solidity 0.8.25;
  *
  * @dev GENERATED -- do not edit. Regenerate with
  *
- *      python3 script/curve/gen_exponential_table.py deployments/iai-example.json \\
+ *      python3 script/curve/gen_exponential_table.py {record_path} \\
  *          --solidity test/unit/curves/ExponentialTable.sol
  *
  *      Unit tests may not read files, so the table the deployment record carries is mirrored
@@ -129,7 +141,6 @@ library ExponentialTable {{
     uint256 internal constant BASE = {params['Base']};
     uint256 internal constant EXPONENT = {params['Exponent']};
     uint256 internal constant TARGET = {params['Target']};
-    uint256 internal constant COUNT = {len(prices)};
 
     bytes internal constant PACKED =
 {body};
@@ -158,11 +169,30 @@ def main() -> None:
     ap.add_argument("--target", help="supply the exponent is normalised against, in iAI, e.g. 9270")
     ap.add_argument("--width", help="bucket width in iAI, e.g. 25")
     ap.add_argument("--check", action="store_true", help="verify the stored table instead of writing it")
+    ap.add_argument(
+        "--require",
+        action="store_true",
+        help="with --check: the record must carry the block (the kind is about to be deployed)",
+    )
     ap.add_argument("--solidity", metavar="PATH", help="also write the table as a Solidity library")
     args = ap.parse_args()
 
     record = load(args.record)
-    params = parameters(record, args)
+    kind_is_exponential = record.get("MintCurveKind") == BLOCK
+
+    if args.check:
+        if any(getattr(args, flag) is not None for flag in KEYS):
+            sys.exit("--check verifies the record against itself; parameter flags are not accepted with it")
+        if BLOCK not in record.get("CurveParams", {}):
+            if args.require or kind_is_exponential:
+                sys.exit(f"{args.record}: no {BLOCK} block -- run genCurve first")
+            print(f"{args.record}: no {BLOCK} block, nothing to check")
+            if args.solidity:
+                sys.exit(f"cannot write {args.solidity}: the record carries no table to export")
+            return
+        params = recorded_parameters(record, args.record)
+    else:
+        params = parameters(record, args)
     for key, value in params.items():
         if value <= 0:
             sys.exit(f"{key} must be positive")
@@ -171,11 +201,7 @@ def main() -> None:
     top = len(prices) * params["BucketWidth"]
 
     if args.check:
-        block = record.get("CurveParams", {}).get(BLOCK)
-        if block is None:
-            print(f"{args.record}: no {BLOCK} block, nothing to check")
-            return
-        stored = [int(p) for p in block.get("Prices", [])]
+        stored = [int(p) for p in record["CurveParams"][BLOCK].get("Prices", [])]
         if stored != prices:
             first = next((i for i, (a, b) in enumerate(zip(stored, prices)) if a != b), min(len(stored), len(prices)))
             sys.exit(
@@ -200,7 +226,7 @@ def main() -> None:
 
     if args.solidity:
         with open(args.solidity, "w") as f:
-            f.write(solidity_library(prices, params))
+            f.write(solidity_library(prices, params, args.record))
         print(f"{args.solidity}: written")
 
 

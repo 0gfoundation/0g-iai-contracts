@@ -349,8 +349,11 @@ first, so a table that disagrees with the parameters beside it cannot be deploye
 entry by entry. Every integer in the block is WAD-scaled and stored as a decimal string like the
 rest of the file — `Exponent` is `3419000000000000000` for 3.419; the cubic power is part of the
 formula, not a parameter. The unit tests cannot read the record, so `--solidity` also emits
-`test/unit/curves/ExponentialTable.sol`, and `test/script/Deploy.t.sol` asserts the two agree;
-regenerate both whenever the parameters change. The golden vectors in
+`test/unit/curves/ExponentialTable.sol` as a mirror of **`iai-example.json`** -- the proposal's
+parameters, which is what the unit tests pin -- and `test/script/Deploy.t.sol` asserts the two
+agree. Regenerate the mirror only when the *example's* parameters change. A network record's
+parameters (`iai-16661.json`, `iai-16602.json`) may move without touching any test: their tables
+are guarded by `run.sh check`, not by `forge test`, exactly as their `Cap` and addresses are. The golden vectors in
 `test/unit/curves/ExponentialMintCurve.t.sol` were computed with `mpmath`, independently of the
 generator, and may not be edited to follow it.
 
@@ -358,8 +361,12 @@ generator, and may not be edited to follow it.
 is the table's top (9,275 iAI for the shipped parameters), so `setCap` above it is refused while
 that curve is in force, and `setCurve` to it is refused while the cap is above it. Raising the
 target is therefore always `genCurve --target ...` → `deployCurve` → `setCurve` → `setCap`, in that
-order; lowering the cap needs nothing from the curve and never disturbs it. Both paths are
-exercised in `test/script/Deploy.t.sol`. The
+order. A table whose top is *below* the current cap is the mirror image: `setCap` to at most the
+new top first, then `deployCurve` → `setCurve`, or the swap is refused. Lowering the cap on its own
+needs nothing from the curve and never disturbs it. All three paths are exercised in
+`test/script/Deploy.t.sol`. `run.sh setCurve ExponentialMintCurve` pre-flights the kind key against
+the record's table before broadcasting, so a `genCurve` without `deployCurve` is caught before a
+governance transaction is spent. The
 test fixture stays on the linear curve for exactly this reason: `CapChange.t.sol` raises the cap to
 twice `CAP`, which the table cannot price. Exponential coverage lives in its own suite, in
 `CurveSwap.t.sol`, in `Deploy.t.sol` and in the simulation's alternating swaps.

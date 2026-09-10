@@ -291,6 +291,15 @@ contract IAIScript is Script, JsonUtils, Constants, IAIDeployer {
         address target = vm.parseJsonAddress(json, string.concat(".", kind));
         require(target != address(0), "no curve recorded under that kind -- run deployCurve first");
 
+        // Pre-flight, before anything is broadcast: the exponential kind key must be the curve
+        // the record's table describes. After `genCurve` without `deployCurve` the key still
+        // names the previous table, and switching to it would spend a governance transaction on
+        // a curve the very next `check` refuses.
+        if (keccak256(bytes(kind)) == keccak256(bytes(EXPONENTIAL))) {
+            _assertHasCode(target, EXPONENTIAL);
+            _assertExponentialCurveMatches(target, _exponentialParamsOf(json));
+        }
+
         vm.startBroadcast(vm.envUint("PRIVATE_KEY"));
         IAIVault(vm.parseJsonAddress(json, ".IAIVault")).setCurve(IMintCurve(target));
         vm.stopBroadcast();
@@ -368,15 +377,24 @@ contract IAIScript is Script, JsonUtils, Constants, IAIDeployer {
         // be an older one, while the kind key is by definition the newest curve built from the
         // parameters beside it. Editing the parameters without redeploying makes this fail,
         // which is the point -- `run.sh genCurve` then `deployCurve` is the way to change them.
-        string memory expAt = string.concat(".CurveParams.", EXPONENTIAL);
-        if (vm.keyExistsJson(json, expAt) && vm.keyExistsJson(json, string.concat(".", EXPONENTIAL))) {
+        //
+        // When the exponential kind is the one in force, both the block and the key are
+        // required: a record that has lost either no longer describes the table pricing every
+        // mint, and a check that shrugged would be lying.
+        bool inForce = keccak256(bytes(c.curveKind)) == keccak256(bytes(EXPONENTIAL));
+        bool hasBlock = vm.keyExistsJson(json, string.concat(".CurveParams.", EXPONENTIAL));
+        bool hasKey = vm.keyExistsJson(json, string.concat(".", EXPONENTIAL));
+        if (inForce) {
+            require(hasBlock, "MintCurveKind is ExponentialMintCurve but the record has no CurveParams block -- run genCurve");
+            require(hasKey, "MintCurveKind is ExponentialMintCurve but no ExponentialMintCurve address is recorded");
+        }
+        if (hasBlock && hasKey) {
+            // An interrupted run records an address that was never deployed, and a hand edit can
+            // leave a zero; both are named as the record entry to fix rather than failing on an
+            // empty return from `bucketWidth()`.
             address newest = vm.parseJsonAddress(json, string.concat(".", EXPONENTIAL));
-            if (newest != address(0)) {
-                // An interrupted run records an address that was never deployed; name the entry
-                // rather than fail on an empty return from `bucketWidth()`.
-                _assertHasCode(newest, EXPONENTIAL);
-                _assertExponentialCurveMatches(newest, _exponentialParamsOf(json));
-            }
+            _assertHasCode(newest, EXPONENTIAL);
+            _assertExponentialCurveMatches(newest, _exponentialParamsOf(json));
         }
 
         console.log("network        ", networkName());

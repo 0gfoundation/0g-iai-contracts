@@ -220,6 +220,9 @@ contract ExponentialMintCurve is IMintCurve {
     // -------------------------------------------------------------------------
 
     /// @dev `cost`, callable from the constructor (external calls to `this` are not).
+    /// @param supply Current supply, wei-iAI.
+    /// @param amount Amount being minted, wei-iAI.
+    /// @return 0G value to lock, wei-0G, rounded up once over the exact bucket sum.
     function _cost(uint256 supply, uint256 amount) private view returns (uint256) {
         if (amount == 0) return 0;
         uint256 end = supply + amount;
@@ -231,20 +234,29 @@ contract ExponentialMintCurve is IMintCurve {
      * @dev `quoteForValue`, callable from the constructor. Walks buckets from `supply`,
      *      taking whole buckets while the budget covers them and flooring inside the first
      *      it does not. Works in numerator units (`delta0G * WAD`) so no division happens
-     *      until the partial bucket, where it floors. The result is affordable by
-     *      construction: the exact sum it corresponds to is at most `delta0G * WAD`, so its
-     *      ceiling-divided cost is at most `delta0G`. The trailing loop is a correctness
-     *      backstop that is not expected to run; it terminates because `cost` is monotone in
-     *      `amount` and `cost(s, 0) == 0`.
+     *      until the partial bucket, where it floors.
+     *
+     *      The result is affordable by construction: a whole bucket is taken only while the
+     *      budget covers it, and the partial bucket's `floor(remaining / price)` units charge
+     *      at most `remaining`, so the exact charge of everything taken is at most
+     *      `delta0G * WAD` and its single ceiling at most `delta0G`. That invariant is asserted
+     *      from the running total rather than re-checked by re-pricing the slice: a second walk
+     *      would double the cost of every quote to guard a case that cannot occur, and an
+     *      assertion that fires is a louder, more honest failure than a silent correction.
      *
      *      Saturates at `top`: a budget that covers the rest of the table buys exactly the
      *      rest of the table. A budget too large to scale by `WAD` covers it a fortiori.
+     *
+     * @param supply  Current supply, wei-iAI.
+     * @param delta0G Budget, wei-0G.
+     * @return amount Amount mintable for `delta0G`, wei-iAI, rounded down.
      */
     function _quote(uint256 supply, uint256 delta0G) private view returns (uint256 amount) {
         if (supply >= top || delta0G == 0) return 0;
         if (delta0G > type(uint256).max / WAD) return top - supply;
 
-        uint256 remaining = delta0G * WAD;
+        uint256 budget = delta0G * WAD;
+        uint256 remaining = budget;
         uint256 cursor = supply;
         while (cursor < top) {
             uint256 index = cursor / bucketWidth;
@@ -255,21 +267,23 @@ contract ExponentialMintCurve is IMintCurve {
                 remaining -= wholeBucket;
                 cursor += available;
             } else {
-                cursor += remaining / price;
+                uint256 units = remaining / price;
+                remaining -= units * price;
+                cursor += units;
                 break;
             }
         }
         amount = cursor - supply;
 
-        while (amount != 0 && _cost(supply, amount) > delta0G) {
-            unchecked {
-                --amount;
-            }
-        }
+        // `budget - remaining` is the exact charge of `amount`; `cost` returns its ceiling.
+        assert(Math.ceilDiv(budget - remaining, WAD) <= delta0G);
     }
 
     /// @dev `sum over buckets of price_i * overlap_i` for the slice `[from, to)`, in wei-0G
     ///      scaled by WAD. Exact; the caller decides the rounding.
+    /// @param from Start of the slice, wei-iAI, inclusive.
+    /// @param to   End of the slice, wei-iAI, exclusive; at most `top`.
+    /// @return num The exact sum, wei-0G times 1e18.
     function _exactSum(uint256 from, uint256 to) private view returns (uint256 num) {
         uint256 cursor = from;
         while (cursor < to) {

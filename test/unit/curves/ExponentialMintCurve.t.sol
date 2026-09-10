@@ -22,8 +22,6 @@ import {ExponentialMintCurve} from "../../../src/curves/ExponentialMintCurve.sol
  *      record; `test/script/Deploy.t.sol` asserts the two are identical.
  */
 contract ExponentialMintCurveTest is CurveConformanceTest {
-    uint256 internal constant WAD = 1e18;
-
     uint256 internal constant W = 25e18;
     uint256 internal constant CAP = 9270e18;
     uint256 internal constant TOP = 9275e18;

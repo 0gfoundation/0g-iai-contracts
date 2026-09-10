@@ -224,9 +224,11 @@ competing mint crosses it first, your mint is repriced by a whole step rather th
 the top of the table a step is up to 2.8%, wider than 50 bps. The remedy is the same one already
 recommended — re-quote right before sending — and, if you want the tolerance to be exact, size it
 from the next bucket's price: `priceAt(bucketOf(supply) + 1)` against `priceAt(bucketOf(supply))`
-(§4) tells you precisely how much one step costs at the current supply. Guard the index first:
-when `bucketOf(supply) + 1 == bucketCount()` the supply is in the last bucket, there is no next
-price, and `priceAt` reverts on the out-of-range index.
+(§4) tells you precisely how much one step costs at the current supply. Guard it in two steps:
+first `supply >= maxSafeSupply()` means the supply is at or past the table's top (possible: the
+cap may equal the top and be minted out, or the supply may sit above the top in burn-only mode),
+where `bucketOf` and `rateAt` themselves revert; then `bucketOf(supply) + 1 == bucketCount()`
+means the supply is in the last bucket and there is no next price. In either case show no step.
 
 ```ts
 const TOLERANCE_BPS = 50n;                                   // 0.5%
@@ -291,7 +293,9 @@ ExponentialMintCurve.rateAt(s)       view returns (uint256)    // the marginal p
 
 Treat these as optional and curve-specific: governance can point the vault at a curve of a
 different shape, in which case they will not exist. Check `curve()` and degrade to the vault's own
-quotes, which every curve supports.
+quotes, which every curve supports. `bucketOf` and `rateAt` revert with `SupplyOutOfDomain` once
+`supply >= maxSafeSupply()` — a reachable state, not an error in your call — so read
+`maxSafeSupply()` first and treat anything at or above it as "no bucket, minting is closed here".
 
 **Read these; never hard-code them.** The ceiling is adjustable in both directions and the pricing
 curve can be replaced, both by governance and without an upgrade. A UI that bakes in "9,270 iAI" or

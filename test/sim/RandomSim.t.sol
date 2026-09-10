@@ -154,7 +154,7 @@ contract RandomSimTest is BaseTest {
             num += uint256(mPrices[i]) * (stop - cursor);
             cursor = stop;
         }
-        return (num + WAD - 1) / WAD;
+        return _shadowCeilDiv(num, WAD);
     }
 
     /// @dev The price the curve currently in force asks, whichever shape it is.

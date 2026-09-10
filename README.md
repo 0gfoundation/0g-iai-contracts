@@ -179,8 +179,9 @@ from stranding the rest of a deployment.
 Changing the curve on a live network is three commands, in this order: `./run.sh genCurve ...`
 rewrites the table in the record, `./run.sh deployCurve ExponentialMintCurve` deploys it and records
 the address under its kind, and `./run.sh setCurve ExponentialMintCurve` puts it in service. Nothing
-already minted is repriced. If the new table is taller than the old, `setCap` may follow it; it
-cannot precede it.
+already minted is repriced. The vault's cap has to fit under the table in force: if the new table is
+taller than the old, `setCap` may follow the swap but cannot precede it; if the new table's top is
+below the current cap, `setCap` to at most the new top comes first or the swap is refused.
 
 Running `forge script` by hand works too, but set **`FOUNDRY_PROFILE=deploy`**: under the default
 profile `deployments/` is read-only, so that a test which forgets to redirect a script fails with a

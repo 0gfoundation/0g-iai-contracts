@@ -46,12 +46,23 @@ abstract contract CurveConformanceTest is Test {
         uint256[] memory s = _supplies();
         uint256[] memory d = _amounts();
 
+        uint256 evaluated;
         for (uint256 i = 0; i < s.length; i++) {
             for (uint256 j = 0; j < d.length; j++) {
                 if (d[j] == 0 || s[i] + d[j] > top) continue;
                 assertGt(c.cost(s[i], d[j]), 0, "a positive amount must cost something");
+                evaluated++;
             }
         }
+        _assertMostPairsEvaluated(evaluated, s.length * d.length);
+    }
+
+    /// @dev The domain guard skips pairs past `maxSafeSupply()`; this is what stops a curve with
+    ///      a tiny declared domain from passing the suite by having almost nothing evaluated.
+    ///      The ladders are meant to sit inside the domain with only their top rungs past it.
+    function _assertMostPairsEvaluated(uint256 evaluated, uint256 total) internal pure {
+        assertGt(evaluated, 0, "the ladders lie entirely outside the curve's domain");
+        assertGe(evaluated * 2, total, "more than half the ladder pairs fall outside the curve's domain");
     }
 
     /// @dev The marginal price may never fall as supply rises. A curve that dipped would let
@@ -66,6 +77,7 @@ abstract contract CurveConformanceTest is Test {
         uint256[] memory s = _supplies();
         uint256[] memory d = _amounts();
 
+        uint256 evaluated;
         for (uint256 j = 0; j < d.length; j++) {
             if (d[j] == 0) continue;
             bool seen;
@@ -76,8 +88,10 @@ abstract contract CurveConformanceTest is Test {
                 if (seen) assertGe(current, previous, "cost fell as supply rose");
                 previous = current;
                 seen = true;
+                evaluated++;
             }
         }
+        _assertMostPairsEvaluated(evaluated, s.length * d.length);
     }
 
     /// @dev Splitting a mint into pieces must never be cheaper than doing it at once,
@@ -89,6 +103,7 @@ abstract contract CurveConformanceTest is Test {
         uint256 top = c.maxSafeSupply();
         uint256[] memory s = _supplies();
         uint256[] memory d = _amounts();
+        uint256 evaluated;
 
         for (uint256 i = 0; i < s.length; i++) {
             for (uint256 j = 0; j < d.length; j++) {
@@ -104,9 +119,11 @@ abstract contract CurveConformanceTest is Test {
                         c.cost(s[i], a + b),
                         "two mints came out cheaper than one"
                     );
+                    evaluated++;
                 }
             }
         }
+        _assertMostPairsEvaluated(evaluated, s.length * d.length * d.length);
     }
 
     /// @dev The real cross-check between the two functions: whatever `quoteForValue` promises

@@ -399,6 +399,81 @@ contract DeployScriptTest is Test {
         assertEq(vm.parseJsonAddressArray(vm.readFile(file), ".MintCurveHistory").length, 2, "both tables kept");
     }
 
+    /**
+     * @dev The mirror image of raising the target: a table whose top is below the current cap
+     *      cannot be put in force until the cap is brought down to it. The order is `setCap`,
+     *      then `setCurve` -- and the check keeps working throughout.
+     */
+    function test_LoweringTheTarget_IsSetCapThenSetCurve() public {
+        _bootstrap("curve-lower-target");
+        _MockScript().run();
+        _IAIScript().run();
+
+        // A shorter table, as `genCurve --target 9000` would produce: 360 buckets, top 9,000.
+        uint128[] memory current = ExponentialTable.prices();
+        uint256[] memory shorter = new uint256[](360);
+        for (uint256 i = 0; i < shorter.length; i++) {
+            shorter[i] = current[i];
+        }
+        string memory o = "exp";
+        vm.serializeUint(o, "Base", 3_237.4e18);
+        vm.serializeUint(o, "BucketWidth", 25e18);
+        vm.serializeUint(o, "Exponent", 3.419e18);
+        vm.serializeUint(o, "Prices", shorter);
+        string memory block_ = vm.serializeUint(o, "Target", 9_000e18);
+        vm.writeJson(block_, file, ".CurveParams.ExponentialMintCurve");
+
+        _IAIScript().deployCurve("ExponentialMintCurve");
+        _IAIScript().checkDeployment();
+        address shorterCurve = vm.parseJsonAddress(vm.readFile(file), ".ExponentialMintCurve");
+        assertEq(ExponentialMintCurve(shorterCurve).maxSafeSupply(), 9_000e18);
+
+        // Refused while the cap (9,270) sits above the new top.
+        IAIVault vault = IAIVault(vm.parseJsonAddress(vm.readFile(file), ".IAIVault"));
+        vm.prank(vm.addr(DEPLOYER_PK));
+        vm.expectRevert(abi.encodeWithSelector(IIAIVault.CapAboveCurveDomain.selector, CAP, 9_000e18));
+        vault.setCurve(IMintCurve(shorterCurve));
+
+        _IAIScript().setCap(9_000e18);
+        _IAIScript().setCurve("ExponentialMintCurve");
+        _IAIScript().checkDeployment();
+        assertEq(address(vault.curve()), shorterCurve);
+        assertEq(vault.cap(), 9_000e18);
+    }
+
+    /**
+     * @dev `setCurve` pre-flights the exponential kind key against the record's table before
+     *      it broadcasts anything. The case it exists for: `genCurve` rewrote the table, nobody
+     *      ran `deployCurve`, and the key still names the previous curve -- switching to it
+     *      would spend a governance transaction on a curve the next `check` refuses.
+     */
+    function test_SetCurve_RefusesAKindKeyThatNoLongerMatchesTheRecord() public {
+        _bootstrap("curve-setcurve-preflight");
+        _MockScript().run();
+        _IAIScript().run();
+        address deployed = vm.parseJsonAddress(vm.readFile(file), ".ExponentialMintCurve");
+
+        // Also deploy and switch to the linear curve, so a successful `setCurve` back would be
+        // observable -- and so the refusal is shown to happen before any state changes.
+        _IAIScript().deployCurve("LinearMintCurve");
+        _IAIScript().setCurve("LinearMintCurve");
+
+        vm.writeJson(vm.toString(uint256(50e18)), file, ".CurveParams.ExponentialMintCurve.BucketWidth");
+
+        IAIScript ops = _IAIScript();
+        vm.expectRevert(bytes("curve bucket width differs from the record"));
+        ops.setCurve("ExponentialMintCurve");
+
+        IAIVault vault = IAIVault(vm.parseJsonAddress(vm.readFile(file), ".IAIVault"));
+        assertTrue(address(vault.curve()) != deployed, "nothing was switched");
+        assertEq(vm.parseJsonString(vm.readFile(file), ".MintCurveKind"), "LinearMintCurve", "the record was not touched");
+
+        // Restore the record and the switch goes through.
+        vm.writeJson(vm.toString(uint256(25e18)), file, ".CurveParams.ExponentialMintCurve.BucketWidth");
+        _IAIScript().setCurve("ExponentialMintCurve");
+        assertEq(address(vault.curve()), deployed);
+    }
+
     /// @dev Lowering the cap -- including to zero, the burn-only switch -- is a vault-side act
     ///      that the curve and its record know nothing about. Every script must keep working.
     function test_LoweringTheCap_LeavesTheCurveAndItsCheckUntouched() public {
