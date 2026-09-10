@@ -15,6 +15,7 @@ import {ExponentialTable} from "../unit/curves/ExponentialTable.sol";
 import {IIAIVault} from "../../src/interfaces/IIAIVault.sol";
 import {IMintCurve} from "../../src/interfaces/IMintCurve.sol";
 import {MockW0G} from "../../src/mocks/MockW0G.sol";
+import {PausableUpgradeable} from "@openzeppelin/contracts-upgradeable/utils/PausableUpgradeable.sol";
 
 /**
  * @title DeployScriptTest
@@ -664,6 +665,60 @@ contract DeployScriptTest is Test {
         assertTrue(vault.paused());
         assertTrue(registry.paused());
 
+    }
+
+    /// @dev The operator path for admitting one address while issuance is closed: grant, mint
+    ///      against a paused vault, revoke, and only then open it to everyone. Nothing on disk
+    ///      records who holds the exemption, so every step reads it back from the chain.
+    function test_Scripts_AdmitOneAddressWhileIssuanceIsPaused() public {
+        _bootstrap("paused-mint");
+        _MockScript().run();
+        _IAIScript().run();
+
+        string memory json = vm.readFile(file);
+        IAIVault vault = IAIVault(vm.parseJsonAddress(json, ".IAIVault"));
+        IAI token = IAI(vm.parseJsonAddress(json, ".IAI"));
+        MockA0G a0g = MockA0G(vm.parseJsonAddress(json, ".A0G"));
+        address deployer = vm.addr(DEPLOYER_PK);
+        bytes32 exemption = vault.PAUSE_EXEMPT_MINTER_ROLE();
+
+        assertTrue(vault.paused(), "the deployment came up closed");
+        assertFalse(vault.hasRole(exemption, deployer), "and with nobody able to mint through it");
+
+        // Both read-only entrypoints have to work against a paused vault: sizing the mint is
+        // how the caller gets its slippage bound, and quoting is not gated.
+        _IAIScript().pausedMintExemption(deployer);
+        _IAIScript().quoteMint(1e18);
+
+        (, uint256 a0GIn) = vault.quoteMint(1e18);
+        a0g.faucetMint(deployer, a0GIn * 4);
+
+        // Provoked on the vault directly, as the deployer: a revert inside a script leaves
+        // forge's broadcast open and the next script call trips over it.
+        vm.prank(deployer);
+        a0g.approve(address(vault), type(uint256).max);
+        vm.prank(deployer);
+        vm.expectRevert(PausableUpgradeable.EnforcedPause.selector);
+        vault.mint(1e18, a0GIn, block.timestamp);
+
+        _IAIScript().grantPausedMintExemption(deployer);
+        assertTrue(vault.hasRole(exemption, deployer), "grant entrypoint works");
+
+        _IAIScript().mint(1e18, a0GIn);
+        assertEq(token.balanceOf(deployer), 1e18, "minted while issuance was paused");
+        assertTrue(vault.paused(), "and the vault is still paused afterwards");
+
+        _IAIScript().revokePausedMintExemption(deployer);
+        assertFalse(vault.hasRole(exemption, deployer), "revoke entrypoint closes it again");
+        (, uint256 next) = vault.quoteMint(1e18);
+        vm.prank(deployer);
+        vm.expectRevert(PausableUpgradeable.EnforcedPause.selector);
+        vault.mint(1e18, next, block.timestamp);
+
+        // And the ordinary path opens the way it always did, with no role involved.
+        _IAIScript().unpause();
+        _IAIScript().mint(1e18, next * 2);
+        assertEq(token.balanceOf(deployer), 2e18, "no exemption needed once issuance is open");
     }
 
     /// @dev Pointing the vault at mock collateral on mainnet would be unrecoverable, so the

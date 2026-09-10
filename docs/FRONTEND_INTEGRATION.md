@@ -519,7 +519,7 @@ this for you.
 
 | Selector | Error | What happened | What to do |
 | --- | --- | --- | --- |
-| `0xd93c0665` | `EnforcedPause()` | Minting (or staking) is paused. **The system launches paused**, so expect this before go-live. | Not a user error, and not retryable. Check `IAIVault.paused()` up front to distinguish "not open yet" from a failure. **Burning is never pausable** — redemption works even while paused. |
+| `0xd93c0665` | `EnforcedPause()` | Minting (or staking) is paused. **The system launches paused**, so expect this before go-live. | Not a user error, and not retryable. Check `IAIVault.paused()` up front to distinguish "not open yet" from a failure — but note that a wallet holding the vault's `PAUSE_EXEMPT_MINTER_ROLE` may still mint while paused, so a UI that gates on `paused()` alone will wrongly hide minting from it. The full condition is `paused() && !hasRole(PAUSE_EXEMPT_MINTER_ROLE, account)`; nobody holds that role unless governance has granted it. **Burning is never pausable** — redemption works even while paused. |
 | — | `"Oracle: stale value"` (a plain string, not a custom error) | The upstream a0G price feed has not been updated recently enough. Mint, burn and every quote revert. | An **external dependency**, not these contracts, and nothing a retry fixes quickly. Worth distinguishing from our own failures when reporting or alerting. |
 | `0xe2517d3f` | `AccessControlUnauthorizedAccount(account, role)` | An admin-only function was called from a normal wallet. | An integration bug: `pause`, `setFoundation`, `burnFor` and the role functions are not callable from user wallets. |
 

@@ -90,8 +90,10 @@ A holder who mints on both sides gets one blended average for the whole position
 Lowering the cap below the live supply is a supported state, **burn-only mode**: `mint` refuses,
 and redemption, rescue, staking and the harvest sweep all carry on untouched. It needs no mode flag
 — `mint`'s ceiling check is simply always true once the cap is under the supply. Note that `harvest`
-is gated by `pause`, not by the cap, so `setCap(0)` is not a wind-down switch on its own; `pause()`
-is.
+is gated by `pause`, not by the cap, so `setCap(0)` is not a wind-down switch on its own — and
+`pause()` is not one either while anybody holds `PAUSE_EXEMPT_MINTER_ROLE`. A full stop is `pause()`
+plus revoking that role. Because the ceiling check lives in `mint`'s body rather than in a modifier,
+`setCap(0)` is the one switch that closes issuance to everyone.
 
 ### Rounding
 
@@ -191,8 +193,19 @@ permission error instead of overwriting a deployment record. See `run.sh` for th
 launch-timing control the system has, and it is deliberately manual. The `CreditRegistry` deploys
 open; nobody can stake before iAI exists.
 
-Deployment grants `DEFAULT_ADMIN_ROLE`, `PAUSER_ROLE` and beacon ownership to the deploying account,
-and grants `RESCUE_ROLE` to nobody — so `burnFor` is unreachable until governance opens it.
+Deployment grants `DEFAULT_ADMIN_ROLE`, `PAUSER_ROLE` and beacon ownership to the deploying account.
+Two roles it grants to nobody: `RESCUE_ROLE`, so `burnFor` is unreachable, and
+`PAUSE_EXEMPT_MINTER_ROLE`, so nobody can mint through the pause the vault comes up in. Each opens
+only when governance says so.
+
+`PAUSE_EXEMPT_MINTER_ROLE` lets one nominated address mint while issuance is paused, on exactly the
+same terms as any other mint — same curve, same supply ceiling, same slippage bound, and the
+collateral and iAI still move on the caller. It exists because the vault's two states were otherwise
+"closed to everyone" and "open to everyone", and admitting a single address meant unpausing and
+re-pausing around the transaction. It is granted for one operation and revoked afterwards, so it is
+not part of the governance handover; `./run.sh grantPausedMinter <addr>` opens it and
+`./run.sh revokePausedMinter <addr>` closes it. What it costs is recorded as accepted risk R10 in
+`CLAUDE.md`: while it is held, `pause()` no longer stops issuance at a manipulated oracle rate.
 
 ## Handing over governance
 
@@ -212,14 +225,16 @@ everything — a mistyped address stops there, with the deployer still in contro
 with nobody in control. Beacon ownership is one-step `Ownable` with no acceptance step, so that
 precondition is the only safety net it has.
 
-Other operator entrypoints: `./run.sh pause`, `./run.sh harvest`, and
-`forge script script/deploy/IAI.s.sol --sig "setFoundation(address)" <addr>`.
+Other operator entrypoints: `./run.sh pause`, `./run.sh harvest`, `./run.sh quote <amount>`,
+`./run.sh mint <amount> <maxA0GIn>`, `./run.sh pausedMinter|grantPausedMinter|revokePausedMinter
+<addr>`, and `forge script script/deploy/IAI.s.sol --sig "setFoundation(address)" <addr>`.
 
 | Role | Intended holder | Can do |
 | --- | --- | --- |
 | `DEFAULT_ADMIN_ROLE` | multisig | grant and revoke roles, `setFoundation` |
 | `PAUSER_ROLE` | guardian | close and open issuance, nothing else — a lighter key, because speed matters more than ceremony |
 | `RESCUE_ROLE` | multisig + timelock | `burnFor`, which can only ever return collateral to its owner |
+| `PAUSE_EXEMPT_MINTER_ROLE` | nobody by default | `mint` while issuance is paused — same price, same cap, same slippage bound, same recipient. Granted per operation and revoked after; not part of the handover |
 | beacon owner | multisig + timelock | upgrade one contract; each has its own beacon |
 
 ## Upgrades

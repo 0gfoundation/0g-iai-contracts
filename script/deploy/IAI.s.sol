@@ -10,6 +10,7 @@ import {IAI} from "../../src/IAI.sol";
 import {IAIVault} from "../../src/IAIVault.sol";
 import {CreditRegistry} from "../../src/CreditRegistry.sol";
 import {IMintCurve} from "../../src/interfaces/IMintCurve.sol";
+import {IA0G} from "../../src/interfaces/external/IA0G.sol";
 
 /**
  * @title IAIScript
@@ -334,6 +335,110 @@ contract IAIScript is Script, JsonUtils, Constants, IAIDeployer {
         vm.startBroadcast(vm.envUint("PRIVATE_KEY"));
         IAIVault(vm.parseJsonAddress(json, ".IAIVault")).setFoundation(newFoundation);
         vm.stopBroadcast();
+    }
+
+    /**
+     * @notice Lets one address mint while issuance is paused. `DEFAULT_ADMIN_ROLE`.
+     * @param account Address to admit.
+     *
+     * @dev Deliberately not part of any deployment path, and the holder is deliberately not
+     *      written into the deployment record: the grant is a governance transaction of its
+     *      own, and so is the revoke meant to follow it. Nothing reads the holder back from
+     *      disk, so there is no copy of it to go stale or to be mistaken for policy. Read the
+     *      chain with `pausedMintExemption` instead.
+     */
+    function grantPausedMintExemption(address account) public {
+        (string memory json,) = loadOrInitJson("iai");
+        IAIVault vault = IAIVault(vm.parseJsonAddress(json, ".IAIVault"));
+        // Hoisted out of the broadcast: a view call in an argument position is the mistake this
+        // repository has paid for three times, and it belongs in neither a script nor a test.
+        bytes32 role = vault.PAUSE_EXEMPT_MINTER_ROLE();
+
+        vm.startBroadcast(vm.envUint("PRIVATE_KEY"));
+        vault.grantRole(role, account);
+        vm.stopBroadcast();
+
+        console.log("granted to     ", account);
+    }
+
+    /**
+     * @notice Takes that permission back. `DEFAULT_ADMIN_ROLE`.
+     * @param account Address to close out.
+     */
+    function revokePausedMintExemption(address account) public {
+        (string memory json,) = loadOrInitJson("iai");
+        IAIVault vault = IAIVault(vm.parseJsonAddress(json, ".IAIVault"));
+        bytes32 role = vault.PAUSE_EXEMPT_MINTER_ROLE();
+
+        vm.startBroadcast(vm.envUint("PRIVATE_KEY"));
+        vault.revokeRole(role, account);
+        vm.stopBroadcast();
+
+        console.log("revoked from   ", account);
+    }
+
+    /**
+     * @notice Read-only. Whether `account` may mint right now, and why.
+     * @param account Address to read.
+     *
+     * @dev Prints both halves because either alone is misleading: paused with the exemption is
+     *      open for this address, and unpaused without it is open for everyone.
+     */
+    function pausedMintExemption(address account) public view {
+        (string memory json,) = loadOrInitJsonView("iai");
+        IAIVault vault = IAIVault(vm.parseJsonAddress(json, ".IAIVault"));
+
+        console.log("network        ", networkName());
+        console.log("account        ", account);
+        console.log("paused (vault) ", vault.paused());
+        console.log("may mint paused", vault.hasRole(vault.PAUSE_EXEMPT_MINTER_ROLE(), account));
+    }
+
+    /**
+     * @notice Read-only. What minting `d` iAI costs at the current supply and rate.
+     * @param d Amount of iAI, in wei-iAI.
+     *
+     * @dev Works while paused -- quoting is not gated -- so it is the right way to size
+     *      `maxA0GIn` before a mint of either kind. Widen the printed figure before using it.
+     */
+    function quoteMint(uint256 d) public view {
+        (string memory json,) = loadOrInitJsonView("iai");
+        (uint256 delta0G, uint256 a0GIn) = IAIVault(vm.parseJsonAddress(json, ".IAIVault")).quoteMint(d);
+
+        console.log("iAI out        ", d);
+        console.log("0G value       ", delta0G);
+        console.log("a0G in         ", a0GIn);
+    }
+
+    /**
+     * @notice Mints `d` iAI to the broadcasting key, approving the collateral first.
+     * @param d        Amount of iAI to mint, in wei-iAI.
+     * @param maxA0GIn Most a0G the caller accepts spending, in wei-a0G. Take it from
+     *                 `quoteMint` and widen it.
+     *
+     * @dev Mints to itself, because `mint` always does: the position belongs to whoever sends
+     *      the transaction, so this is only usable from the key that should hold it.
+     *
+     *      Approves `maxA0GIn` rather than the quote. The quote is read during simulation, and
+     *      a rate move before inclusion would otherwise turn a mint the caller still accepts
+     *      into a failed transfer.
+     */
+    function mint(uint256 d, uint256 maxA0GIn) public {
+        (string memory json,) = loadOrInitJson("iai");
+        IAIVault vault = IAIVault(vm.parseJsonAddress(json, ".IAIVault"));
+        IA0G a0G = vault.a0G();
+        bool wasPaused = vault.paused();
+
+        vm.startBroadcast(vm.envUint("PRIVATE_KEY"));
+        a0G.approve(address(vault), maxA0GIn);
+        // An hour is long enough to survive a slow inclusion and short enough that a stuck
+        // transaction expires rather than landing at a price nobody looked at.
+        vault.mint(d, maxA0GIn, block.timestamp + 1 hours);
+        vm.stopBroadcast();
+
+        console.log("minted         ", d);
+        console.log("while paused   ", wasPaused);
+        console.log("supply         ", vault.supply());
     }
 
     /**

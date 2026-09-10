@@ -38,6 +38,11 @@ abstract contract RoleHandover {
     ///                    Intended to be the multisig behind a timelock.
     /// @param beaconOwner Owns all three beacons, and therefore the upgrade key. Intended to be
     ///                    the multisig behind a timelock.
+    ///                    There is deliberately no field for `PAUSE_EXEMPT_MINTER_ROLE`: it is
+    ///                    not a governance seat but a permission granted for one operation and
+    ///                    revoked afterwards, so nominating a permanent holder here would force
+    ///                    the exemption open as a precondition of moving governance off the
+    ///                    deployer. The handover only checks the deployer does not keep it.
     struct Governance {
         address admin;
         address guardian;
@@ -121,6 +126,14 @@ abstract contract RoleHandover {
         if (vault.hasRole(vault.RESCUE_ROLE(), deployer)) {
             vault.renounceRole(vault.RESCUE_ROLE(), deployer);
         }
+        // Nothing grants this at deployment, so normally a no-op. Conditional for the same
+        // reason the others are: if the deployer ever opened the exemption to itself, standing
+        // down has to close it, or the handover leaves behind a key able to mint through a
+        // pause that no check would mention.
+        bytes32 exemption = vault.PAUSE_EXEMPT_MINTER_ROLE();
+        if (vault.hasRole(exemption, deployer)) {
+            vault.renounceRole(exemption, deployer);
+        }
 
         // Admin last: it is the role that could put the others back.
         if (iai.hasRole(0x00, deployer)) iai.renounceRole(0x00, deployer);
@@ -182,6 +195,10 @@ abstract contract RoleHandover {
             !registry.hasRole(registry.PAUSER_ROLE(), deployer), "deployer can still pause the registry"
         );
         require(!vault.hasRole(vault.RESCUE_ROLE(), deployer), "deployer can still rescue");
+        require(
+            !vault.hasRole(vault.PAUSE_EXEMPT_MINTER_ROLE(), deployer),
+            "deployer can still mint while paused"
+        );
 
         require(iai.hasRole(iai.MINTER_BURNER_ROLE(), c.vault), "the vault lost its minter role");
     }

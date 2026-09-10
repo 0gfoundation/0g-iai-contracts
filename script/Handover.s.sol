@@ -99,6 +99,7 @@ contract HandoverScript is Script, JsonUtils, Constants, RoleHandover {
         console.log("  vault pauser     ", vault.hasRole(vault.PAUSER_ROLE(), deployer));
         console.log("  registry pauser  ", registry.hasRole(registry.PAUSER_ROLE(), deployer));
         console.log("  rescue           ", vault.hasRole(vault.RESCUE_ROLE(), deployer));
+        console.log("  paused-mint      ", vault.hasRole(vault.PAUSE_EXEMPT_MINTER_ROLE(), deployer));
         console.log("");
         console.log("vault keeps minter ", iai.hasRole(iai.MINTER_BURNER_ROLE(), c.vault));
     }
