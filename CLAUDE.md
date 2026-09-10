@@ -257,6 +257,14 @@ vm.writeJson(finalJson, path);            // only the LAST serialize call return
 Note the last line's comment: `vm.serializeXxx` returns the completed document only from the final
 call, so capturing it early silently drops everything serialized afterwards.
 
+**A rehearsal must not be able to write the real deployment record.** `./upgrade.sh rehearse`
+calls the same entry point a real upgrade does, and that entry point records the implementation
+address it just deployed — on a fork, an address that exists nowhere else. It used to write that
+into the live record, replacing a working implementation with one that has no code, and nothing
+said so until `./run.sh check` refused to pass. The rehearsal now redirects `DEPLOYMENT_PATH` to a
+throwaway copy under `cache/`, so the snapshot and the record it produces both die with it. Any
+future script that both forks and records needs the same treatment.
+
 **Never `forge script --resume` a script that writes its own record.** These scripts write the
 deployment file during *simulation*, before broadcasting. `--resume` re-simulates from scratch and
 then sends only the transactions the previous broadcast never got to — so the record ends up naming
