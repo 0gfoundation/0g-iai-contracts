@@ -42,8 +42,16 @@ Write all state before any external call. `mint`, `burn`, `burnFor`, `harvest`, 
 **4. `burn` and `burnFor` must never become pausable.** Redemption is a promise to users and the pause
 switch must not be able to reach it. `test_Burn_SucceedsWhilePaused` encodes this as an executable
 assertion; if you add a shared modifier, check it did not sweep redemption in with it. `mint` no
-longer carries `whenNotPaused` but `whenIssuanceOpen` (rule 5), so that check is a grep for **both**
-names, and the right answer is exactly two hits in the vault: `mint` and `harvest`.
+longer carries `whenNotPaused` but `whenIssuanceOpen` (rule 5), so that check spans both names --
+and it has to be anchored to signatures, because the modifier's own definition and two `@dev`
+blocks mention them too, so a plain grep returns five lines on a healthy tree and the rule stops
+telling signal from noise:
+
+```bash
+grep -nE "^\s*function .*(whenNotPaused|whenIssuanceOpen)" src/IAIVault.sol
+```
+
+The right answer is exactly two, `mint` and `harvest`. `burn` and `burnFor` must never appear.
 
 **5. Roles, not owners.** `AccessControlUpgradeable` with one role per responsibility:
 `DEFAULT_ADMIN_ROLE` (grant/revoke, `setFoundation`, `setCurve`, `setCap`), `PAUSER_ROLE` (pause/unpause only),
