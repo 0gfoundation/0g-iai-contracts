@@ -14,6 +14,8 @@ import {IIAIVault} from "../../src/interfaces/IIAIVault.sol";
 import {IA0G} from "../../src/interfaces/external/IA0G.sol";
 import {IMintCurve} from "../../src/interfaces/IMintCurve.sol";
 import {LinearMintCurve} from "../../src/curves/LinearMintCurve.sol";
+import {ExponentialMintCurve} from "../../src/curves/ExponentialMintCurve.sol";
+import {Strings} from "@openzeppelin/contracts/utils/Strings.sol";
 
 /**
  * @title IAIDeployer
@@ -34,7 +36,8 @@ import {LinearMintCurve} from "../../src/curves/LinearMintCurve.sol";
 abstract contract IAIDeployer {
     /// @param a0G              Collateral token. The live a0G on mainnet, a mock elsewhere.
     /// @param foundation       Recipient of harvested yield.
-    /// @param curveKind        Which curve to deploy. Only `"LinearMintCurve"` exists today.
+    /// @param curveKind        Which curve to deploy: `"ExponentialMintCurve"` (the default) or
+    ///                         `"LinearMintCurve"`.
     /// @param cap              Starting supply ceiling, wei-iAI. Adjustable after launch.
     /// @param cooldownDuration Withdrawal delay in the credit registry.
     struct Config {
@@ -64,6 +67,26 @@ abstract contract IAIDeployer {
     struct LinearCurveParams {
         uint256 r0;
         uint256 anchorCap;
+        uint256 target;
+    }
+
+    /// @param bucketWidth Width of every bucket, wei-iAI.
+    /// @param prices      One price per bucket, wei-0G per iAI, in supply order. **Generated,
+    ///                    never hand-written**: `script/curve/gen_exponential_table.py` derives
+    ///                    them from `bucketWidth` and the three parameters below, and
+    ///                    `run.sh check` re-derives them and compares. Nothing about the vault's
+    ///                    cap enters into it.
+    /// @param base        Marginal price at zero supply the table was derived from. Provenance.
+    /// @param exponent    Exponent coefficient the table was derived from, scaled by 1e18. Provenance.
+    /// @param target      Supply the exponent is normalised against, wei-iAI. Provenance -- the
+    ///                    vault's cap is its own number, and the table's top is what bounds it.
+    ///
+    /// @dev `ExponentialMintCurve`'s own parameters, kept apart from the linear curve's.
+    struct ExponentialCurveParams {
+        uint256 bucketWidth;
+        uint128[] prices;
+        uint256 base;
+        uint256 exponent;
         uint256 target;
     }
 
@@ -278,18 +301,74 @@ abstract contract IAIDeployer {
      *      A name-switched deployer has to accept the union of every curve's parameters, so
      *      each new curve widens a struct every other curve then carries fields it has no use
      *      for — and a caller that fills in the wrong subset gets a curve that constructs
-     *      cleanly and prices differently. A second curve adds `_deployExponentialCurve` beside
-     *      this one and touches nothing here.
+     *      cleanly and prices differently. That is why `_deployExponentialCurve` sits beside
+     *      this one rather than inside it.
      */
     function _deployLinearCurve(LinearCurveParams memory p) internal returns (IMintCurve) {
         return new LinearMintCurve(p.r0, p.anchorCap, p.target);
     }
 
     /**
+     * @param p The curve's own parameters, table included.
+     * @return The deployed curve.
+     */
+    function _deployExponentialCurve(ExponentialCurveParams memory p) internal returns (IMintCurve) {
+        return new ExponentialMintCurve(p.bucketWidth, p.prices, p.base, p.exponent, p.target);
+    }
+
+    /**
+     * @param curve The deployed exponential curve to compare.
+     * @param p     The parameters and table the record carries for it.
+     * @return The first way the two disagree, or the empty string if they do not.
+     *
+     * @dev The vault cannot tell one table from another, and neither can a verifier reading
+     *      the contract's source: the table is constructor data. This is the comparison that
+     *      says whether the curve on chain is the one the record describes, entry by entry.
+     *      The caller reads the record; this half only reads the chain.
+     *
+     *      It returns the disagreement instead of reverting on it because the two callers want
+     *      different things from the same answer. Switching the vault onto a curve must refuse
+     *      outright; re-checking a record is entitled to say "this is only the dormant curve"
+     *      and carry on. Returning the reason keeps one description of what "matching" means
+     *      and lets each caller decide how loud a mismatch is.
+     */
+    function _exponentialCurveMismatch(address curve, ExponentialCurveParams memory p)
+        internal
+        view
+        returns (string memory)
+    {
+        ExponentialMintCurve c = ExponentialMintCurve(curve);
+        if (c.bucketWidth() != p.bucketWidth) return "curve bucket width differs from the record";
+        if (c.bucketCount() != p.prices.length) return "curve bucket count differs from the record";
+        if (c.base() != p.base) return "curve base differs from the record";
+        if (c.exponent() != p.exponent) return "curve exponent differs from the record";
+        if (c.target() != p.target) return "curve target differs from the record";
+
+        // The bucket count is equal by the check above, so this indexes both arrays safely.
+        uint128[] memory onChain = c.prices();
+        for (uint256 i = 0; i < p.prices.length; i++) {
+            if (onChain[i] != p.prices[i]) {
+                return string.concat("curve price differs from the record at bucket ", Strings.toString(i));
+            }
+        }
+        return "";
+    }
+
+    /**
+     * @param curve The deployed exponential curve to compare.
+     * @param p     The parameters and table the record carries for it.
+     * @dev For the callers that must not proceed on a mismatch. See `_exponentialCurveMismatch`.
+     */
+    function _assertExponentialCurveMatches(address curve, ExponentialCurveParams memory p) internal view {
+        string memory mismatch = _exponentialCurveMismatch(curve, p);
+        require(bytes(mismatch).length == 0, mismatch);
+    }
+
+    /**
      * @param a    Address that must be a contract.
      * @param name Key it was read from, so a failure names the entry to fix.
      */
-    function _assertHasCode(address a, string memory name) private view {
+    function _assertHasCode(address a, string memory name) internal view {
         require(a != address(0), string.concat("no address recorded for ", name));
         require(a.code.length != 0, string.concat("no code at the recorded ", name));
     }

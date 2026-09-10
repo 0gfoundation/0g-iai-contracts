@@ -33,3 +33,9 @@ lcov.info
 .vscode/
 .idea/
 deployments/upgrade-snapshot-*.json
+
+# Python bytecode from the curve generator
+__pycache__/
+
+# Local review notes
+findings.md

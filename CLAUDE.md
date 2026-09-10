@@ -28,6 +28,13 @@ leaving rounds **down**. State the direction and the reason in the NatSpec at ea
 with a test. The aggregate consequence — splitting a mint into many is strictly more expensive than
 doing it at once — is asserted in `test/unit/curves/LinearCurveMath.t.sol`, so a reversed rounding fails loudly.
 
+For the step curve the rounding is **one ceiling over the exact bucket sum**, never one per bucket.
+The number of buckets a slice touches changes as the supply crosses a boundary, so per-bucket
+ceilings would let `cost(s, d)` fall by a wei as `s` rose by one — adjacent prices near the origin
+differ by less than 2e18 wei — and the conformance suite's monotonicity test catches exactly that.
+With a single ceiling the sum is monotone, `ceil(a) + ceil(b) >= ceil(a + b)` makes splitting never
+cheaper, and a non-zero first price makes the result never zero. Keep it that way.
+
 **3. Checks, effects, interactions, and `nonReentrant` on anything that touches an external contract.**
 Write all state before any external call. `mint`, `burn`, `burnFor`, `harvest`, `stake`,
 `initiateUnstake` and `unstake` all carry the guard.
@@ -75,10 +82,18 @@ handled. The vault reads `iAI.totalSupply()` directly for exactly this reason; a
 counter with a fail-closed check was removed because the check was also read by `burn`, so any
 divergence would have bricked the one path that must always work.
 
-`LinearMintCurve.anchorCap` and `.target` are not an exception to this. They are `immutable`, so
-they cannot drift from anything — nothing reads them to make a decision, and they enforce nothing.
-They record how `slope` was derived, which is the only way "127,000,000 0G at full supply" stays
-readable on chain now that the vault's own cap is a separate, adjustable number.
+`LinearMintCurve.anchorCap` and `.target` are not an exception to this, and neither are
+`ExponentialMintCurve.base`, `.exponent` and `.target`. They are `immutable`, so they cannot drift
+from anything — nothing reads them to make a decision, and they enforce nothing. They record how the
+slope, or the table, was derived, which is the only way the published parameters stay readable on
+chain now that the vault's own cap is a separate, adjustable number.
+
+`ExponentialMintCurve`'s table is storage, and that is not redundant state either: it *is* the
+curve. It is written once by the constructor and there is no function that writes it again — no
+setter, no owner, no proxy — so it is as immutable as an `immutable` field, which Solidity cannot
+give an array. The property to preserve is "no write path exists", and it is checkable from the
+ABI. Do not add one, however administrative it looks; a different table is a different curve and
+goes in by `deployCurve` + `setCurve`, where the history list records it.
 
 ## Storage and upgrades
 
@@ -173,16 +188,20 @@ Three layers, all required to stay green:
 
   Pausing, cap changes, curve swaps and rejected operations are all part of the operation mix. That
   makes "redemption is never gated" a property held across the whole run rather than one assertion,
-  against both switches: a 10k-operation run redeems ~690 times while paused and ~580 times with the
+  against both switches: a 10k-operation run redeems ~670 times while paused and ~580 times with the
   cap below the live supply. It also checks **which** error each guard raises from whatever state the
   run has reached — `_opMint` draws its amount without reference to the cap and lets the shadow
   decide whether the mint should be refused, which is a stronger statement than a `supply <= cap`
   assertion and, unlike one, survives burn-only mode.
 
-  Curve swaps go in both directions. The shadow tracks the curve in force, so a mint after a swap is
-  priced at the new curve while a burn of a pre-swap position is still settled at that position's own
-  average — requirement 1, checked wei for wei thousands of times from states no hand-written test
-  reaches.
+  Curve swaps go in both directions and alternate between the two shapes: every odd swap installs a
+  random, monotone step table (coarse — 38 buckets of 500 iAI, so its top clears twice the cap and
+  `_opSetCap` never meets it) and every even one a linear curve. The shadow tracks the kind in force
+  and prices each mint accordingly, so a mint after a swap is priced at the new curve while a burn of
+  a pre-swap position is still settled at that position's own average — requirement 1, checked wei
+  for wei thousands of times from states no hand-written test reaches, across a change of shape. The
+  step shadow is the same bucket walk with one hand-rolled ceiling; the production table's provenance
+  is pinned by golden vectors, not here.
 
   Adding an operation redraws the entire deterministic sequence, including the sub-sampling inside
   `_opRejection`. Make simulation changes in one pass, then re-run 10k **and** 100k and recalibrate
@@ -280,8 +299,8 @@ The alternative, simply rerunning the whole deployment, is also fine and is usua
 reason about.
 
 **Curves are recorded by kind as well as by role.** A record carries `MintCurveKind` (which kind is
-in force), `MintCurve` (its address), the address again under the kind's own name — today
-`LinearMintCurve`, tomorrow `ExponentialMintCurve` alongside it — and `MintCurveHistory`, every
+in force), `MintCurve` (its address), the address again under the kind's own name —
+`ExponentialMintCurve` (the default) and `LinearMintCurve` — and `MintCurveHistory`, every
 curve the record has ever named. `./run.sh setCurve <kind>` reads the kind key.
 
 Each of those answers a different question, and conflating them has already caused two bugs:
@@ -312,10 +331,53 @@ only one definition of `WAD`.
 
 **A curve's parameters belong to the curve, and the record says so.** Everything a curve needs to
 be constructed sits under `CurveParams.<Kind>` — for the linear curve, `R0`, `AnchorCap` and
-`Target`. This is the one nested object in an otherwise flat file, and it earns the exception:
-those keys are meaningless to any other curve, and a second kind adds its own block rather than
+`Target`; for the exponential curve, `Base`, `Exponent`, `Target`, `BucketWidth` and the 371-entry
+`Prices` array. This is the one nested object in an otherwise flat file, and it earns the exception:
+those keys are meaningless to any other curve, and each kind has its own block rather than
 piling more top-level keys into a shared namespace. `Cap` stays at the top level because it is the
 *vault's* ceiling, not a curve's.
+
+**`Prices` is derived, never edited.** `./run.sh genCurve` runs `script/curve/gen_exponential_table.py`,
+which derives the table from `Base`, `Exponent`, `Target` and `BucketWidth` alone -- `ceil(Target /
+BucketWidth)` buckets, 60-digit `decimal`, each price rounded up to the wei, each bucket priced at
+its upper bound -- and writes the block. **The generator never reads the vault's `Cap`.** The
+curve's parameters and the vault's are two separate sets: the cap is a policy number governance
+moves with `setCap`, the table is the curve, and tying one to the other once made `check` fail the
+moment the cap was lowered. The only place the two meet is the vault's own domain check. `./run.sh check` and `./run.sh deployCurve` run the same script in `--check` mode
+first, so a table that disagrees with the parameters beside it cannot be deployed or pass a check;
+`checkDeployment` then compares the deployed curve under the kind key against the record's table
+entry by entry.
+
+**That second comparison is only fatal while the exponential curve is in force.** `genCurve`
+deliberately leaves the record ahead of the chain until `deployCurve` catches it up, so a record
+that runs ahead is the documented procedure, not a fault. When some other curve is pricing,
+`checkDeployment` warns and passes -- the only thing out of step is a dormant contract. When the
+exponential curve *is* pricing, the record no longer describes the table every mint is charged
+against and the check fails, as do a missing parameter block and a missing address. `setCurve`
+refuses either way: it is about to make that curve price things. Every integer in the block is WAD-scaled and stored as a decimal string like the
+rest of the file — `Exponent` is `3419000000000000000` for 3.419; the cubic power is part of the
+formula, not a parameter. The unit tests cannot read the record, so `--solidity` also emits
+`test/unit/curves/ExponentialTable.sol` as a mirror of **`iai-example.json`** -- the proposal's
+parameters, which is what the unit tests pin -- and `test/script/Deploy.t.sol` asserts the two
+agree. Regenerate the mirror only when the *example's* parameters change. A network record's
+parameters (`iai-16661.json`, `iai-16602.json`) may move without touching any test: their tables
+are guarded by `run.sh check`, not by `forge test`, exactly as their `Cap` and addresses are. The golden vectors in
+`test/unit/curves/ExponentialMintCurve.t.sol` were computed with `mpmath`, independently of the
+generator, and may not be edited to follow it.
+
+**The exponential curve's domain is its table, and the cap must fit inside it.** `maxSafeSupply()`
+is the table's top (9,275 iAI for the shipped parameters), so `setCap` above it is refused while
+that curve is in force, and `setCurve` to it is refused while the cap is above it. Raising the
+target is therefore always `genCurve --target ...` → `deployCurve` → `setCurve` → `setCap`, in that
+order. A table whose top is *below* the current cap is the mirror image: `setCap` to at most the
+new top first, then `deployCurve` → `setCurve`, or the swap is refused. Lowering the cap on its own
+needs nothing from the curve and never disturbs it. All three paths are exercised in
+`test/script/Deploy.t.sol`. `run.sh setCurve ExponentialMintCurve` pre-flights the kind key against
+the record's table before broadcasting, so a `genCurve` without `deployCurve` is caught before a
+governance transaction is spent. The
+test fixture stays on the linear curve for exactly this reason: `CapChange.t.sol` raises the cap to
+twice `CAP`, which the table cannot price. Exponential coverage lives in its own suite, in
+`CurveSwap.t.sol`, in `Deploy.t.sol` and in the simulation's alternating swaps.
 
 `AnchorCap` and `Cap` start life as the same number and then part company. `Cap` moves with
 `setCap`; `AnchorCap` is the supply a curve's slope was derived against, burned into the curve at
@@ -325,8 +387,8 @@ construction. They shared a key once, so deploying a curve after any cap change 
 plausible. **Never feed the vault's cap to a curve constructor.**
 
 The same split runs through the code: `Config` carries only what every deployment needs, each curve
-kind gets its own parameter struct, and `IAIDeployer` exposes one typed `_deploy<Kind>Curve` rather
-than one function switching on a name. A name-switched deployer has to accept the union of every
+kind gets its own parameter struct (`LinearCurveParams`, `ExponentialCurveParams`), and `IAIDeployer`
+exposes one typed `_deploy<Kind>Curve` rather than one function switching on a name. A name-switched deployer has to accept the union of every
 curve's parameters, so each new curve widens a struct the others then carry fields they have no use
 for — and a caller filling in the wrong subset gets a curve that constructs cleanly and prices
 differently. The name-to-parameter-shape mapping lives in exactly one place, `_curveOfKind` in

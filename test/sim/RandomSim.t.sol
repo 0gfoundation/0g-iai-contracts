@@ -8,6 +8,7 @@ import {IIAIVault} from "../../src/interfaces/IIAIVault.sol";
 import {IAccessControl} from "@openzeppelin/contracts/access/IAccessControl.sol";
 import {IMintCurve} from "../../src/interfaces/IMintCurve.sol";
 import {LinearMintCurve} from "../../src/curves/LinearMintCurve.sol";
+import {ExponentialMintCurve} from "../../src/curves/ExponentialMintCurve.sol";
 
 /**
  * @title RandomSimTest
@@ -24,6 +25,11 @@ import {LinearMintCurve} from "../../src/curves/LinearMintCurve.sol";
  *         `lockedAt(s+d) - lockedAt(s)`. The algebra is pinned elsewhere, by golden vectors
  *         computed outside this codebase and asserted in `test/unit/curves/LinearCurveMath.t.sol`. Stating
  *         this plainly because "independent shadow" would overclaim what these steps prove.
+ *         The same holds for the step curve: the shadow walks the same buckets the contract
+ *         does and takes one ceiling over the sum; that the *table* is the formula's is pinned
+ *         by `test/unit/curves/ExponentialMintCurve.t.sol`. What the simulation adds is
+ *         thousands of mints that straddle bucket boundaries from states no hand-written test
+ *         reaches, priced against a table the shadow holds separately.
  *
  *      2. **State is compared after every operation, not at the end.** A mismatch then
  *         names the operation that caused it instead of the thousandth one after it.
@@ -55,11 +61,26 @@ contract RandomSimTest is BaseTest {
     uint256 internal mHarvested;
     bool internal mPaused;
 
-    // The pricing surface and the ceiling, both adjustable by governance mid-run.
+    // The pricing surface and the ceiling, both adjustable by governance mid-run. Two shapes
+    // of curve alternate; `mKind` says which set of shadow parameters is live.
+    enum CurveKind {
+        Linear,
+        Step
+    }
+
+    CurveKind internal mKind;
     uint256 internal mR0;
     uint256 internal mSlope;
+    uint256 internal mWidth;
+    uint128[] internal mPrices;
     uint256 internal mCap;
     address internal mCurve;
+
+    /// @dev The simulation's step tables are coarse and cover twice the production cap, so
+    ///      `_opSetCap`'s range never meets the table's top and the two operations stay
+    ///      independent. 38 buckets of 500 iAI reach 19,000 iAI.
+    uint256 internal constant SIM_WIDTH = 500e18;
+    uint256 internal constant SIM_BUCKETS = 38;
 
     // --- coverage counters, asserted at the end so a silently degenerate run is caught ---
     uint256 internal nMints;
@@ -73,6 +94,8 @@ contract RandomSimTest is BaseTest {
     uint256 internal nRejections;
     uint256 internal nCapChanges;
     uint256 internal nCurveSwaps;
+    uint256 internal nStepSwaps;
+    uint256 internal nStepMints;
     uint256 internal nMintsRejectedByCap;
     uint256 internal nBurnsInBurnOnlyMode;
     uint256 internal nHarvestsInBurnOnlyMode;
@@ -91,6 +114,7 @@ contract RandomSimTest is BaseTest {
         }
         vault.grantRole(vault.RESCUE_ROLE(), address(this));
 
+        mKind = CurveKind.Linear;
         mR0 = R0;
         mSlope = SLOPE;
         mCap = CAP;
@@ -116,9 +140,26 @@ contract RandomSimTest is BaseTest {
         return linear + quadratic;
     }
 
-    /// @dev The price the curve currently in force asks. Sugar over `_shadowCost`.
+    /// @dev The step curve's price: the exact bucket sum, then a single hand-rolled ceiling.
+    ///      One ceiling and not one per bucket, because that is the contract's stated rounding
+    ///      and the property it buys -- monotonic in `s` at the wei -- would be lost otherwise.
+    function _shadowStepCost(uint256 s, uint256 d) internal view returns (uint256) {
+        uint256 num;
+        uint256 cursor = s;
+        uint256 end = s + d;
+        while (cursor < end) {
+            uint256 i = cursor / mWidth;
+            uint256 upper = (i + 1) * mWidth;
+            uint256 stop = end < upper ? end : upper;
+            num += uint256(mPrices[i]) * (stop - cursor);
+            cursor = stop;
+        }
+        return _shadowCeilDiv(num, WAD);
+    }
+
+    /// @dev The price the curve currently in force asks, whichever shape it is.
     function _shadowCost(uint256 s, uint256 d) internal view returns (uint256) {
-        return _shadowCost(mR0, mSlope, s, d);
+        return mKind == CurveKind.Linear ? _shadowCost(mR0, mSlope, s, d) : _shadowStepCost(s, d);
     }
 
     /// @dev Re-derives the slope the way `LinearCurveMath` does, in plain checked arithmetic.
@@ -249,6 +290,7 @@ contract RandomSimTest is BaseTest {
         mTotalLocked += expectedDelta;
         mSupply += d;
         nMints++;
+        if (mKind == CurveKind.Step) nStepMints++;
     }
 
     function _opBurn() internal {
@@ -324,23 +366,51 @@ contract RandomSimTest is BaseTest {
      *
      *      The shadow re-derives the slope rather than reading it back off the curve, so a
      *      regression in `deriveSlope` shows up here as well as in its golden vectors.
+     *
+     *      The two shapes alternate, so every swap also changes shape: a position priced by a
+     *      table is then redeemed under a line and vice versa, thousands of times. The step
+     *      table is random and monotone rather than the formula's -- the simulation checks the
+     *      vault's and the curve's arithmetic, not the table's provenance -- and its prices
+     *      sit in the production range so the amounts involved are realistic.
      */
     function _opSetCurve() internal {
-        uint256 r0 = rng.range(1e21, 20e21);
-        // Keep the anchor fixed and vary the curvature: `extra` is the 0G the sloped part
-        // accounts for on top of the flat part, and it is what fixes the slope.
-        uint256 flat = (r0 * CAP) / WAD;
-        uint256 extra = rng.range(1e25, 3e26);
+        if (nCurveSwaps % 2 == 0) {
+            uint256 r0 = rng.range(1e21, 20e21);
+            // Keep the anchor fixed and vary the curvature: `extra` is the 0G the sloped part
+            // accounts for on top of the flat part, and it is what fixes the slope.
+            uint256 flat = (r0 * CAP) / WAD;
+            uint256 extra = rng.range(1e25, 3e26);
 
-        LinearMintCurve c = new LinearMintCurve(r0, CAP, flat + extra);
-        uint256 slope = _shadowSlope(r0, CAP, flat + extra);
-        assertEq(c.slope(), slope, "the shadow derives the same slope the library does");
+            LinearMintCurve c = new LinearMintCurve(r0, CAP, flat + extra);
+            uint256 slope = _shadowSlope(r0, CAP, flat + extra);
+            assertEq(c.slope(), slope, "the shadow derives the same slope the library does");
 
-        vault.setCurve(IMintCurve(address(c)));
+            vault.setCurve(IMintCurve(address(c)));
 
-        mR0 = r0;
-        mSlope = slope;
-        mCurve = address(c);
+            mKind = CurveKind.Linear;
+            mR0 = r0;
+            mSlope = slope;
+            mCurve = address(c);
+        } else {
+            uint128[] memory p = new uint128[](SIM_BUCKETS);
+            p[0] = uint128(rng.range(1e21, 20e21));
+            for (uint256 i = 1; i < SIM_BUCKETS; i++) {
+                // Zero is a legal increment: flat runs of equal buckets are part of the mix.
+                p[i] = p[i - 1] + uint128(rng.range(0, 3e21));
+            }
+
+            ExponentialMintCurve c = new ExponentialMintCurve(SIM_WIDTH, p, p[0], 0, SIM_BUCKETS * SIM_WIDTH);
+            assertEq(c.maxSafeSupply(), SIM_BUCKETS * SIM_WIDTH, "the table reaches past twice the cap");
+            assertGe(c.maxSafeSupply(), 2 * CAP);
+
+            vault.setCurve(IMintCurve(address(c)));
+
+            mKind = CurveKind.Step;
+            mWidth = SIM_WIDTH;
+            mPrices = p;
+            mCurve = address(c);
+            nStepSwaps++;
+        }
         nCurveSwaps++;
     }
 
@@ -675,6 +745,9 @@ contract RandomSimTest is BaseTest {
         assertGt(nRejections, 100, "coverage: rejected operations");
         assertGt(nCapChanges, 100, "coverage: cap changes");
         assertGt(nCurveSwaps, 50, "coverage: curve swaps");
+        // Both shapes get real time in force: swaps to a table, and mints priced by one.
+        assertGt(nStepSwaps, 25, "coverage: swaps to a step table");
+        assertGt(nStepMints, 50, "coverage: mints priced by a step table");
         assertGt(nMintsRejectedByCap, 100, "coverage: mints refused by the cap");
         // These two are what make burn-only a run-time property rather than a claim: the
         // system spent real time with issuance closed by the cap, and redemption and the

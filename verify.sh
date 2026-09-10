@@ -2,10 +2,17 @@
 # Verifies every deployed contract on the 0G explorer. Reads the addresses from the
 # deployment record, so it verifies what was actually deployed rather than a hand-kept list.
 set -euo pipefail
+# IAI_CONFIG / IAI_ENV point the script at another config.sh and .env -- how a rehearsal against a
+# local anvil runs from a scratch directory. Resolved to absolute paths *before* the cd below;
+# resolved after it, a relative path would be looked up inside the repository, and one that
+# happened to be named config.sh or .env would silently source the real files, real key included.
+_abs() { case "$1" in /*) printf '%s' "$1" ;; *) printf '%s/%s' "$PWD" "$1" ;; esac; }
+if [ -n "${IAI_CONFIG:-}" ]; then IAI_CONFIG=$(_abs "$IAI_CONFIG"); fi
+if [ -n "${IAI_ENV:-}" ]; then IAI_ENV=$(_abs "$IAI_ENV"); fi
 cd "$(dirname "$0")"
 
-source ./config.sh
-set -a; source .env; set +a
+source "${IAI_CONFIG:-./config.sh}"
+set -a; source "${IAI_ENV:-.env}"; set +a
 
 case "$CHAIN_ID" in
   16661) VERIFIER_URL="https://chainscan.0g.ai/open/api" ;;
@@ -44,11 +51,31 @@ verify_curve() {
   fi
   [ -n "$kind" ] || { echo "skip MintCurve (no MintCurveKind recorded)"; return; }
 
-  local r0 anchor target args
-  r0=$(cast call "$address" "r0()(uint256)" --rpc-url "$RPC" | awk "{print \$1}")
-  anchor=$(cast call "$address" "anchorCap()(uint256)" --rpc-url "$RPC" | awk "{print \$1}")
-  target=$(cast call "$address" "target()(uint256)" --rpc-url "$RPC" | awk "{print \$1}")
-  args=$(cast abi-encode "constructor(uint256,uint256,uint256)" "$r0" "$anchor" "$target")
+  local args
+  case "$kind" in
+    LinearMintCurve)
+      local r0 anchor target
+      r0=$(cast call "$address" "r0()(uint256)" --rpc-url "$RPC" | awk "{print \$1}")
+      anchor=$(cast call "$address" "anchorCap()(uint256)" --rpc-url "$RPC" | awk "{print \$1}")
+      target=$(cast call "$address" "target()(uint256)" --rpc-url "$RPC" | awk "{print \$1}")
+      args=$(cast abi-encode "constructor(uint256,uint256,uint256)" "$r0" "$anchor" "$target")
+      ;;
+    ExponentialMintCurve)
+      # Everything off the chain, the table included: the record's table may already describe
+      # the *next* curve (after `genCurve` + `deployCurve`, before `setCurve`) while `MintCurve`
+      # still names the one in service. `cast call` annotates large numbers for humans
+      # (`123 [1.23e2]`); the annotations are stripped before re-encoding.
+      local width base exponent target prices
+      width=$(cast call "$address" "bucketWidth()(uint256)" --rpc-url "$RPC" | awk "{print \$1}")
+      base=$(cast call "$address" "base()(uint256)" --rpc-url "$RPC" | awk "{print \$1}")
+      exponent=$(cast call "$address" "exponent()(uint256)" --rpc-url "$RPC" | awk "{print \$1}")
+      target=$(cast call "$address" "target()(uint256)" --rpc-url "$RPC" | awk "{print \$1}")
+      prices=$(cast call "$address" "prices()(uint128[])" --rpc-url "$RPC" | sed -E 's/ \[[^]]*\]//g')
+      args=$(cast abi-encode "constructor(uint256,uint128[],uint256,uint256,uint256)" \
+        "$width" "$prices" "$base" "$exponent" "$target")
+      ;;
+    *) echo "skip MintCurve (unknown kind $kind)"; return ;;
+  esac
 
   verify MintCurve "$kind" --constructor-args "$args"
 }

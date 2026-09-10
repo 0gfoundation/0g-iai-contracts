@@ -25,40 +25,59 @@ locked, and the yield the collateral earned in the meantime is swept to the foun
 | `src/IAIVault.sol` | Custody, positions, the supply cap, and which curve is pricing. `mint` / `burn` / `burnFor` / `harvest`. |
 | `src/CreditRegistry.sol` | Staking with a cooldown. Records who has how much iAI earning; the allowance itself is metered off-chain. |
 | `src/interfaces/IMintCurve.sol` | The pricing surface the vault calls. Three `view` functions, so a curve reaches the vault by `STATICCALL` and can neither write state nor reenter. |
-| `src/curves/LinearMintCurve.sol` | The curve in force. Every parameter `immutable`, zero storage — a curve is a value, and replacing one means deploying another and repointing the vault. |
+| `src/curves/ExponentialMintCurve.sol` | The curve in force: the exponential curve as a table of 371 bucket prices, 25 iAI per bucket. The table is storage written once by the constructor and nothing can write it again — no setter, no owner, no proxy — so a curve is still a value, and replacing one means deploying another and repointing the vault. |
+| `script/curve/gen_exponential_table.py` | The one definition of how that table is derived from the formula. Standard-library Python; `run.sh check` re-derives and compares. |
+| `src/curves/LinearMintCurve.sol` | The original curve, still deployable. Every parameter `immutable`, zero storage. |
 | `src/curves/LinearCurveMath.sol` | The linear curve's closed form. A library: no storage, no state. |
 | `src/mocks/` | Stand-in a0G, its oracle, and a W0G for the a0G vault to sit over, for networks without the real things. In `src/` rather than `test/` because they are deployed and verified on testnets. `MockA0G` mirrors the real token's shape: an ERC-4626 whose share price comes from the oracle, not from what it holds. |
 
 ### The curve
 
-The marginal price rises linearly with supply:
+The marginal price rises exponentially in the cube of the supply:
 
 ```
-rate(s)   = R0 + slope·s              0G per iAI
-locked(s) = R0·s + (slope/2)·s²       0G locked at supply s
-cost(s→s+d) = locked(s+d) − locked(s) what a mint charges
+rate(s) = base · e^(exponent · (s / target)³)        0G per iAI
 ```
 
-`slope` is **derived** in the curve's constructor from `R0`, `anchorCap` and `target` — never
-supplied — so the three published numbers are the only thing anyone has to agree on. With the
-shipped parameters:
+There is no closed form for its integral and no `exp` on chain, so the contract holds a **table**:
+supply is cut into buckets of 25 iAI and each bucket is priced flat at the value the formula takes at
+the bucket's **upper** bound, rounded up to the wei. A mint is charged the exact sum of bucket price
+times overlap for every bucket it touches, divided by 1e18 once and rounded up — one ceiling, not one
+per bucket, which is what keeps the price monotonic at the wei and makes splitting a mint never
+cheaper. Pricing at the upper bound means the table never sits below the smooth curve anywhere.
+
+The table is produced off chain by `script/curve/gen_exponential_table.py` (standard-library Python,
+60 significant digits) and written into the deployment record beside the parameters it came from;
+`run.sh check` re-derives it and compares entry by entry. With the shipped parameters:
 
 | | |
 | --- | --- |
-| `R0` (price at zero supply) | 4,330 0G / iAI |
-| `anchorCap` (the supply `slope` is pinned against) | 9,270 iAI |
-| `Target` (0G the curve accounts for at `anchorCap`) | 127,000,000 0G |
-| derived `slope` | 2,021,598,247,004,348,741 |
-| implied price at `anchorCap` | 23,070.2157 0G / iAI |
+| `base` (price at zero supply) | 3,237.4 0G / iAI |
+| `exponent` | 3.419 |
+| `target` (the supply the exponent is normalised against) | 9,270 iAI |
+| `bucketWidth` | 25 iAI, 371 buckets, table top 9,275 iAI |
+| price of the first bucket | 3,237.40 0G / iAI |
+| price at 2,000 iAI (the first public mint after the pre-mint) | 3,354.86 0G / iAI |
+| price of the last bucket | 99,415.29 0G / iAI, 30.7× the base |
+| 0G locked by the first 2,000 iAI | 6,532,352 0G |
+| 0G locked at the cap of 9,270 iAI | 128,170,726 0G (the smooth integral is 126.96M) |
+| largest step between adjacent buckets | 2.80%, at the top; 0.13% near 2,000 |
 
 `cost()` is the only pricing primitive. `lockedAt()` floors and exists for charts and reconciliation
-only; it sits a hair under `target` at the anchor, so never assert equality between the two.
+only. `priceAt(i)`, `prices()`, `bucketOf(s)` and `rateAt(s)` expose the table for tooling.
+
+**The table has a top, and the cap must stay under it.** `maxSafeSupply()` is 9,275 iAI, so
+`setCap` above that is refused while this curve is in force. Raising the target means generating a
+new table, deploying a new curve and repointing the vault — the cap can only follow once the new
+table covers it. That ordering is deliberate: a supply the table does not price is a supply nobody
+has decided a price for.
 
 **The curve and the supply cap are separate, and both move.** The vault's cap is its own number and
-is adjustable in either direction; `anchorCap` is provenance on the curve, recording how `slope` was
-derived, and enforces nothing. Governance can also replace the whole curve. Neither reaches anything
-already minted — see below — but it does mean no figure on this page is a permanent bound. Read them
-from the chain rather than hard-coding them.
+is adjustable in either direction; `base`, `exponent` and `target` are provenance on the curve,
+recording how the table was derived, and enforce nothing. Governance can also replace the whole
+curve — the linear curve, `LinearMintCurve`, is still deployable from the same record. Neither
+reaches anything already minted — see below — but it does mean no figure on this page is a permanent
+bound. Read them from the chain rather than hard-coding them.
 
 ### Replacing the curve, and moving the cap
 
@@ -91,10 +110,11 @@ Two caveats are real and must be stated to users:
 
 - **Staked iAI must be unstaked first.** `initiateUnstake` → wait out the cooldown → `unstake` → then
   `burn`. `burn` itself is never pausable, but reaching it can take a day.
-- **`totalLocked0G` can exceed the curve's `target`, with no computable ceiling.** A redeemer
-  releases 0G at their average rate while the freed supply is resold at the marginal rate, so churn
-  ratchets the total upward. There is no numeric bound to quote: the cap can be raised and the curve
-  replaced with a dearer one. Never write `require(totalLocked0G <= target)`.
+- **`totalLocked0G` can exceed what the curve accounts for at the live supply, with no computable
+  ceiling.** A redeemer releases 0G at their average rate while the freed supply is resold at the
+  marginal rate, so churn ratchets the total upward. There is no numeric bound to quote: the cap can
+  be raised and the curve replaced with a dearer one. Never write `require(totalLocked0G <= X)` for
+  any curve-derived `X`.
 
 ## Layout
 
@@ -104,6 +124,8 @@ script/deploy/  the chain work, as abstract contracts: IAIDeployer (system wirin
                 collateral), AccountFunder, UpgradeChecker — plus the thin *.s.sol shells
                 that read parameters and write results back
 script/         Upgrade.s.sol, Handover.s.sol — beacon upgrades and the governance handover
+script/curve/   gen_exponential_table.py — derives the exponential curve's table from its
+                parameters, writes it into the record, and re-checks it
 deployments/    per-network parameters *and* the addresses a run produced
 test/unit/      per-function behaviour, golden vectors, revert and permission matrices, and
                 the scripts' chain work. Never touches the filesystem.
@@ -122,8 +144,9 @@ addresses of what was deployed come back into the same file. `iai-example.json` 
 
 ```bash
 forge build
-forge test                      # 196 tests, a few seconds
+forge test                      # 223 tests, a few seconds
 SIM_LONG=1 forge test --match-test test_Sim_Long   # 100k-operation simulation
+python3 script/curve/gen_exponential_table.py deployments/iai-example.json --check   # the table is its parameters'
 ```
 
 The unit fixture builds the system by calling the deployment script's own `IAIDeployer`, so every
@@ -136,7 +159,11 @@ against a topology the script no longer produces.
 ```bash
 cp .env.example .env                  # PRIVATE_KEY, TEST_MNEMONIC
 cp config.example.sh config.sh        # CHAIN_ID and RPC; gitignored
+                                      # (needs python3 >= 3.9 for the curve table; standard library only)
 $EDITOR deployments/iai-<chainid>.json   # start from iai-example.json
+./run.sh genCurve     # derive the exponential curve's table from the parameters in the record
+                      # (pass --base/--exponent/--target/--width to change them; the table is
+                      # never edited by hand, and `check` re-derives and compares it)
 
 ./run.sh              # mock collateral (off mainnet), then the system
 ./run.sh accounts     # testnet: derive and fund the account set
@@ -148,6 +175,13 @@ $EDITOR deployments/iai-<chainid>.json   # start from iai-example.json
 `config.sh` carries the gas flags every 0G transaction needs — `--slow --with-gas-price 3gwei
 --priority-gas-price 3gwei`, since 0G's EIP-1559 wants both pinned and `--slow` stops a nonce gap
 from stranding the rest of a deployment.
+
+Changing the curve on a live network is three commands, in this order: `./run.sh genCurve ...`
+rewrites the table in the record, `./run.sh deployCurve ExponentialMintCurve` deploys it and records
+the address under its kind, and `./run.sh setCurve ExponentialMintCurve` puts it in service. Nothing
+already minted is repriced. The vault's cap has to fit under the table in force: if the new table is
+taller than the old, `setCap` may follow the swap but cannot precede it; if the new table's top is
+below the current cap, `setCap` to at most the new top comes first or the swap is refused.
 
 Running `forge script` by hand works too, but set **`FOUNDRY_PROFILE=deploy`**: under the default
 profile `deployments/` is read-only, so that a test which forgets to redirect a script fails with a

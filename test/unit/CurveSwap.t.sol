@@ -6,6 +6,8 @@ import {IAIVault} from "../../src/IAIVault.sol";
 import {IIAIVault} from "../../src/interfaces/IIAIVault.sol";
 import {IMintCurve} from "../../src/interfaces/IMintCurve.sol";
 import {LinearMintCurve} from "../../src/curves/LinearMintCurve.sol";
+import {ExponentialMintCurve} from "../../src/curves/ExponentialMintCurve.sol";
+import {ExponentialTable} from "./curves/ExponentialTable.sol";
 import {IAccessControl} from "@openzeppelin/contracts/access/IAccessControl.sol";
 
 /// @dev A curve that reverts on every call, for the recovery test. The point of `setCurve`
@@ -62,6 +64,9 @@ contract CurveSwapTest is BaseTest {
     /// @dev Half the entry price: unmistakably cheaper, which is the direction that lets an
     ///      existing holder round-trip at a profit. That is an accepted risk, not a bug.
     LinearMintCurve internal cheaper;
+    /// @dev The production table: a different *shape*, not just a different slope, so the
+    ///      swap the testnet and mainnet will actually perform is the one rehearsed here.
+    ExponentialMintCurve internal exponential;
 
     uint256 internal aliceLocked;
     uint256 internal bobLocked;
@@ -70,6 +75,13 @@ contract CurveSwapTest is BaseTest {
         super.setUp();
         dearer = new LinearMintCurve(R0 * 2, CAP, TARGET * 2);
         cheaper = new LinearMintCurve(R0 / 2, CAP, TARGET / 2);
+        exponential = new ExponentialMintCurve(
+            ExponentialTable.BUCKET_WIDTH,
+            ExponentialTable.prices(),
+            ExponentialTable.BASE,
+            ExponentialTable.EXPONENT,
+            ExponentialTable.TARGET
+        );
 
         _mintFor(alice, 100e18);
         _mintFor(bob, 250e18);
@@ -300,6 +312,88 @@ contract CurveSwapTest is BaseTest {
         vault.setCurve(IMintCurve(address(dearer)));
 
         assertEq(vault.harvest(), expected, "the sweep is measured against collateral, not the curve");
+        _assertSolvent();
+    }
+
+    // -------------------------------------------------------------------------
+    // Linear -> exponential: the swap the live networks will make
+    // -------------------------------------------------------------------------
+
+    /// @dev Requirement 1 across a change of *shape*. Alice minted on the linear curve; the
+    ///      step table now in force says nothing about her, and her redemption is wei-for-wei
+    ///      what it was. Carol's mint afterwards is priced by the table -- and it is placed so
+    ///      that it crosses a bucket boundary (350 -> 380 iAI straddles 375), so the charge is
+    ///      two bucket prices summed under one ceiling, checked against the table directly.
+    function test_Swap_ToTheExponentialCurve_LeavesPriorPositionsAloneAndPricesNewOnesByTheTable() public {
+        (uint256 unlockedBefore, uint256 outBefore) = vault.quoteBurn(alice, 100e18);
+
+        vault.setCurve(IMintCurve(address(exponential)));
+
+        (uint256 unlockedAfter, uint256 outAfter) = vault.quoteBurn(alice, 100e18);
+        assertEq(unlockedAfter, unlockedBefore, "the 0G released did not move");
+        assertEq(outAfter, outBefore, "the a0G paid out did not move");
+
+        uint256 supply = vault.supply();
+        assertEq(supply, 350e18, "alice's 100 and bob's 250");
+        (uint256 quoted,) = vault.quoteMint(30e18);
+        uint256 twoBuckets = exponential.priceAt(14) * 25 + exponential.priceAt(15) * 5;
+        assertEq(quoted, twoBuckets, "25 iAI at bucket 14's price and 5 at bucket 15's, exact to the wei");
+        assertEq(quoted, exponential.cost(supply, 30e18), "and it is what the curve itself says");
+        assertLt(quoted, mintCurve.cost(supply, 30e18), "the table is cheaper than the linear curve here");
+
+        (uint256 lockedBefore,,) = vault.positionOf(carol);
+        _mintFor(carol, 30e18);
+        (uint256 lockedAfter,,) = vault.positionOf(carol);
+        assertEq(lockedAfter - lockedBefore, quoted, "the mint charged what it quoted");
+
+        // Alice leaves at her own average, unaffected by any of it.
+        uint256 held = a0g.balanceOf(alice);
+        _burnFor(alice, 100e18);
+        assertEq(a0g.balanceOf(alice) - held, outBefore, "settled at the pre-swap quote");
+        _assertSolvent();
+    }
+
+    /// @dev The table has a top, and the vault's cap must stay under it while the table is in
+    ///      force. Five iAI of slack (9,275 against 9,270) is what the last partial bucket
+    ///      leaves; one wei more is refused. Raising the cap further means a taller table.
+    function test_Swap_ToTheExponentialCurve_BoundsTheCapByItsTable() public {
+        vault.setCurve(IMintCurve(address(exponential)));
+
+        vault.setCap(9275e18);
+        assertEq(vault.cap(), 9275e18, "up to the table's top is fine");
+
+        vm.expectRevert(abi.encodeWithSelector(IIAIVault.CapAboveCurveDomain.selector, 9275e18 + 1, 9275e18));
+        vault.setCap(9275e18 + 1);
+
+        // Lowering never consults the curve, so burn-only stays reachable under this curve too.
+        vault.setCap(0);
+        assertEq(vault.cap(), 0);
+        vault.setCap(CAP);
+
+        // And the linear curve, whose domain is wide, can take the cap anywhere again.
+        vault.setCurve(IMintCurve(address(mintCurve)));
+        vault.setCap(CAP * 2);
+        vm.expectRevert(abi.encodeWithSelector(IIAIVault.CapAboveCurveDomain.selector, CAP * 2, 9275e18));
+        vault.setCurve(IMintCurve(address(exponential)));
+    }
+
+    /// @dev A position opened on the table survives a swap back to the linear curve exactly as
+    ///      one opened on the linear curve survived the swap forward: the curve is consulted at
+    ///      mint and never again.
+    function test_Swap_BackFromTheExponentialCurve_KeepsATablePricedPositionWhole() public {
+        vault.setCurve(IMintCurve(address(exponential)));
+        uint256 paid = _mintFor(carol, 40e18);
+        (uint256 locked,,) = vault.positionOf(carol);
+        assertEq(locked, exponential.cost(350e18, 40e18), "priced by the table");
+
+        vault.setCurve(IMintCurve(address(mintCurve)));
+
+        (uint256 unlocked, uint256 out) = vault.quoteBurn(carol, 40e18);
+        assertEq(unlocked, locked, "the whole position, at its own price");
+        uint256 held = a0g.balanceOf(carol);
+        _burnFor(carol, 40e18);
+        assertEq(a0g.balanceOf(carol) - held, out);
+        assertLe(paid - out, 1, "a round trip costs at most the rounding wei");
         _assertSolvent();
     }
 }
