@@ -224,7 +224,9 @@ competing mint crosses it first, your mint is repriced by a whole step rather th
 the top of the table a step is up to 2.8%, wider than 50 bps. The remedy is the same one already
 recommended — re-quote right before sending — and, if you want the tolerance to be exact, size it
 from the next bucket's price: `priceAt(bucketOf(supply) + 1)` against `priceAt(bucketOf(supply))`
-(§4) tells you precisely how much one step costs at the current supply.
+(§4) tells you precisely how much one step costs at the current supply. Guard the index first:
+when `bucketOf(supply) + 1 == bucketCount()` the supply is in the last bucket, there is no next
+price, and `priceAt` reverts on the out-of-range index.
 
 ```ts
 const TOLERANCE_BPS = 50n;                                   // 0.5%

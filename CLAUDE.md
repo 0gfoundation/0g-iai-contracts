@@ -338,9 +338,12 @@ piling more top-level keys into a shared namespace. `Cap` stays at the top level
 *vault's* ceiling, not a curve's.
 
 **`Prices` is derived, never edited.** `./run.sh genCurve` runs `script/curve/gen_exponential_table.py`,
-which derives the table from `Base`, `Exponent`, `Target`, `BucketWidth` and the record's `Cap`
-(60-digit `decimal`, each price rounded up to the wei, each bucket priced at its upper bound) and
-writes the block. `./run.sh check` and `./run.sh deployCurve` run the same script in `--check` mode
+which derives the table from `Base`, `Exponent`, `Target` and `BucketWidth` alone -- `ceil(Target /
+BucketWidth)` buckets, 60-digit `decimal`, each price rounded up to the wei, each bucket priced at
+its upper bound -- and writes the block. **The generator never reads the vault's `Cap`.** The
+curve's parameters and the vault's are two separate sets: the cap is a policy number governance
+moves with `setCap`, the table is the curve, and tying one to the other once made `check` fail the
+moment the cap was lowered. The only place the two meet is the vault's own domain check. `./run.sh check` and `./run.sh deployCurve` run the same script in `--check` mode
 first, so a table that disagrees with the parameters beside it cannot be deployed or pass a check;
 `checkDeployment` then compares the deployed curve under the kind key against the record's table
 entry by entry. Every integer in the block is WAD-scaled and stored as a decimal string like the
@@ -354,7 +357,9 @@ generator, and may not be edited to follow it.
 **The exponential curve's domain is its table, and the cap must fit inside it.** `maxSafeSupply()`
 is the table's top (9,275 iAI for the shipped parameters), so `setCap` above it is refused while
 that curve is in force, and `setCurve` to it is refused while the cap is above it. Raising the
-target is therefore always `genCurve` → `deployCurve` → `setCurve` → `setCap`, in that order. The
+target is therefore always `genCurve --target ...` → `deployCurve` → `setCurve` → `setCap`, in that
+order; lowering the cap needs nothing from the curve and never disturbs it. Both paths are
+exercised in `test/script/Deploy.t.sol`. The
 test fixture stays on the linear curve for exactly this reason: `CapChange.t.sol` raises the cap to
 twice `CAP`, which the table cannot price. Exponential coverage lives in its own suite, in
 `CurveSwap.t.sol`, in `Deploy.t.sol` and in the simulation's alternating swaps.

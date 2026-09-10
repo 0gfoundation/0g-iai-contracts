@@ -35,8 +35,7 @@ verify() {
 # back off the deployed contract rather than out of the deployment record, because the record
 # describes the curve the parameters would build *now* while this verifies the one that is
 # actually deployed -- and after a parameter edit those are different curves. Reading the chain
-# cannot drift from the bytecode being verified. (The exponential table is the one exception,
-# noted below.)
+# cannot drift from the bytecode being verified.
 verify_curve() {
   local address; address=$(addr MintCurve)
   local kind; kind=$(addr MintCurveKind)
@@ -55,16 +54,16 @@ verify_curve() {
       args=$(cast abi-encode "constructor(uint256,uint256,uint256)" "$r0" "$anchor" "$target")
       ;;
     ExponentialMintCurve)
-      # The scalars come off the chain as above. The table is 371 entries; `cast call` prints
-      # arrays annotated for humans and not re-encodable, so it is taken from the record instead
-      # -- which is safe only because `run.sh check` has compared the record's table with the
-      # chain's entry by entry. Run that first.
+      # Everything off the chain, the table included: the record's table may already describe
+      # the *next* curve (after `genCurve` + `deployCurve`, before `setCurve`) while `MintCurve`
+      # still names the one in service. `cast call` annotates large numbers for humans
+      # (`123 [1.23e2]`); the annotations are stripped before re-encoding.
       local width base exponent target prices
       width=$(cast call "$address" "bucketWidth()(uint256)" --rpc-url "$RPC" | awk "{print \$1}")
       base=$(cast call "$address" "base()(uint256)" --rpc-url "$RPC" | awk "{print \$1}")
       exponent=$(cast call "$address" "exponent()(uint256)" --rpc-url "$RPC" | awk "{print \$1}")
       target=$(cast call "$address" "target()(uint256)" --rpc-url "$RPC" | awk "{print \$1}")
-      prices=$(jq -r '.CurveParams.ExponentialMintCurve.Prices | "[" + join(",") + "]"' "$JSON")
+      prices=$(cast call "$address" "prices()(uint128[])" --rpc-url "$RPC" | sed -E 's/ \[[^]]*\]//g')
       args=$(cast abi-encode "constructor(uint256,uint128[],uint256,uint256,uint256)" \
         "$width" "$prices" "$base" "$exponent" "$target")
       ;;

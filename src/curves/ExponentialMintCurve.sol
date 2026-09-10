@@ -79,7 +79,10 @@ contract ExponentialMintCurve is IMintCurve {
     error CurveChargesNothing();
     /// @notice Prices must never fall as supply rises.
     error TableNotMonotonic(uint256 index);
-    /// @notice The table reaches past the vault's absolute supply bound of 2^127.
+    /// @notice A bucket wider than 2^127 wei-iAI cannot be part of any table the vault could use.
+    error BucketTooWide(uint256 width);
+    /// @notice The table's top, `bucketCount * bucketWidth`, reaches past the vault's absolute
+    ///         supply bound of 2^127.
     error TableTooTall(uint256 top);
     /// @notice The provenance `target` lies beyond the table, so the table cannot be the one
     ///         derived for it.
@@ -115,7 +118,7 @@ contract ExponentialMintCurve is IMintCurve {
         }
         // The width is bounded before multiplying so the product itself cannot overflow: a
         // memory array cannot have anywhere near 2^128 entries, so `length * width` then fits.
-        if (bucketWidth_ > 2 ** 127) revert TableTooTall(bucketWidth_);
+        if (bucketWidth_ > 2 ** 127) revert BucketTooWide(bucketWidth_);
         uint256 top_ = prices_.length * bucketWidth_;
         if (top_ > 2 ** 127) revert TableTooTall(top_);
         if (target_ > top_) revert TargetBeyondTable(target_, top_);

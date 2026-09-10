@@ -339,7 +339,87 @@ contract DeployScriptTest is Test {
         assertEq(ExponentialTable.BASE, vm.parseJsonUint(template, string.concat(at, "Base")));
         assertEq(ExponentialTable.EXPONENT, vm.parseJsonUint(template, string.concat(at, "Exponent")));
         assertEq(ExponentialTable.TARGET, vm.parseJsonUint(template, string.concat(at, "Target")));
-        assertEq(ExponentialTable.CAP, vm.parseJsonUint(template, ".Cap"));
+    }
+
+    /**
+     * @dev The documented way to raise the target, end to end on the Solidity side: a taller
+     *      table lands in the record (what `genCurve --target` writes; synthesised here because
+     *      tests cannot run the generator), then `deployCurve`, `setCurve`, and only then
+     *      `setCap` -- which is refused until the new table is in force.
+     */
+    function test_RaisingTheTarget_IsGenCurveDeployCurveSetCurveThenSetCap() public {
+        _bootstrap("curve-raise-target");
+        _MockScript().run();
+        _IAIScript().run();
+
+        // A table four buckets taller, as the generator would produce for a target of 9,363
+        // iAI: 375 buckets, top 9,375. The extra prices only need to keep the table monotone.
+        uint128[] memory current = ExponentialTable.prices();
+        uint256[] memory taller = new uint256[](current.length + 4);
+        for (uint256 i = 0; i < current.length; i++) {
+            taller[i] = current[i];
+        }
+        for (uint256 i = current.length; i < taller.length; i++) {
+            taller[i] = taller[i - 1] + 1e21;
+        }
+        string memory o = "exp";
+        vm.serializeUint(o, "Base", 3_237.4e18);
+        vm.serializeUint(o, "BucketWidth", 25e18);
+        vm.serializeUint(o, "Exponent", 3.419e18);
+        vm.serializeUint(o, "Prices", taller);
+        string memory block_ = vm.serializeUint(o, "Target", 9_363e18);
+        vm.writeJson(block_, file, ".CurveParams.ExponentialMintCurve");
+
+        IAIVault vault = IAIVault(vm.parseJsonAddress(vm.readFile(file), ".IAIVault"));
+        address deployer = vm.addr(DEPLOYER_PK);
+
+        // The record now describes a curve that is not deployed; the check says so.
+        IAIScript checker = _IAIScript();
+        vm.expectRevert(bytes("curve bucket count differs from the record"));
+        checker.checkDeployment();
+
+        _IAIScript().deployCurve("ExponentialMintCurve");
+        _IAIScript().checkDeployment(); // the kind key now matches the record again
+        address newer = vm.parseJsonAddress(vm.readFile(file), ".ExponentialMintCurve");
+        assertEq(ExponentialMintCurve(newer).maxSafeSupply(), 9_375e18, "the new table is taller");
+        assertEq(ExponentialMintCurve(newer).target(), 9_363e18);
+
+        // Too early: the old table is still in force and stops at 9,275.
+        vm.prank(deployer);
+        vm.expectRevert(abi.encodeWithSelector(IIAIVault.CapAboveCurveDomain.selector, 9_363e18, 9_275e18));
+        vault.setCap(9_363e18);
+
+        _IAIScript().setCurve("ExponentialMintCurve");
+        _IAIScript().setCap(9_363e18);
+        _IAIScript().checkDeployment();
+
+        assertEq(address(vault.curve()), newer);
+        assertEq(vault.cap(), 9_363e18);
+        assertEq(vm.parseJsonUint(vm.readFile(file), ".Cap"), 9_363e18);
+        assertEq(vm.parseJsonAddressArray(vm.readFile(file), ".MintCurveHistory").length, 2, "both tables kept");
+    }
+
+    /// @dev Lowering the cap -- including to zero, the burn-only switch -- is a vault-side act
+    ///      that the curve and its record know nothing about. Every script must keep working.
+    function test_LoweringTheCap_LeavesTheCurveAndItsCheckUntouched() public {
+        _bootstrap("curve-lower-cap");
+        _MockScript().run();
+        _IAIScript().run();
+
+        _IAIScript().setCap(4_000e18);
+        _IAIScript().checkDeployment();
+        _IAIScript().deployCurve("ExponentialMintCurve"); // same parameters, same table, new address
+        _IAIScript().checkDeployment();
+
+        _IAIScript().setCap(0);
+        _IAIScript().checkDeployment();
+        _IAIScript().setCurve("ExponentialMintCurve");
+        _IAIScript().checkDeployment();
+
+        string memory json = vm.readFile(file);
+        assertEq(vm.parseJsonUint(json, ".Cap"), 0);
+        assertEq(vm.parseJsonUintArray(json, ".CurveParams.ExponentialMintCurve.Prices").length, 371, "the table did not follow the cap");
+        assertEq(ExponentialMintCurve(vm.parseJsonAddress(json, ".MintCurve")).maxSafeSupply(), 9_275e18);
     }
 
     /**

@@ -7,11 +7,16 @@ iAI, and every bucket is priced flat at the value the smooth formula takes at th
 
     price_i = ceil_to_wei( Base * exp( Exponent * ( ((i + 1) * BucketWidth) / Target )^3 ) )
 
-for i in 0 .. N-1, with N = ceil(Cap / BucketWidth). `Cap` is the vault's supply ceiling read
-from the deployment record; the table therefore always covers the cap, and its top
-(N * BucketWidth) may exceed it by less than one bucket. Pricing at the upper bound means the
-table never sits below the formula anywhere in a bucket, and rounding each price up to the wei
-keeps that true after quantisation. Both roundings favour the vault.
+for i in 0 .. N-1, with N = ceil(Target / BucketWidth), so the table's top (N * BucketWidth)
+reaches the target and overshoots it by less than one bucket. Pricing at the upper bound means
+the table never sits below the formula anywhere in a bucket, and rounding each price up to the
+wei keeps that true after quantisation. Both roundings favour the vault.
+
+The curve's parameters and the vault's are two separate sets. Nothing here reads the vault's
+`Cap`: the cap is a policy number that governance moves, the table is the curve. The vault alone
+checks, at `setCurve` and `setCap`, that the cap fits under the curve's `maxSafeSupply()`, which
+for this curve is the table's top -- so raising the target past the cap's reach is
+`genCurve --target ...`, `deployCurve`, `setCurve`, and only then `setCap`.
 
 Encodings, all 18-decimal fixed point ("WAD"): `Base` is wei-0G per iAI, `Exponent` is the
 dimensionless coefficient scaled by 1e18, `Target` and `BucketWidth` are wei-iAI. The cubic
@@ -47,13 +52,13 @@ BLOCK = "ExponentialMintCurve"
 DEFAULTS = {"base": "3237.4", "exponent": "3.419", "target": "9270", "width": "25"}
 
 
-def price_table(base_wei: int, exponent_wad: int, target_wei: int, width_wei: int, cap_wei: int) -> list[int]:
+def price_table(base_wei: int, exponent_wad: int, target_wei: int, width_wei: int) -> list[int]:
     """The whole derivation. Everything else in this file is plumbing."""
     getcontext().prec = 60
     base = Decimal(base_wei)
     k = Decimal(exponent_wad) / WAD
     target = Decimal(target_wei)
-    count = -(-cap_wei // width_wei)  # ceil(cap / width)
+    count = -(-target_wei // width_wei)  # ceil(target / width)
     prices = []
     for i in range(count):
         upper = Decimal((i + 1) * width_wei)
@@ -99,7 +104,7 @@ def parameters(record: dict, args: argparse.Namespace) -> dict:
     return out
 
 
-def solidity_library(prices: list[int], params: dict, cap_wei: int) -> str:
+def solidity_library(prices: list[int], params: dict) -> str:
     packed = b"".join(p.to_bytes(16, "big") for p in prices)
     chunks = [packed[i : i + 64].hex() for i in range(0, len(packed), 64)]
     body = "\n".join(f'        hex"{c}"' for c in chunks)
@@ -124,7 +129,6 @@ library ExponentialTable {{
     uint256 internal constant BASE = {params['Base']};
     uint256 internal constant EXPONENT = {params['Exponent']};
     uint256 internal constant TARGET = {params['Target']};
-    uint256 internal constant CAP = {cap_wei};
     uint256 internal constant COUNT = {len(prices)};
 
     bytes internal constant PACKED =
@@ -158,18 +162,13 @@ def main() -> None:
     args = ap.parse_args()
 
     record = load(args.record)
-    if "Cap" not in record:
-        sys.exit(f"{args.record} has no Cap; the table must cover the vault's ceiling")
-    cap_wei = int(record["Cap"])
     params = parameters(record, args)
     for key, value in params.items():
         if value <= 0:
             sys.exit(f"{key} must be positive")
 
-    prices = price_table(params["Base"], params["Exponent"], params["Target"], params["BucketWidth"], cap_wei)
+    prices = price_table(params["Base"], params["Exponent"], params["Target"], params["BucketWidth"])
     top = len(prices) * params["BucketWidth"]
-    if params["Target"] > top:
-        sys.exit(f"Target {params['Target']} lies beyond the table top {top}; raise Cap or lower Target")
 
     if args.check:
         block = record.get("CurveParams", {}).get(BLOCK)
@@ -201,7 +200,7 @@ def main() -> None:
 
     if args.solidity:
         with open(args.solidity, "w") as f:
-            f.write(solidity_library(prices, params, cap_wei))
+            f.write(solidity_library(prices, params))
         print(f"{args.solidity}: written")
 
 

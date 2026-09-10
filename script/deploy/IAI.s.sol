@@ -371,7 +371,12 @@ contract IAIScript is Script, JsonUtils, Constants, IAIDeployer {
         string memory expAt = string.concat(".CurveParams.", EXPONENTIAL);
         if (vm.keyExistsJson(json, expAt) && vm.keyExistsJson(json, string.concat(".", EXPONENTIAL))) {
             address newest = vm.parseJsonAddress(json, string.concat(".", EXPONENTIAL));
-            if (newest != address(0)) _assertExponentialCurveMatches(newest, _exponentialParamsOf(json));
+            if (newest != address(0)) {
+                // An interrupted run records an address that was never deployed; name the entry
+                // rather than fail on an empty return from `bucketWidth()`.
+                _assertHasCode(newest, EXPONENTIAL);
+                _assertExponentialCurveMatches(newest, _exponentialParamsOf(json));
+            }
         }
 
         console.log("network        ", networkName());

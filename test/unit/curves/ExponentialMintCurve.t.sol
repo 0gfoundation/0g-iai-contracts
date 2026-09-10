@@ -99,8 +99,8 @@ contract ExponentialMintCurveTest is CurveConformanceTest {
         assertEq(curve.base(), BASE);
         assertEq(curve.exponent(), EXPONENT);
         assertEq(curve.target(), TARGET);
-        assertGe(curve.top(), CAP, "the table covers the vault's cap");
-        assertLt(curve.top() - CAP, W, "and overshoots it by less than one bucket");
+        assertGe(curve.top(), TARGET, "the table reaches its target");
+        assertLt(curve.top() - TARGET, W, "and overshoots it by less than one bucket");
     }
 
     function test_Table_GoldenVectors() public view {
@@ -228,7 +228,7 @@ contract ExponentialMintCurveTest is CurveConformanceTest {
         two[1] = uint128(P1);
         vm.expectRevert(abi.encodeWithSelector(ExponentialMintCurve.TableTooTall.selector, 2 ** 128));
         new ExponentialMintCurve(2 ** 127, two, BASE, EXPONENT, 0);
-        vm.expectRevert(abi.encodeWithSelector(ExponentialMintCurve.TableTooTall.selector, 2 ** 127 + 1));
+        vm.expectRevert(abi.encodeWithSelector(ExponentialMintCurve.BucketTooWide.selector, 2 ** 127 + 1));
         new ExponentialMintCurve(2 ** 127 + 1, two, BASE, EXPONENT, 0);
 
         vm.expectRevert(abi.encodeWithSelector(ExponentialMintCurve.TargetBeyondTable.selector, 2 * W + 1, 2 * W));

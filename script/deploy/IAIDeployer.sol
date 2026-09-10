@@ -73,8 +73,9 @@ abstract contract IAIDeployer {
     /// @param bucketWidth Width of every bucket, wei-iAI.
     /// @param prices      One price per bucket, wei-0G per iAI, in supply order. **Generated,
     ///                    never hand-written**: `script/curve/gen_exponential_table.py` derives
-    ///                    them from the three parameters below and the vault's cap, and
-    ///                    `run.sh check` re-derives them and compares.
+    ///                    them from `bucketWidth` and the three parameters below, and
+    ///                    `run.sh check` re-derives them and compares. Nothing about the vault's
+    ///                    cap enters into it.
     /// @param base        Marginal price at zero supply the table was derived from. Provenance.
     /// @param exponent    Exponent coefficient the table was derived from, scaled by 1e18. Provenance.
     /// @param target      Supply the exponent is normalised against, wei-iAI. Provenance -- the
@@ -345,7 +346,7 @@ abstract contract IAIDeployer {
      * @param a    Address that must be a contract.
      * @param name Key it was read from, so a failure names the entry to fix.
      */
-    function _assertHasCode(address a, string memory name) private view {
+    function _assertHasCode(address a, string memory name) internal view {
         require(a != address(0), string.concat("no address recorded for ", name));
         require(a.code.length != 0, string.concat("no code at the recorded ", name));
     }

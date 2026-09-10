@@ -19,7 +19,6 @@ library ExponentialTable {
     uint256 internal constant BASE = 3237400000000000000000;
     uint256 internal constant EXPONENT = 3419000000000000000;
     uint256 internal constant TARGET = 9270000000000000000000;
-    uint256 internal constant CAP = 9270000000000000000000;
     uint256 internal constant COUNT = 371;
 
     bytes internal constant PACKED =

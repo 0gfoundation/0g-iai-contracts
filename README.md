@@ -159,6 +159,7 @@ against a topology the script no longer produces.
 ```bash
 cp .env.example .env                  # PRIVATE_KEY, TEST_MNEMONIC
 cp config.example.sh config.sh        # CHAIN_ID and RPC; gitignored
+                                      # (needs python3 >= 3.9 for the curve table; standard library only)
 $EDITOR deployments/iai-<chainid>.json   # start from iai-example.json
 ./run.sh genCurve     # derive the exponential curve's table from the parameters in the record
                       # (pass --base/--exponent/--target/--width to change them; the table is
