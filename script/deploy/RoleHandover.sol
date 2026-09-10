@@ -34,8 +34,6 @@ abstract contract RoleHandover {
     /// @param guardian    Holds `PAUSER_ROLE` on the vault and the registry. It can only close
     ///                    issuance, never open a way to move funds, so it can be a lighter key
     ///                    than the others — the point is that it can act quickly.
-    /// @param rescuer     Holds `RESCUE_ROLE` on the vault, the only caller of `burnFor`.
-    ///                    Intended to be the multisig behind a timelock.
     /// @param beaconOwner Owns all three beacons, and therefore the upgrade key. Intended to be
     ///                    the multisig behind a timelock.
     ///                    There is deliberately no field for `PAUSE_EXEMPT_MINTER_ROLE`: it is
@@ -46,7 +44,6 @@ abstract contract RoleHandover {
     struct Governance {
         address admin;
         address guardian;
-        address rescuer;
         address beaconOwner;
     }
 
@@ -75,7 +72,6 @@ abstract contract RoleHandover {
     function _grantGovernance(Contracts memory c, Governance memory g) internal {
         require(g.admin != address(0), "admin is the zero address");
         require(g.guardian != address(0), "guardian is the zero address");
-        require(g.rescuer != address(0), "rescuer is the zero address");
         require(g.beaconOwner != address(0), "beaconOwner is the zero address");
 
         IAI iai = IAI(c.iai);
@@ -88,10 +84,6 @@ abstract contract RoleHandover {
 
         vault.grantRole(vault.PAUSER_ROLE(), g.guardian);
         registry.grantRole(registry.PAUSER_ROLE(), g.guardian);
-
-        // Nobody holds this after a deployment, so `burnFor` is unreachable until now. That is
-        // intentional -- the rescue path opens as an explicit act of governance.
-        vault.grantRole(vault.RESCUE_ROLE(), g.rescuer);
 
         _transferBeacon(c.iaiBeacon, g.beaconOwner);
         _transferBeacon(c.vaultBeacon, g.beaconOwner);
@@ -122,9 +114,6 @@ abstract contract RoleHandover {
         }
         if (registry.hasRole(registry.PAUSER_ROLE(), deployer)) {
             registry.renounceRole(registry.PAUSER_ROLE(), deployer);
-        }
-        if (vault.hasRole(vault.RESCUE_ROLE(), deployer)) {
-            vault.renounceRole(vault.RESCUE_ROLE(), deployer);
         }
         // Nothing grants this at deployment, so normally a no-op. Conditional for the same
         // reason the others are: if the deployer ever opened the exemption to itself, standing
@@ -158,7 +147,6 @@ abstract contract RoleHandover {
         require(
             registry.hasRole(registry.PAUSER_ROLE(), g.guardian), "guardian cannot pause the registry"
         );
-        require(vault.hasRole(vault.RESCUE_ROLE(), g.rescuer), "rescuer cannot rescue");
 
         require(UpgradeableBeacon(c.iaiBeacon).owner() == g.beaconOwner, "iAI beacon not transferred");
         require(UpgradeableBeacon(c.vaultBeacon).owner() == g.beaconOwner, "vault beacon not transferred");
@@ -194,7 +182,6 @@ abstract contract RoleHandover {
         require(
             !registry.hasRole(registry.PAUSER_ROLE(), deployer), "deployer can still pause the registry"
         );
-        require(!vault.hasRole(vault.RESCUE_ROLE(), deployer), "deployer can still rescue");
         require(
             !vault.hasRole(vault.PAUSE_EXEMPT_MINTER_ROLE(), deployer),
             "deployer can still mint while paused"

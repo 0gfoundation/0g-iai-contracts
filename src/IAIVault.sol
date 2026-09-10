@@ -45,34 +45,25 @@ contract IAIVault is IIAIVault, AccessControlUpgradeable, PausableUpgradeable, R
 
     uint256 private constant WAD = 1e18;
 
-    /// @notice May pause issuance. Deliberately weaker than admin: it can stop, not release.
+    /// @notice May close and reopen issuance, and nothing else. Deliberately narrower than
+    ///         admin: it cannot move funds, reprice, or grant anything -- so it can be a
+    ///         lighter key, which is the point, because closing has to be fast.
     bytes32 public constant PAUSER_ROLE = keccak256("PAUSER_ROLE");
-
-    /**
-     * @notice May settle another address's position on their behalf.
-     * @dev Exists because redemption requires holding the tokens *and* owning the position.
-     *      A minter who sends their iAI somewhere unrecoverable would otherwise strand their
-     *      collateral forever, with no authority able to help. The abuse surface is closed by
-     *      construction rather than by trust: the collateral always goes to the position
-     *      owner, never to the caller, so the role can force a settlement but can never
-     *      take anything.
-     */
-    bytes32 public constant RESCUE_ROLE = keccak256("RESCUE_ROLE");
 
     /**
      * @notice May mint while issuance is paused. Grants no other power at all.
      * @dev The exempt mint is the *same* mint: same curve, same cap check, same slippage and
      *      deadline bounds, same position accounting, and both the collateral and the iAI still
      *      move on the caller. The only thing the role removes is the pause gate, and only on
-     *      `mint` -- `harvest` stays closed while paused, and `burn`/`burnFor` were never gated.
+     *      `mint` -- `harvest` stays closed while paused, and `burn` was never gated at all.
      *
      *      It exists because the vault deploys paused and the only two states it had were
      *      "closed to everyone" and "open to everyone". Admitting one nominated address
      *      otherwise means unpausing and re-pausing around the transaction, which opens the
      *      base of the curve to everyone for the width of a block.
      *
-     *      Held by nobody at deployment, like `RESCUE_ROLE`, so it opens as an explicit act of
-     *      governance -- and is meant to be revoked once the operation it was granted for is
+     *      Held by nobody at deployment, so it opens as an explicit act of governance -- and
+     *      is meant to be revoked once the operation it was granted for is
      *      done. What it costs: `pause()` is the response to an a0G exchange-rate move, and
      *      while this role is held that response no longer stops issuance at a manipulated
      *      rate, so revoking it is part of that response rather than a follow-up to it.
@@ -262,37 +253,16 @@ contract IAIVault is IIAIVault, AccessControlUpgradeable, PausableUpgradeable, R
      *      yet swept cannot leave with a redeemer.
      */
     function burn(uint256 b, uint256 deadline) external nonReentrant {
-        _settle(_msgSender(), _msgSender(), b, deadline);
+        _settle(_msgSender(), b, deadline);
     }
 
     /**
-     * @notice Settles `minter`'s position using iAI supplied by the caller.
-     * @param minter   Owner of the position to settle, and the address the collateral is
-     *                 sent to. Never the caller.
-     * @param b        Amount of iAI to burn, in wei-iAI, taken from the caller's balance.
-     * @param deadline Latest block timestamp at which the caller still accepts execution,
-     *                 in seconds.
-     *
-     * @dev The caller provides the tokens; **the collateral goes to `minter`**. That
-     *      direction is what makes the role safe to hold: it can unwind a position but
-     *      cannot redirect a single wei of it.
+     * @param minter   Position owner. Always the caller: redemption requires holding the iAI
+     *                 *and* owning the position, and there is no path that separates the two.
+     * @param b        Amount of iAI to burn, in wei-iAI.
+     * @param deadline Latest block timestamp at which the caller still accepts execution.
      */
-    function burnFor(address minter, uint256 b, uint256 deadline)
-        external
-        nonReentrant
-        onlyRole(RESCUE_ROLE)
-    {
-        if (minter == address(0)) revert ZeroAddress();
-        _settle(minter, _msgSender(), b, deadline);
-    }
-
-    /**
-     * @param minter      Position owner; also always the recipient of the collateral.
-     * @param tokenSource Address whose iAI is burned. Equals `minter` for a self-redemption.
-     * @param b           Amount of iAI to burn, in wei-iAI.
-     * @param deadline    Latest block timestamp at which the caller still accepts execution.
-     */
-    function _settle(address minter, address tokenSource, uint256 b, uint256 deadline) private {
+    function _settle(address minter, uint256 b, uint256 deadline) private {
         if (block.timestamp > deadline) revert Expired(deadline, block.timestamp);
         if (b == 0) revert ZeroAmount();
 
@@ -317,10 +287,10 @@ contract IAIVault is IIAIVault, AccessControlUpgradeable, PausableUpgradeable, R
         $.totalLocked0G = totalAfter;
         uint256 supplyAfter = s - b;
 
-        $.iai.burn(tokenSource, b);
+        $.iai.burn(minter, b);
         $.a0G.safeTransfer(minter, a0GOut);
 
-        emit Burned(minter, tokenSource, b, unlocked0G, a0GOut, er, supplyAfter, totalAfter);
+        emit Burned(minter, b, unlocked0G, a0GOut, er, supplyAfter, totalAfter);
     }
 
     /**

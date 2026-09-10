@@ -36,10 +36,10 @@ With a single ceiling the sum is monotone, `ceil(a) + ceil(b) >= ceil(a + b)` ma
 cheaper, and a non-zero first price makes the result never zero. Keep it that way.
 
 **3. Checks, effects, interactions, and `nonReentrant` on anything that touches an external contract.**
-Write all state before any external call. `mint`, `burn`, `burnFor`, `harvest`, `stake`,
+Write all state before any external call. `mint`, `burn`, `harvest`, `stake`,
 `initiateUnstake` and `unstake` all carry the guard.
 
-**4. `burn` and `burnFor` must never become pausable.** Redemption is a promise to users and the pause
+**4. `burn` must never become pausable.** Redemption is a promise to users and the pause
 switch must not be able to reach it. `test_Burn_SucceedsWhilePaused` encodes this as an executable
 assertion; if you add a shared modifier, check it did not sweep redemption in with it. `mint` no
 longer carries `whenNotPaused` but `whenIssuanceOpen` (rule 5), so that check spans both names --
@@ -51,15 +51,25 @@ telling signal from noise:
 grep -nE "^\s*function .*(whenNotPaused|whenIssuanceOpen)" src/IAIVault.sol
 ```
 
-The right answer is exactly two, `mint` and `harvest`. `burn` and `burnFor` must never appear.
+The right answer is exactly two, `mint` and `harvest`. `burn` must never appear.
 
 **5. Roles, not owners.** `AccessControlUpgradeable` with one role per responsibility:
 `DEFAULT_ADMIN_ROLE` (grant/revoke, `setFoundation`, `setCurve`, `setCap`), `PAUSER_ROLE` (pause/unpause only),
-`RESCUE_ROLE` (`burnFor` only), `PAUSE_EXEMPT_MINTER_ROLE` (`mint` while paused, and nothing else),
-`MINTER_BURNER_ROLE` (held solely by the vault), and beacon ownership (upgrades). Deployment puts
-admin, pauser and the beacons on the deploying account and both `RESCUE_ROLE` and
-`PAUSE_EXEMPT_MINTER_ROLE` on nobody, so the rescue path and the paused-mint path each open as an
-explicit act of governance.
+`PAUSE_EXEMPT_MINTER_ROLE` (`mint` while paused, and nothing else), `MINTER_BURNER_ROLE` (held
+solely by the vault), and beacon ownership (upgrades). Deployment puts admin, pauser and the beacons
+on the deploying account and `PAUSE_EXEMPT_MINTER_ROLE` on nobody, so the paused-mint path opens as
+an explicit act of governance.
+
+**There is deliberately no on-behalf redemption, and no role that can perform one.** `burnFor` and
+`RESCUE_ROLE` existed for one case -- a minter whose iAI has gone somewhere unrecoverable, whose
+collateral is then stuck forever -- and were removed because nobody has a reason to use them: the
+caller has to burn iAI they bought themselves and the collateral goes to the position owner, so a
+rescue is pure expenditure for the caller. It also never eliminated the stranding, only moved it
+onto whoever sold the rescuer those tokens. Venice's DIEM staking, which this system otherwise
+mirrors closely, has no such path either. The stuck case is accepted: it is documented for
+integrators, and the vault is beacon-upgradeable, so a specific instance can be addressed then --
+by someone who knows the actual case -- rather than by a standing privilege nobody will use.
+Do not reintroduce `burnFor` as a convenience.
 
 `PAUSE_EXEMPT_MINTER_ROLE` is a permission for one operation, not a seat, and it is deliberately
 **not** part of the handover: `RoleHandover` has no target field for it and the deployment record no

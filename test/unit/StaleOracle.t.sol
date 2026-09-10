@@ -44,7 +44,7 @@ contract StaleOracleTest is BaseTest {
         assertGt(a0GIn, 0);
 
         _mintFor(carol, 1e18);
-        _burnFor(alice, 1e18);
+        _burn(alice, 1e18);
     }
 
     function test_OneSecondLater_EveryPricedPathReverts() public {
@@ -85,16 +85,6 @@ contract StaleOracleTest is BaseTest {
         vault.burn(1e18, block.timestamp);
     }
 
-    function test_BurnForReverts() public {
-        vm.prank(alice);
-        iai.transfer(rescuer, 1e18);
-        vm.warp(freshUntil + 1);
-
-        vm.expectRevert(STALE);
-        vm.prank(rescuer);
-        vault.burnFor(alice, 1e18, block.timestamp);
-    }
-
     function test_HarvestReverts() public {
         vm.warp(freshUntil + 1);
 
@@ -123,7 +113,7 @@ contract StaleOracleTest is BaseTest {
 
         assertEq(vault.exchangeRate(), ER0 * 2, "one upstream write is enough");
         _mintFor(carol, 1e18);
-        _burnFor(alice, 1e18);
+        _burn(alice, 1e18);
         vault.harvest();
     }
 }

@@ -70,9 +70,9 @@ case "${1:-deploy}" in
     read_only script/deploy/IAI.s.sol --sig "checkDeployment()"
     echo
     echo "Deployed and PAUSED. Review 'run.sh status', then 'run.sh unpause' to open issuance."
-    echo "Nobody holds RESCUE_ROLE or the paused-mint exemption; both open only on an explicit"
-    echo "grant. DEFAULT_ADMIN, PAUSER and beacon ownership are all on the deployer -- hand them"
-    echo "to the multisig before launch."
+    echo "Nobody holds the paused-mint exemption; it opens only on an explicit grant."
+    echo "DEFAULT_ADMIN, PAUSER and beacon ownership are all on the deployer -- hand them to"
+    echo "the multisig before launch."
     ;;
   accounts) send script/deploy/Accounts.s.sol ;;
   redeployMock)

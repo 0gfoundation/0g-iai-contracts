@@ -65,11 +65,10 @@ contract HandoverScriptTest is Test {
         registry = CreditRegistry(vm.parseJsonAddress(json, ".CreditRegistry"));
     }
 
-    /// @dev The operator's step: fill in the four governance addresses by hand.
+    /// @dev The operator's step: fill in the three governance addresses by hand.
     function _writeTargets() internal {
         vm.writeJson(vm.toString(multisig), file, ".Admin");
         vm.writeJson(vm.toString(ops), file, ".Guardian");
-        vm.writeJson(vm.toString(timelock), file, ".Rescuer");
         vm.writeJson(vm.toString(timelock), file, ".BeaconOwner");
     }
 
@@ -84,7 +83,6 @@ contract HandoverScriptTest is Test {
         string memory json = vm.readFile(file);
         assertTrue(vault.hasRole(0x00, multisig), "admin came from .Admin");
         assertTrue(vault.hasRole(vault.PAUSER_ROLE(), ops), "guardian came from .Guardian");
-        assertTrue(vault.hasRole(vault.RESCUE_ROLE(), timelock), "rescuer came from .Rescuer");
         assertEq(
             UpgradeableBeacon(vm.parseJsonAddress(json, ".IAIVaultBeacon")).owner(),
             timelock,

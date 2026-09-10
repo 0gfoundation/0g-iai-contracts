@@ -152,16 +152,12 @@ contract CapChangeTest is BaseTest, UpgradeChecker {
         (uint256 unlocked, uint256 out) = vault.quoteBurn(alice, 20e18);
         assertGt(out, 0);
         uint256 held = a0g.balanceOf(alice);
-        _burnFor(alice, 20e18);
+        _burn(alice, 20e18);
         assertEq(a0g.balanceOf(alice) - held, out, "burn paid what it quoted");
         assertGt(unlocked, 0);
 
-        // The rescue path.
-        vm.prank(bob);
-        iai.transfer(rescuer, 10e18);
-        vault.grantRole(vault.RESCUE_ROLE(), rescuer);
-        vm.prank(rescuer);
-        vault.burnFor(bob, 10e18, block.timestamp);
+        // Bob's own redemption, from the same closed state.
+        _burn(bob, 10e18);
 
         // Staking, cooldown and withdrawal.
         vm.prank(alice);
@@ -191,7 +187,7 @@ contract CapChangeTest is BaseTest, UpgradeChecker {
         vm.expectRevert(abi.encodeWithSignature("EnforcedPause()"));
         vault.harvest();
 
-        _burnFor(alice, 10e18); // redemption is never gated, by either switch
+        _burn(alice, 10e18); // redemption is never gated, by either switch
     }
 
     function test_SetCap_RaisingBackReopensIssuance() public {
@@ -252,7 +248,7 @@ contract CapChangeTest is BaseTest, UpgradeChecker {
         vault.setCap(CAP);
 
         // Redemption carried on throughout.
-        _burnFor(alice, 100e18);
+        _burn(alice, 100e18);
     }
 
     // -------------------------------------------------------------------------

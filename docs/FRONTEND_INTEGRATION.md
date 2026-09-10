@@ -467,9 +467,9 @@ event UnstakeInitiated(address indexed user, uint256 amount, uint256 amountStake
 event Unstaked(address indexed user, uint256 amount, uint256 totalStakedAfter);
 ```
 
-Filter a user's history on the `indexed` fields: `minter` for `Minted`, `minter` **or** `caller` for
-`Burned`, `user` for the registry events. On `Burned`, `caller != minter` means an administrative
-rescue (§8) rather than a normal redemption — label it differently.
+Filter a user's history on the `indexed` fields: `minter` for `Minted` and for `Burned`, `user` for
+the registry events. `Burned` carries one address because redemption always settles the caller's own
+position — there is no path by which one account unwinds another's.
 
 ---
 
@@ -488,10 +488,10 @@ iAI is freely transferable, so these can come apart:
 | Minted, then sent tokens away | `iaiOutstanding > 0`, `balanceOf < iaiOutstanding` | Redeemable only up to `balanceOf`. Acquiring the tokens again restores the rest. |
 | Minted and still holding | both non-zero | The burnable maximum is `min(iaiOutstanding, balanceOf)`. |
 
-If minted iAI reaches an address nobody controls, the collateral is stuck. There is an administrative
-recovery path (`burnFor`) that always returns the collateral to the original minter and never to
-whoever calls it; it is `RESCUE_ROLE`-gated and cannot be called from a normal wallet, so it is a
-support process rather than something to integrate.
+If minted iAI reaches an address nobody controls, the collateral is stuck, and **there is no
+recovery path** — redemption requires holding the tokens *and* owning the position, and nothing can
+separate the two. Warn before a transfer that would leave a position unredeemable, because it cannot
+be undone by support.
 
 ---
 
@@ -521,7 +521,7 @@ this for you.
 | --- | --- | --- | --- |
 | `0xd93c0665` | `EnforcedPause()` | Minting or staking is paused. **The system launches paused**, so expect this before go-live. These are **two separate switches on two contracts**: `IAIVault.paused()` gates minting, `CreditRegistry.paused()` gates staking, and either raises this same selector. | Not a user error, and not retryable. Gate each button on its own contract's flag. **Minting** has one exception: a wallet holding the **vault's** `PAUSE_EXEMPT_MINTER_ROLE` may still mint while the vault is paused, so gating the mint button on `paused()` alone would wrongly hide minting from it — the condition is `IAIVault.paused() && !IAIVault.hasRole(PAUSE_EXEMPT_MINTER_ROLE, account)`, with `hasRole` read on the vault, never on the registry. Nobody holds that role unless governance has granted it. **Staking has no such exception**: `CreditRegistry.paused()` alone decides it, so applying the mint condition to the stake button would enable a stake that reverts with this very selector. **Burning is never pausable** — redemption works even while paused. |
 | — | `"Oracle: stale value"` (a plain string, not a custom error) | The upstream a0G price feed has not been updated recently enough. Mint, burn and every quote revert. | An **external dependency**, not these contracts, and nothing a retry fixes quickly. Worth distinguishing from our own failures when reporting or alerting. |
-| `0xe2517d3f` | `AccessControlUnauthorizedAccount(account, role)` | An admin-only function was called from a normal wallet. | An integration bug: `pause`, `setFoundation`, `burnFor` and the role functions are not callable from user wallets. |
+| `0xe2517d3f` | `AccessControlUnauthorizedAccount(account, role)` | An admin-only function was called from a normal wallet. | An integration bug: `pause`, `setFoundation`, `setCurve`, `setCap` and the role functions are not callable from user wallets. |
 
 ---
 

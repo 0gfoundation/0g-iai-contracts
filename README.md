@@ -22,7 +22,7 @@ locked, and the yield the collateral earned in the meantime is swept to the foun
 | Contract | Role |
 | --- | --- |
 | `src/IAI.sol` | The ERC-20. Mint and burn restricted to `MINTER_BURNER_ROLE`, held only by the vault; the supply ceiling is the vault's, not the token's. Deliberately **not** `ERC20Burnable` — a holder burning their own tokens would strand the collateral behind them. |
-| `src/IAIVault.sol` | Custody, positions, the supply cap, and which curve is pricing. `mint` / `burn` / `burnFor` / `harvest`. |
+| `src/IAIVault.sol` | Custody, positions, the supply cap, and which curve is pricing. `mint` / `burn` / `harvest`. |
 | `src/CreditRegistry.sol` | Staking with a cooldown. Records who has how much iAI earning; the allowance itself is metered off-chain. |
 | `src/interfaces/IMintCurve.sol` | The pricing surface the vault calls. Three `view` functions, so a curve reaches the vault by `STATICCALL` and can neither write state nor reenter. |
 | `src/curves/ExponentialMintCurve.sol` | The curve in force: the exponential curve as a table of 371 bucket prices, 25 iAI per bucket. The table is storage written once by the constructor and nothing can write it again — no setter, no owner, no proxy — so a curve is still a value, and replacing one means deploying another and repointing the vault. |
@@ -88,7 +88,7 @@ A holder who mints on both sides gets one blended average for the whole position
 "nobody's existing collateral is repriced", not "every coin redeems at the price it was minted at".
 
 Lowering the cap below the live supply is a supported state, **burn-only mode**: `mint` refuses,
-and redemption, rescue, staking and the harvest sweep all carry on untouched. It needs no mode flag
+and redemption, staking and the harvest sweep all carry on untouched. It needs no mode flag
 — `mint`'s ceiling check is simply always true once the cap is under the supply. Note that `harvest`
 is gated by `pause`, not by the cap, so `setCap(0)` is not a wind-down switch on its own — and
 `pause()` is not one either while anybody holds `PAUSE_EXEMPT_MINTER_ROLE`. A full stop is `pause()`
@@ -194,9 +194,8 @@ launch-timing control the system has, and it is deliberately manual. The `Credit
 open; nobody can stake before iAI exists.
 
 Deployment grants `DEFAULT_ADMIN_ROLE`, `PAUSER_ROLE` and beacon ownership to the deploying account.
-Two roles it grants to nobody: `RESCUE_ROLE`, so `burnFor` is unreachable, and
-`PAUSE_EXEMPT_MINTER_ROLE`, so nobody can mint through the pause the vault comes up in. Each opens
-only when governance says so.
+One role it grants to nobody: `PAUSE_EXEMPT_MINTER_ROLE`, so nobody can mint through the pause the
+vault comes up in. It opens only when governance says so.
 
 `PAUSE_EXEMPT_MINTER_ROLE` lets one nominated address mint while issuance is paused, on exactly the
 same terms as any other mint — same curve, same supply ceiling, same slippage bound, and the
@@ -209,7 +208,7 @@ not part of the governance handover; `./run.sh grantPausedMinter <addr>` opens i
 
 ## Handing over governance
 
-Fill in `Admin`, `Guardian`, `Rescuer` and `BeaconOwner` in the deployment file, then:
+Fill in `Admin`, `Guardian` and `BeaconOwner` in the deployment file, then:
 
 ```bash
 ./handover.sh status      # who holds what right now
@@ -233,7 +232,6 @@ Other operator entrypoints: `./run.sh pause`, `./run.sh harvest`, `./run.sh quot
 | --- | --- | --- |
 | `DEFAULT_ADMIN_ROLE` | multisig | grant and revoke roles, `setFoundation` |
 | `PAUSER_ROLE` | guardian | close and open issuance, nothing else — a lighter key, because speed matters more than ceremony |
-| `RESCUE_ROLE` | multisig + timelock | `burnFor`, which can only ever return collateral to its owner |
 | `PAUSE_EXEMPT_MINTER_ROLE` | nobody by default | `mint` while issuance is paused — same price, same cap, same slippage bound, same recipient. Granted per operation and revoked after; not part of the handover |
 | beacon owner | multisig + timelock | upgrade one contract; each has its own beacon |
 

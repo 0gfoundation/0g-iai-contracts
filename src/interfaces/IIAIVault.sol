@@ -77,11 +77,10 @@ interface IIAIVault {
         uint256 totalLocked0GAfter
     );
 
-    /// @dev `caller` differs from `minter` only on a rescue, which makes those
-    ///      operations distinguishable in an index without extra state.
+    /// @dev One address only: redemption settles the caller's own position, so the burner and
+    ///      the position owner are always the same account. Symmetric with `Minted`.
     event Burned(
         address indexed minter,
-        address indexed caller,
         uint256 iaiIn,
         uint256 unlocked0G,
         uint256 a0GOut,
@@ -123,16 +122,13 @@ interface IIAIVault {
      * @notice Burns `b` of the caller's iAI and returns their share of the collateral.
      * @param b        Amount of iAI to burn, in wei-iAI. Needs no allowance.
      * @param deadline Latest block timestamp the caller accepts, in seconds.
+     *
+     * @dev The only way collateral leaves a position, and it settles the caller's own. There
+     *      is deliberately no on-behalf variant: one would have to burn somebody else's iAI to
+     *      unwind a position, which nobody has a reason to do, and the vault is upgradeable if
+     *      a specific case ever needs one.
      */
     function burn(uint256 b, uint256 deadline) external;
-
-    /**
-     * @notice Settles `minter`'s position using iAI supplied by the caller. `RESCUE_ROLE`.
-     * @param minter   Position owner, and the sole recipient of the released collateral.
-     * @param b        Amount of iAI to burn, in wei-iAI, taken from the caller.
-     * @param deadline Latest block timestamp the caller accepts, in seconds.
-     */
-    function burnFor(address minter, uint256 b, uint256 deadline) external;
 
     /**
      * @notice Sends collateral in excess of what the vault owes to the foundation.

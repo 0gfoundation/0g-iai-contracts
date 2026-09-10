@@ -31,7 +31,7 @@ contract EventsTest is BaseTest {
     bytes32 internal constant MINTED =
         keccak256("Minted(address,uint256,uint256,uint256,uint256,uint256,uint256)");
     bytes32 internal constant BURNED =
-        keccak256("Burned(address,address,uint256,uint256,uint256,uint256,uint256,uint256)");
+        keccak256("Burned(address,uint256,uint256,uint256,uint256,uint256,uint256)");
     bytes32 internal constant HARVESTED = keccak256("Harvested(address,uint256,uint256,uint256)");
     bytes32 internal constant STAKED = keccak256("Staked(address,uint256,uint256,uint256)");
     bytes32 internal constant UNSTAKE_INITIATED =
@@ -105,7 +105,7 @@ contract EventsTest is BaseTest {
         Vm.Log memory log = _only(BURNED);
 
         assertEq(address(uint160(uint256(log.topics[1]))), alice, "indexed minter");
-        assertEq(address(uint160(uint256(log.topics[2]))), alice, "indexed caller");
+        assertEq(log.topics.length, 2, "one indexed address, symmetric with Minted");
         (
             uint256 iaiIn,
             uint256 unlocked0G,
@@ -124,22 +124,6 @@ contract EventsTest is BaseTest {
         // the supply the burn produced, and nothing else was checking that.
         assertEq(supplyAfter, iai.totalSupply(), "supplyAfter equals the live supply");
         assertEq(totalLocked0GAfter, vault.totalLocked0G(), "totalLocked0GAfter equals storage");
-    }
-
-    /// @dev A rescue must be distinguishable in an index, which is the only reason `caller` is
-    ///      indexed separately from `minter`.
-    function test_Burned_DistinguishesARescueFromASelfRedemption() public {
-        _mintFor(alice, 2e18);
-        vm.prank(alice);
-        iai.transfer(rescuer, 2e18);
-
-        vm.recordLogs();
-        vm.prank(rescuer);
-        vault.burnFor(alice, 2e18, block.timestamp);
-        Vm.Log memory log = _only(BURNED);
-
-        assertEq(address(uint160(uint256(log.topics[1]))), alice, "collateral owner");
-        assertEq(address(uint160(uint256(log.topics[2]))), rescuer, "caller differs, so it is a rescue");
     }
 
     function test_Harvested_CarriesTheStateItLeft() public {
@@ -343,7 +327,7 @@ contract EventsTest is BaseTest {
 
         _mintFor(alice, 2e18);
         _mintFor(bob, 3e18);
-        _burnFor(alice, 1e18);
+        _burn(alice, 1e18);
         _mintFor(carol, 1e18);
 
         Vm.Log[] memory logs = vm.getRecordedLogs();

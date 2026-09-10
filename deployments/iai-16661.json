@@ -394,6 +394,5 @@
   "Guardian": "0x0000000000000000000000000000000000000000",
   "MintCurveKind": "ExponentialMintCurve",
   "Name": "Infinite AI",
-  "Rescuer": "0x0000000000000000000000000000000000000000",
   "Symbol": "iAI"
 }

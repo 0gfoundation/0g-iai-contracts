@@ -419,7 +419,6 @@
   "MockInitialValue": "1000000000000000000",
   "MockOracleMaxAge": "1814400",
   "Name": "Infinite AI",
-  "Rescuer": "0x0000000000000000000000000000000000000000",
   "Symbol": "iAI",
   "W0G": "0x1Cd0690fF9a693f5EF2dD976660a8dAFc81A109c"
 }
