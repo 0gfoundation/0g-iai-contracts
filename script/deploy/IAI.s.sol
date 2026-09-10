@@ -375,12 +375,16 @@ contract IAIScript is Script, JsonUtils, Constants, IAIDeployer {
         // The exponential curve is a table, and a table can only be checked entry by entry.
         // Compared against the *kind key*, not `MintCurve`: the active curve may legitimately
         // be an older one, while the kind key is by definition the newest curve built from the
-        // parameters beside it. Editing the parameters without redeploying makes this fail,
-        // which is the point -- `run.sh genCurve` then `deployCurve` is the way to change them.
+        // parameters beside it.
         //
-        // When the exponential kind is the one in force, both the block and the key are
-        // required: a record that has lost either no longer describes the table pricing every
-        // mint, and a check that shrugged would be lying.
+        // **How loud a disagreement is depends on whether that curve is pricing anything.**
+        // When the exponential kind is in force, the record no longer describes the table every
+        // mint is charged against, and the check has to fail; both the parameter block and the
+        // address are required for the same reason. When some other curve is in force, the only
+        // thing out of step is a dormant contract, and `genCurve` deliberately leaves the record
+        // ahead of the chain until `deployCurve` catches it up -- failing there would refuse a
+        // healthy deployment in the middle of the documented procedure, which is the exact shape
+        // of failure the two-step window was built to avoid.
         bool inForce = keccak256(bytes(c.curveKind)) == keccak256(bytes(EXPONENTIAL));
         bool hasBlock = vm.keyExistsJson(json, string.concat(".CurveParams.", EXPONENTIAL));
         bool hasKey = vm.keyExistsJson(json, string.concat(".", EXPONENTIAL));
@@ -391,10 +395,17 @@ contract IAIScript is Script, JsonUtils, Constants, IAIDeployer {
         if (hasBlock && hasKey) {
             // An interrupted run records an address that was never deployed, and a hand edit can
             // leave a zero; both are named as the record entry to fix rather than failing on an
-            // empty return from `bucketWidth()`.
+            // empty return from `bucketWidth()`. That much holds whichever curve is in force.
             address newest = vm.parseJsonAddress(json, string.concat(".", EXPONENTIAL));
             _assertHasCode(newest, EXPONENTIAL);
-            _assertExponentialCurveMatches(newest, _exponentialParamsOf(json));
+
+            string memory mismatch = _exponentialCurveMismatch(newest, _exponentialParamsOf(json));
+            if (bytes(mismatch).length != 0) {
+                require(!inForce, mismatch);
+                console.log("WARNING        ", mismatch);
+                console.log("                the ExponentialMintCurve is not in force, so nothing is mispriced;");
+                console.log("                'deployCurve ExponentialMintCurve' catches the chain up to the record.");
+            }
         }
 
         console.log("network        ", networkName());

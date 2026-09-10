@@ -288,6 +288,42 @@ contract DeployScriptTest is Test {
     }
 
     /**
+     * @dev The other half of that check: how loud a disagreement is depends on whether the
+     *      exponential curve is pricing anything. `genCurve` deliberately leaves the record
+     *      ahead of the chain until `deployCurve` catches it up, so a record that runs ahead
+     *      while some other curve is in force is the documented procedure, not a fault -- and
+     *      `check` must not refuse a healthy deployment in the middle of it.
+     */
+    function test_CheckDeployment_OnlyRefusesAStaleTableWhileThatCurveIsInForce() public {
+        _bootstrap("curve-table-dormant");
+        _MockScript().run();
+        _IAIScript().run();
+
+        string memory key = ".CurveParams.ExponentialMintCurve.BucketWidth";
+
+        // Move to the linear curve, then let the record run ahead of the dormant table.
+        _IAIScript().deployCurve("LinearMintCurve");
+        _IAIScript().setCurve("LinearMintCurve");
+        vm.writeJson(vm.toString(uint256(50e18)), file, key);
+
+        // Dormant: a warning, and the check still passes.
+        _IAIScript().checkDeployment();
+
+        // Still refused the moment that curve is asked to price anything again.
+        IAIScript switcher = _IAIScript();
+        vm.expectRevert(bytes("curve bucket width differs from the record"));
+        switcher.setCurve("ExponentialMintCurve");
+
+        // And once it is back in force, the check is strict again.
+        vm.writeJson(vm.toString(uint256(25e18)), file, key);
+        _IAIScript().setCurve("ExponentialMintCurve");
+        vm.writeJson(vm.toString(uint256(50e18)), file, key);
+        IAIScript checker = _IAIScript();
+        vm.expectRevert(bytes("curve bucket width differs from the record"));
+        checker.checkDeployment();
+    }
+
+    /**
      * @dev The consequence operators will meet first: the exponential curve prices up to the
      *      top of its table and no further, so a cap above it cannot be paired with it in
      *      either order. Raising the cap past the table means deploying a taller table first.

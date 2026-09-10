@@ -346,7 +346,15 @@ moves with `setCap`, the table is the curve, and tying one to the other once mad
 moment the cap was lowered. The only place the two meet is the vault's own domain check. `./run.sh check` and `./run.sh deployCurve` run the same script in `--check` mode
 first, so a table that disagrees with the parameters beside it cannot be deployed or pass a check;
 `checkDeployment` then compares the deployed curve under the kind key against the record's table
-entry by entry. Every integer in the block is WAD-scaled and stored as a decimal string like the
+entry by entry.
+
+**That second comparison is only fatal while the exponential curve is in force.** `genCurve`
+deliberately leaves the record ahead of the chain until `deployCurve` catches it up, so a record
+that runs ahead is the documented procedure, not a fault. When some other curve is pricing,
+`checkDeployment` warns and passes -- the only thing out of step is a dormant contract. When the
+exponential curve *is* pricing, the record no longer describes the table every mint is charged
+against and the check fails, as do a missing parameter block and a missing address. `setCurve`
+refuses either way: it is about to make that curve price things. Every integer in the block is WAD-scaled and stored as a decimal string like the
 rest of the file — `Exponent` is `3419000000000000000` for 3.419; the cubic power is part of the
 formula, not a parameter. The unit tests cannot read the record, so `--solidity` also emits
 `test/unit/curves/ExponentialTable.sol` as a mirror of **`iai-example.json`** -- the proposal's

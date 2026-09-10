@@ -103,6 +103,18 @@ contract ExponentialMintCurve is IMintCurve {
      *      the prices are the formula's -- that is the generator's job, and `run.sh check`
      *      re-derives the table from the recorded parameters and compares it entry by entry.
      *
+     *      **There is deliberately no trial evaluation of `cost` or `quoteForValue` here, and
+     *      `LinearMintCurve`'s is not an omission to copy.** That one is load-bearing: its
+     *      `quoteForValue` squares `k ~= s + r0*WAD/slope`, a bare product that depends on the
+     *      parameters rather than on the supply, so a triple can survive every other check and
+     *      still overflow -- the probe rejects it. Nothing here has a parameter-dependent
+     *      product: the checks above bound every price below 2^128 and the sum of all overlaps
+     *      at 2^127, so every intermediate is below 2^255 and no evaluation in the declared
+     *      domain can revert. A probe would cost the deployer a walk of the whole table to
+     *      demonstrate what those two lines already guarantee, and it would read as a guard
+     *      while being unable to fire. The evaluation is exercised where it can actually fail
+     *      a change: against the production table in `ExponentialMintCurve.t.sol`.
+     *
      *      `_prices = prices_` copies the whole array in one statement. A `push` loop would
      *      rewrite the length slot once per entry, about a million gas more for the
      *      production table. The initcode carries the table as constructor calldata: 371
@@ -116,8 +128,11 @@ contract ExponentialMintCurve is IMintCurve {
         for (uint256 i = 1; i < prices_.length; i++) {
             if (prices_[i] < prices_[i - 1]) revert TableNotMonotonic(i);
         }
-        // The width is bounded before multiplying so the product itself cannot overflow: a
-        // memory array cannot have anywhere near 2^128 entries, so `length * width` then fits.
+        // Naming, not arithmetic: the table has at least one bucket by the check above, so any
+        // width past the bound also puts `top_` past it and the next line would reject it anyway
+        // -- except for a width so large that `length * width` wraps, where checked arithmetic
+        // would revert with a bare panic. This is what turns that panic into an error a
+        // deployer can read.
         if (bucketWidth_ > 2 ** 127) revert BucketTooWide(bucketWidth_);
         uint256 top_ = prices_.length * bucketWidth_;
         if (top_ > 2 ** 127) revert TableTooTall(top_);
@@ -130,12 +145,6 @@ contract ExponentialMintCurve is IMintCurve {
         exponent = exponent_;
         target = target_;
         _prices = prices_;
-
-        // Evaluable at the extremes, on both paths, once. Every price is below 2^128 and every
-        // overlap at most `top` <= 2^127, so the exact sum is below 2^255 -- these calls prove
-        // the arithmetic rather than the bound, which holds by construction.
-        _cost(top_ - 1, 1);
-        _quote(0, _cost(0, top_));
     }
 
     // -------------------------------------------------------------------------
@@ -236,13 +245,17 @@ contract ExponentialMintCurve is IMintCurve {
      *      it does not. Works in numerator units (`delta0G * WAD`) so no division happens
      *      until the partial bucket, where it floors.
      *
-     *      The result is affordable by construction: a whole bucket is taken only while the
-     *      budget covers it, and the partial bucket's `floor(remaining / price)` units charge
-     *      at most `remaining`, so the exact charge of everything taken is at most
-     *      `delta0G * WAD` and its single ceiling at most `delta0G`. That invariant is asserted
-     *      from the running total rather than re-checked by re-pricing the slice: a second walk
-     *      would double the cost of every quote to guard a case that cannot occur, and an
-     *      assertion that fires is a louder, more honest failure than a silent correction.
+     *      The result is affordable by construction, and nothing here re-checks it: a whole
+     *      bucket is taken only while the budget covers it, and the partial bucket's
+     *      `floor(remaining / price)` units are charged at most the `remaining` they were
+     *      drawn from, so the exact charge of everything taken is at most `delta0G * WAD` and
+     *      its single ceiling at most `delta0G`. The only check that would actually test that
+     *      has to re-price the slice -- a second walk of every bucket, on every quote -- and
+     *      `cost(s, quoteForValue(s, d)) <= d` is already asserted from outside, by the shared
+     *      conformance suite and by the simulation's thousands of quotes. A cheaper guard
+     *      written over the running total would be a tautology: `remaining` is only ever
+     *      decremented by amounts drawn from itself, so any arithmetic it produces satisfies
+     *      such a guard, a buggy walk's included.
      *
      *      Saturates at `top`: a budget that covers the rest of the table buys exactly the
      *      rest of the table. A budget too large to scale by `WAD` covers it a fortiori.
@@ -255,8 +268,7 @@ contract ExponentialMintCurve is IMintCurve {
         if (supply >= top || delta0G == 0) return 0;
         if (delta0G > type(uint256).max / WAD) return top - supply;
 
-        uint256 budget = delta0G * WAD;
-        uint256 remaining = budget;
+        uint256 remaining = delta0G * WAD;
         uint256 cursor = supply;
         while (cursor < top) {
             uint256 index = cursor / bucketWidth;
@@ -267,16 +279,11 @@ contract ExponentialMintCurve is IMintCurve {
                 remaining -= wholeBucket;
                 cursor += available;
             } else {
-                uint256 units = remaining / price;
-                remaining -= units * price;
-                cursor += units;
+                cursor += remaining / price;
                 break;
             }
         }
         amount = cursor - supply;
-
-        // `budget - remaining` is the exact charge of `amount`; `cost` returns its ceiling.
-        assert(Math.ceilDiv(budget - remaining, WAD) <= delta0G);
     }
 
     /// @dev `sum over buckets of price_i * overlap_i` for the slice `[from, to)`, in wei-0G

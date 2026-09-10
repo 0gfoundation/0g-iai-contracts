@@ -49,12 +49,24 @@ abstract contract CurveConformanceTest is Test {
         uint256 evaluated;
         for (uint256 i = 0; i < s.length; i++) {
             for (uint256 j = 0; j < d.length; j++) {
-                if (d[j] == 0 || s[i] + d[j] > top) continue;
+                if (d[j] == 0 || !_endsInsideDomain(s[i], d[j], top)) continue;
                 assertGt(c.cost(s[i], d[j]), 0, "a positive amount must cost something");
                 evaluated++;
             }
         }
         _assertMostPairsEvaluated(evaluated, s.length * d.length);
+    }
+
+    /// @dev `supply + amount <= top`, computed without the addition. A curve is free to declare
+    ///      a domain near the top of the type -- `LinearMintCurve` declares 2^127 -- and a ladder
+    ///      reaching into it must produce a conformance verdict rather than an overflow panic
+    ///      inside the harness.
+    /// @param supply Supply to start from, wei-iAI.
+    /// @param amount Amount to mint, wei-iAI.
+    /// @param top    The curve's `maxSafeSupply()`.
+    /// @return Whether the mint ends inside the curve's declared domain.
+    function _endsInsideDomain(uint256 supply, uint256 amount, uint256 top) internal pure returns (bool) {
+        return amount <= top && supply <= top - amount;
     }
 
     /// @dev The domain guard skips pairs past `maxSafeSupply()`; this is what stops a curve with
@@ -83,7 +95,7 @@ abstract contract CurveConformanceTest is Test {
             bool seen;
             uint256 previous;
             for (uint256 i = 0; i < s.length; i++) {
-                if (s[i] + d[j] > top) continue;
+                if (!_endsInsideDomain(s[i], d[j], top)) continue;
                 uint256 current = c.cost(s[i], d[j]);
                 if (seen) assertGe(current, previous, "cost fell as supply rose");
                 previous = current;
@@ -111,8 +123,8 @@ abstract contract CurveConformanceTest is Test {
                     uint256 a = d[j];
                     uint256 b = d[k];
                     if (a == 0 || b == 0) continue;
-                    if (s[i] > type(uint256).max - a - b) continue;
-                    if (s[i] + a + b > top) continue;
+                    if (a > type(uint256).max - b) continue;
+                    if (!_endsInsideDomain(s[i], a + b, top)) continue;
 
                     assertGe(
                         c.cost(s[i], a) + c.cost(s[i] + a, b),

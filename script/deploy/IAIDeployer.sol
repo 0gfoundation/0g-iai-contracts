@@ -319,27 +319,49 @@ abstract contract IAIDeployer {
     /**
      * @param curve The deployed exponential curve to compare.
      * @param p     The parameters and table the record carries for it.
+     * @return The first way the two disagree, or the empty string if they do not.
      *
      * @dev The vault cannot tell one table from another, and neither can a verifier reading
-     *      the contract's source: the table is constructor data. This is the check that the
-     *      curve on chain is the one the record describes, entry by entry. The caller reads
-     *      the record; this half only reads the chain.
+     *      the contract's source: the table is constructor data. This is the comparison that
+     *      says whether the curve on chain is the one the record describes, entry by entry.
+     *      The caller reads the record; this half only reads the chain.
+     *
+     *      It returns the disagreement instead of reverting on it because the two callers want
+     *      different things from the same answer. Switching the vault onto a curve must refuse
+     *      outright; re-checking a record is entitled to say "this is only the dormant curve"
+     *      and carry on. Returning the reason keeps one description of what "matching" means
+     *      and lets each caller decide how loud a mismatch is.
      */
-    function _assertExponentialCurveMatches(address curve, ExponentialCurveParams memory p) internal view {
+    function _exponentialCurveMismatch(address curve, ExponentialCurveParams memory p)
+        internal
+        view
+        returns (string memory)
+    {
         ExponentialMintCurve c = ExponentialMintCurve(curve);
-        require(c.bucketWidth() == p.bucketWidth, "curve bucket width differs from the record");
-        require(c.bucketCount() == p.prices.length, "curve bucket count differs from the record");
-        require(c.base() == p.base, "curve base differs from the record");
-        require(c.exponent() == p.exponent, "curve exponent differs from the record");
-        require(c.target() == p.target, "curve target differs from the record");
+        if (c.bucketWidth() != p.bucketWidth) return "curve bucket width differs from the record";
+        if (c.bucketCount() != p.prices.length) return "curve bucket count differs from the record";
+        if (c.base() != p.base) return "curve base differs from the record";
+        if (c.exponent() != p.exponent) return "curve exponent differs from the record";
+        if (c.target() != p.target) return "curve target differs from the record";
 
+        // The bucket count is equal by the check above, so this indexes both arrays safely.
         uint128[] memory onChain = c.prices();
         for (uint256 i = 0; i < p.prices.length; i++) {
-            require(
-                onChain[i] == p.prices[i],
-                string.concat("curve price differs from the record at bucket ", Strings.toString(i))
-            );
+            if (onChain[i] != p.prices[i]) {
+                return string.concat("curve price differs from the record at bucket ", Strings.toString(i));
+            }
         }
+        return "";
+    }
+
+    /**
+     * @param curve The deployed exponential curve to compare.
+     * @param p     The parameters and table the record carries for it.
+     * @dev For the callers that must not proceed on a mismatch. See `_exponentialCurveMismatch`.
+     */
+    function _assertExponentialCurveMatches(address curve, ExponentialCurveParams memory p) internal view {
+        string memory mismatch = _exponentialCurveMismatch(curve, p);
+        require(bytes(mismatch).length == 0, mismatch);
     }
 
     /**
