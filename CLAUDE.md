@@ -36,8 +36,8 @@ With a single ceiling the sum is monotone, `ceil(a) + ceil(b) >= ceil(a + b)` ma
 cheaper, and a non-zero first price makes the result never zero. Keep it that way.
 
 **3. Checks, effects, interactions, and `nonReentrant` on anything that touches an external contract.**
-Write all state before any external call. `mint`, `burn`, `harvest`, `stake`,
-`initiateUnstake` and `unstake` all carry the guard.
+Write all state before any external call. `mint`, `burn`, `harvest`, `stake`, `initiateUnstake`
+and `unstake` all carry the guard.
 
 **4. `burn` must never become pausable.** Redemption is a promise to users and the pause
 switch must not be able to reach it. `test_Burn_SucceedsWhilePaused` encodes this as an executable
@@ -160,9 +160,17 @@ not replaced by a unit test:
 ```
 
 The rehearsal snapshots the curve address and cap, the accounting totals, live pricing and the
-positions named in `CHECK_ACCOUNTS`, upgrades, and reverts on any drift; it also diffs
-`forge inspect <Contract> storageLayout`. On a live upgrade, set `CHECK_ACCOUNTS` to the largest
-holders.
+positions named in `CHECK_ACCOUNTS`, upgrades, and reverts on any drift. On a live upgrade, set
+`CHECK_ACCOUNTS` to the largest holders.
+
+**The `forge inspect <Contract> storageLayout` diff printed beside it is decoration, and must not
+be read as a layout check.** Every contract here keeps its state in an ERC-7201 struct reached by
+assembly, so solc reports *zero* state variables and the command prints an empty table for
+`IAIVault`, `IAI` and `CreditRegistry` alike. The diff therefore says "(identical)" across any
+layout change at all, including a full rewrite of the namespaced struct -- the exact silent,
+plausible failure the section below is about. `upgrade.sh` also runs both sides against the same
+working tree, so it could not see a source change even if the table had rows. What does the real
+work is the state comparison in `UpgradeChecker`; for layout, read the diff of the struct.
 
 There is deliberately **no on-chain self-check** for upgrade safety. A guard a contract computes
 about itself is only sound while it reads the right storage slots, which is precisely what is in
@@ -219,7 +227,7 @@ Three layers, all required to stay green:
 
   Pausing, cap changes, curve swaps and rejected operations are all part of the operation mix. That
   makes "redemption is never gated" a property held across the whole run rather than one assertion,
-  against both switches: a 10k-operation run redeems ~670 times while paused and ~580 times with the
+  against both switches: a 10k-operation run redeems ~860 times while paused and ~730 times with the
   cap below the live supply. It also checks **which** error each guard raises from whatever state the
   run has reached — `_opMint` draws its amount without reference to the cap and lets the shadow
   decide whether the mint should be refused, which is a stronger statement than a `supply <= cap`

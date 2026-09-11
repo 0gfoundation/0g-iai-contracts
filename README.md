@@ -230,7 +230,7 @@ Other operator entrypoints: `./run.sh pause`, `./run.sh harvest`, `./run.sh quot
 
 | Role | Intended holder | Can do |
 | --- | --- | --- |
-| `DEFAULT_ADMIN_ROLE` | multisig | grant and revoke roles, `setFoundation` |
+| `DEFAULT_ADMIN_ROLE` | multisig | grant and revoke roles, `setFoundation`, and — this is what makes it upgrade-grade — `setCurve` and `setCap` |
 | `PAUSER_ROLE` | guardian | close and open issuance, nothing else — a lighter key, because speed matters more than ceremony |
 | `PAUSE_EXEMPT_MINTER_ROLE` | nobody by default | `mint` while issuance is paused — same price, same cap, same slippage bound, same recipient. Granted per operation and revoked after; not part of the handover |
 | beacon owner | multisig + timelock | upgrade one contract; each has its own beacon |

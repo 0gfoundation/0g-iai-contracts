@@ -453,8 +453,8 @@ history from logs alone without follow-up reads. All amounts are 18-decimal.
 event Minted(address indexed minter, uint256 iaiOut, uint256 locked0G, uint256 a0GIn,
              uint256 exchangeRate, uint256 supplyAfter, uint256 totalLocked0GAfter);
 
-event Burned(address indexed minter, address indexed caller, uint256 iaiIn, uint256 unlocked0G,
-             uint256 a0GOut, uint256 exchangeRate, uint256 supplyAfter, uint256 totalLocked0GAfter);
+event Burned(address indexed minter, uint256 iaiIn, uint256 unlocked0G, uint256 a0GOut,
+             uint256 exchangeRate, uint256 supplyAfter, uint256 totalLocked0GAfter);
 
 event Harvested(address indexed to, uint256 a0GSurplus, uint256 exchangeRate, uint256 totalLocked0G);
 

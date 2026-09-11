@@ -2,6 +2,7 @@
 pragma solidity 0.8.25;
 
 import {BaseTest} from "../Base.t.sol";
+import {IAccessControl} from "@openzeppelin/contracts/access/IAccessControl.sol";
 import {Prng} from "./Prng.sol";
 import {ICreditRegistry} from "../../src/interfaces/ICreditRegistry.sol";
 import {IIAIVault} from "../../src/interfaces/IIAIVault.sol";
@@ -531,7 +532,7 @@ contract RandomSimTest is BaseTest {
      *      runs after every step already fails if the contract kept anything.
      */
     function _opRejection() internal {
-        uint256 pick = rng.next() % 7;
+        uint256 pick = rng.next() % 8;
         address a = _actor();
 
         // `whenIssuanceOpen` is a modifier, so while issuance is closed every mint reverts
@@ -584,6 +585,18 @@ contract RandomSimTest is BaseTest {
             vm.prank(owner);
             vault.burn(outstanding + 1, block.timestamp);
         } else if (pick == 5) {
+            // A governance function from an ordinary wallet. Every other case here is a value
+            // or state guard; without this one the run asserts nothing about the role gates,
+            // and `setCap` is the cheapest of them to provoke from any reached state -- the
+            // modifier fires before the body, so the cap it is handed does not matter.
+            vm.expectRevert(
+                abi.encodeWithSelector(
+                    IAccessControl.AccessControlUnauthorizedAccount.selector, a, bytes32(0)
+                )
+            );
+            vm.prank(a);
+            vault.setCap(mCap);
+        } else if (pick == 6) {
             // Withdrawing more than is staked.
             uint256 staked = mStaked[a];
             vm.expectRevert(

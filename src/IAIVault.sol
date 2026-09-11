@@ -62,9 +62,9 @@ contract IAIVault is IIAIVault, AccessControlUpgradeable, PausableUpgradeable, R
      *      otherwise means unpausing and re-pausing around the transaction, which opens the
      *      base of the curve to everyone for the width of a block.
      *
-     *      Held by nobody at deployment, so it opens as an explicit act of governance -- and
-     *      is meant to be revoked once the operation it was granted for is
-     *      done. What it costs: `pause()` is the response to an a0G exchange-rate move, and
+     *      Held by nobody at deployment, so it opens as an explicit act of governance -- and is
+     *      meant to be revoked once the operation it was granted for is done. What it costs:
+     *      `pause()` is the response to an a0G exchange-rate move, and
      *      while this role is held that response no longer stops issuance at a manipulated
      *      rate, so revoking it is part of that response rather than a follow-up to it.
      *      `setCap(0)` still binds a holder, because the ceiling check sits inside `mint`.
@@ -253,16 +253,19 @@ contract IAIVault is IIAIVault, AccessControlUpgradeable, PausableUpgradeable, R
      *      yet swept cannot leave with a redeemer.
      */
     function burn(uint256 b, uint256 deadline) external nonReentrant {
-        _settle(_msgSender(), b, deadline);
+        _settle(b, deadline);
     }
 
     /**
-     * @param minter   Position owner. Always the caller: redemption requires holding the iAI
-     *                 *and* owning the position, and there is no path that separates the two.
      * @param b        Amount of iAI to burn, in wei-iAI.
      * @param deadline Latest block timestamp at which the caller still accepts execution.
+     *
+     * @dev Reads the position owner from `_msgSender()` rather than taking it as a parameter.
+     *      An address threaded through here is exactly what made an on-behalf variant a
+     *      two-line addition, so not having one is structural rather than a convention.
      */
-    function _settle(address minter, uint256 b, uint256 deadline) private {
+    function _settle(uint256 b, uint256 deadline) private {
+        address minter = _msgSender();
         if (block.timestamp > deadline) revert Expired(deadline, block.timestamp);
         if (b == 0) revert ZeroAmount();
 

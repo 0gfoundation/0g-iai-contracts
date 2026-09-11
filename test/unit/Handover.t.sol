@@ -183,9 +183,9 @@ contract HandoverTest is BaseTest, RoleHandover {
         vaultBeacon.upgradeTo(newImpl);
     }
 
-    /// @dev The paused-mint exemption is **not** part of the handover:
-    ///      it is granted for one operation and revoked afterwards, so it has no target holder
-    ///      to move. Step 1 must therefore leave it shut, and only an explicit grant opens it.
+    /// @dev The paused-mint exemption is **not** part of the handover: it is granted for one
+    ///      operation and revoked afterwards, so it has no target holder to move. Step 1 must
+    ///      therefore leave it shut, and only an explicit grant opens it.
     function test_ThePausedMintExemptionOpensOnlyByAnExplicitGrant() public {
         vm.prank(guardian);
         vault.pause();
