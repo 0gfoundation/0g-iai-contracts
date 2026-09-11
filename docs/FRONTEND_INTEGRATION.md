@@ -488,6 +488,13 @@ iAI is freely transferable, so these can come apart:
 | Minted, then sent tokens away | `iaiOutstanding > 0`, `balanceOf < iaiOutstanding` | Redeemable only up to `balanceOf`. Acquiring the tokens again restores the rest. |
 | Minted and still holding | both non-zero | The burnable maximum is `min(iaiOutstanding, balanceOf)`. |
 
+**Check which implementation an address is running before you derive event topics from this
+tree.** The contracts sit behind beacons and a network can lag this repository. The cheap probe is
+`RESCUE_ROLE()`: if it answers, that vault predates the removal of the rescue path and still emits
+the two-address `Burned(address indexed minter, address indexed caller, …)`, whose `topic0` is
+`0xf486cf19…` rather than the `0x79db39e0…` above. A subscription built on the wrong one matches
+nothing and reports no error.
+
 If minted iAI reaches an address nobody controls, the collateral is stuck, and **there is no
 recovery path** — redemption requires holding the tokens *and* owning the position, and nothing can
 separate the two. Warn before a transfer that would leave a position unredeemable, because it cannot

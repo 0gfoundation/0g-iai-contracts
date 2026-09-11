@@ -46,9 +46,6 @@ if [ "${1:-}" = "rehearse" ]; then
   NAME=$(contract_name "$TARGET")
   FORK_RPC="http://127.0.0.1:8545"
 
-  # The layout diff needs the *current* on-chain build, so capture it before recompiling.
-  forge inspect "$NAME" storageLayout > /tmp/iai-layout-before.json
-
   # The rehearsal calls the same entry point a real upgrade does, and that entry point records
   # the implementation address it just deployed. On a fork that address exists nowhere else,
   # so letting it write the real record would replace a live implementation with one that has
@@ -70,12 +67,16 @@ if [ "${1:-}" = "rehearse" ]; then
   forge script script/Upgrade.s.sol --sig "$SIG"               --rpc-url "$FORK_RPC" --broadcast
   forge script script/Upgrade.s.sol --sig "postUpgradeCheck()" --rpc-url "$FORK_RPC"
 
-  forge inspect "$NAME" storageLayout > /tmp/iai-layout-after.json
+  # No storage-layout diff here, on purpose. Every contract keeps its state in an ERC-7201
+  # struct reached by assembly, so `forge inspect <C> storageLayout` reports zero state
+  # variables and prints an empty table -- its diff read "(identical)" across any change at
+  # all, including a full rewrite of the struct, which is the one thing it looked like it was
+  # guarding. It also compiled the same working tree on both sides. What this rehearsal
+  # establishes is the state comparison above; for layout, read the diff of the struct itself.
   echo
-  echo "--- storage layout diff ($NAME) ---"
-  diff /tmp/iai-layout-before.json /tmp/iai-layout-after.json && echo "(identical)"
-  echo
-  echo "Rehearsal PASSED. Re-run without 'rehearse' to upgrade $CHAIN_ID for real."
+  echo "Rehearsal PASSED: state compared before and after on a fork of $CHAIN_ID. This says"
+  echo "nothing about storage layout -- diff the namespaced struct by hand for that."
+  echo "Re-run without 'rehearse' to upgrade $CHAIN_ID for real."
   exit 0
 fi
 

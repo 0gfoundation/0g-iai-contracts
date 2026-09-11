@@ -32,10 +32,11 @@ abstract contract RoleHandover {
     /// @param admin       Holds `DEFAULT_ADMIN_ROLE` on all three contracts: grants and revokes
     ///                    roles, and sets the foundation. Intended to be the multisig.
     /// @param guardian    Holds `PAUSER_ROLE` on the vault and the registry: it closes issuance
-    ///                    and reopens it, and can do nothing else -- no funds, no pricing, no
-    ///                    grants. That is what lets it be a lighter key than the others, which
-    ///                    is the point, because closing has to be fast. Note it reopens too, so
-    ///                    it is not a one-way switch.
+    ///                    and staking, and reopens them -- not a one-way switch. `harvest` is
+    ///                    `pause`-gated too, so it can also withhold the foundation's sweep for
+    ///                    as long as it keeps the vault closed. What it cannot do is move funds,
+    ///                    reprice or grant anything, which is what lets it be a lighter key than
+    ///                    the others -- the point being that closing has to be fast.
     /// @param beaconOwner Owns all three beacons, and therefore the upgrade key. Intended to be
     ///                    the multisig behind a timelock.
     ///                    There is deliberately no field for `PAUSE_EXEMPT_MINTER_ROLE`: it is

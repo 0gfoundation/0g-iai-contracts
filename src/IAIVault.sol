@@ -45,9 +45,10 @@ contract IAIVault is IIAIVault, AccessControlUpgradeable, PausableUpgradeable, R
 
     uint256 private constant WAD = 1e18;
 
-    /// @notice May close and reopen issuance, and nothing else. Deliberately narrower than
-    ///         admin: it cannot move funds, reprice, or grant anything -- so it can be a
-    ///         lighter key, which is the point, because closing has to be fast.
+    /// @notice May close and reopen issuance -- and with it `harvest`, which is `pause`-gated
+    ///         too, so this role can also withhold the foundation's sweep. It cannot move
+    ///         funds, reprice or grant anything, which is what lets it be a lighter key than
+    ///         admin; the point of a lighter key is that closing has to be fast.
     bytes32 public constant PAUSER_ROLE = keccak256("PAUSER_ROLE");
 
     /**
