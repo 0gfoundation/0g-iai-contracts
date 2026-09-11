@@ -328,7 +328,7 @@ contract IAIVaultTest is BaseTest {
         uint256 d = 100e18;
         uint256 a0GIn = _mintFor(alice, d);
 
-        _burnFor(alice, d);
+        _burn(alice, d);
 
         (uint256 locked, uint256 outstanding,) = vault.positionOf(alice);
         assertEq(locked, 0, "no stranded principal");
@@ -346,7 +346,7 @@ contract IAIVaultTest is BaseTest {
 
         uint256[4] memory chunks = [uint256(1), 13e18, 100e18, d - 1 - 13e18 - 100e18];
         for (uint256 i = 0; i < chunks.length; i++) {
-            _burnFor(alice, chunks[i]);
+            _burn(alice, chunks[i]);
         }
 
         (uint256 locked, uint256 outstanding,) = vault.positionOf(alice);
@@ -405,7 +405,7 @@ contract IAIVaultTest is BaseTest {
         vm.prank(alice);
         vault.mint(1e18, type(uint256).max, block.timestamp);
 
-        _burnFor(alice, 10e18);
+        _burn(alice, 10e18);
         assertEq(vault.supply(), 0, "redemption works while paused");
     }
 
@@ -414,48 +414,27 @@ contract IAIVaultTest is BaseTest {
         // that inserts an approve step here is wrong, so pin the behaviour.
         _mintFor(alice, 10e18);
         assertEq(iai.allowance(alice, address(vault)), 0, "no allowance granted anywhere");
-        _burnFor(alice, 10e18);
+        _burn(alice, 10e18);
         assertEq(iai.balanceOf(alice), 0);
     }
 
-    // -------------------------------------------------------------------------
-    // burnFor
-    // -------------------------------------------------------------------------
-
-    function test_BurnFor_SendsCollateralToMinterNotCaller() public {
+    /// @dev Redemption settles the caller's own position and nothing else can reach it. A
+    ///      holder of somebody else's tokens has no position to burn against, and there is no
+    ///      on-behalf path that would let one address unwind another's.
+    function test_Burn_CannotBeDoneWithSomebodyElsesTokens() public {
         uint256 d = 10e18;
         _mintFor(alice, d);
-        // Alice sends her tokens away; without a rescue path her collateral is stranded.
         vm.prank(alice);
-        iai.transfer(rescuer, d);
+        iai.transfer(bob, d);
 
-        uint256 aliceBefore = a0g.balanceOf(alice);
-        uint256 rescuerBefore = a0g.balanceOf(rescuer);
-        (, uint256 expectedOut) = vault.quoteBurn(alice, d);
-
-        vm.prank(rescuer);
-        vault.burnFor(alice, d, block.timestamp);
-
-        assertEq(a0g.balanceOf(alice) - aliceBefore, expectedOut, "collateral returns to the minter");
-        assertEq(a0g.balanceOf(rescuer), rescuerBefore, "the caller receives nothing");
-        assertEq(iai.balanceOf(rescuer), 0, "the caller supplied the tokens");
-        (uint256 locked, uint256 outstanding,) = vault.positionOf(alice);
-        assertEq(locked, 0);
-        assertEq(outstanding, 0);
-    }
-
-    function test_BurnFor_RequiresRole() public {
-        _mintFor(alice, 10e18);
-        vm.prank(alice);
-        iai.transfer(bob, 10e18);
-
-        vm.expectRevert(
-            abi.encodeWithSelector(
-                IAccessControl.AccessControlUnauthorizedAccount.selector, bob, vault.RESCUE_ROLE()
-            )
-        );
+        vm.expectRevert(abi.encodeWithSelector(IIAIVault.BurnExceedsPosition.selector, d, 0));
         vm.prank(bob);
-        vault.burnFor(alice, 10e18, block.timestamp);
+        vault.burn(d, block.timestamp);
+
+        // Alice keeps her position; it is simply not redeemable until she holds the tokens.
+        (uint256 locked, uint256 outstanding,) = vault.positionOf(alice);
+        assertEq(outstanding, d);
+        assertGt(locked, 0);
     }
 
     // -------------------------------------------------------------------------
@@ -494,8 +473,8 @@ contract IAIVaultTest is BaseTest {
         _assertSolvent();
 
         // Both minters must still be able to exit in full after the sweep.
-        _burnFor(alice, 100e18);
-        _burnFor(bob, 100e18);
+        _burn(alice, 100e18);
+        _burn(bob, 100e18);
         assertEq(vault.totalLocked0G(), 0);
     }
 
@@ -543,7 +522,7 @@ contract IAIVaultTest is BaseTest {
         assertEq(vault.harvest(), 0, "must return zero, not revert");
 
         // Alice is early enough to be paid in full.
-        _burnFor(alice, 100e18);
+        _burn(alice, 100e18);
         (, uint256 aliceOutstanding,) = vault.positionOf(alice);
         assertEq(aliceOutstanding, 0, "the first redeemer is made whole");
 
@@ -659,10 +638,10 @@ contract IAIVaultTest is BaseTest {
         _mintFor(bob, 1_200e18);
         vm.warp(block.timestamp + 30 days);
         vault.harvest();
-        _burnFor(alice, 200e18);
+        _burn(alice, 200e18);
         _mintFor(carol, 300e18);
         vm.warp(block.timestamp + 100 days);
-        _burnFor(bob, 1_200e18);
+        _burn(bob, 1_200e18);
         vault.harvest();
 
         assertEq(_sumLocked(_actors()), vault.totalLocked0G(), "A: positions sum to the total");
@@ -678,7 +657,7 @@ contract IAIVaultTest is BaseTest {
         _mintFor(alice, 4_000e18);
         _mintFor(bob, 4_000e18);
         // Alice exits her cheap early slice; Carol buys the freed top slice at the margin.
-        _burnFor(alice, 4_000e18);
+        _burn(alice, 4_000e18);
         _mintFor(carol, 4_000e18);
 
         // Asked of the concrete curve, not of the vault: "what would this curve have locked"

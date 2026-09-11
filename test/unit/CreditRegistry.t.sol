@@ -267,7 +267,7 @@ contract CreditRegistryTest is BaseTest {
         vm.prank(alice);
         registry.unstake();
 
-        _burnFor(alice, 100e18);
+        _burn(alice, 100e18);
         (, uint256 outstanding,) = vault.positionOf(alice);
         assertEq(outstanding, 0, "redemption works once the tokens are back");
     }

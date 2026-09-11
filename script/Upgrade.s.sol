@@ -26,10 +26,14 @@ import {CreditRegistry} from "../src/CreditRegistry.sol";
  *        forge script script/Upgrade.s.sol --sig "upgradeVault()" \
  *            --rpc-url http://127.0.0.1:8545 --broadcast
  *        forge script script/Upgrade.s.sol --sig "postUpgradeCheck()" --rpc-url http://127.0.0.1:8545
- *        forge inspect IAIVault storageLayout > /tmp/new.json && diff /tmp/old.json /tmp/new.json
  *
  *      `CHECK_ACCOUNTS` (comma-separated) adds real positions to the comparison; on a fork of a
  *      live deployment, pass the largest holders.
+ *
+ *      What this does **not** establish is storage layout. Every contract keeps its state in an
+ *      ERC-7201 struct reached by assembly, so `forge inspect <C> storageLayout` reports zero
+ *      state variables and its diff reads "(identical)" across any change at all. Diff the
+ *      namespaced struct itself.
  */
 contract UpgradeScript is Script, JsonUtils, Constants, UpgradeChecker {
     string internal constant SNAPSHOT_TASK = "upgrade-snapshot";
@@ -115,7 +119,7 @@ contract UpgradeScript is Script, JsonUtils, Constants, UpgradeChecker {
 
         console.log("post-upgrade check PASSED");
         console.log("accounts covered", before_.accounts.length);
-        console.log("Also diff `forge inspect <contract> storageLayout` before going to mainnet.");
+        console.log("Layout is not covered by this check -- diff the namespaced struct by hand.");
     }
 
     // --- internals ---

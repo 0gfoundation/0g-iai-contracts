@@ -20,7 +20,7 @@ import {CreditRegistry} from "../src/CreditRegistry.sol";
  *         ./handover.sh status     confirm, and check the multisig actually responds
  *         ./handover.sh renounce   give up the deployer's own keys
  *
- * @dev Targets come from `deployments/iai-<chainId>.json`: `Admin`, `Guardian`, `Rescuer`,
+ * @dev Targets come from `deployments/iai-<chainId>.json`: `Admin`, `Guardian` and
  *      `BeaconOwner`. They are not written by the deployment and have to be filled in by hand,
  *      which is the intended friction — these are the addresses that own the system.
  *
@@ -85,8 +85,6 @@ contract HandoverScript is Script, JsonUtils, Constants, RoleHandover {
         console.log("target guardian    ", g.guardian);
         console.log("  can pause vault  ", vault.hasRole(vault.PAUSER_ROLE(), g.guardian));
         console.log("  can pause reg    ", registry.hasRole(registry.PAUSER_ROLE(), g.guardian));
-        console.log("target rescuer     ", g.rescuer);
-        console.log("  can rescue       ", vault.hasRole(vault.RESCUE_ROLE(), g.rescuer));
         console.log("target beaconOwner ", g.beaconOwner);
         console.log("  owns iAI beacon  ", UpgradeableBeacon(c.iaiBeacon).owner() == g.beaconOwner);
         console.log("  owns vault beacon", UpgradeableBeacon(c.vaultBeacon).owner() == g.beaconOwner);
@@ -98,7 +96,6 @@ contract HandoverScript is Script, JsonUtils, Constants, RoleHandover {
         console.log("  registry admin   ", registry.hasRole(0x00, deployer));
         console.log("  vault pauser     ", vault.hasRole(vault.PAUSER_ROLE(), deployer));
         console.log("  registry pauser  ", registry.hasRole(registry.PAUSER_ROLE(), deployer));
-        console.log("  rescue           ", vault.hasRole(vault.RESCUE_ROLE(), deployer));
         console.log("  paused-mint      ", vault.hasRole(vault.PAUSE_EXEMPT_MINTER_ROLE(), deployer));
         console.log("");
         console.log("vault keeps minter ", iai.hasRole(iai.MINTER_BURNER_ROLE(), c.vault));
@@ -126,7 +123,6 @@ contract HandoverScript is Script, JsonUtils, Constants, RoleHandover {
     function _governance(string memory json) private pure returns (Governance memory g) {
         g.admin = vm.parseJsonAddress(json, ".Admin");
         g.guardian = vm.parseJsonAddress(json, ".Guardian");
-        g.rescuer = vm.parseJsonAddress(json, ".Rescuer");
         g.beaconOwner = vm.parseJsonAddress(json, ".BeaconOwner");
     }
 
@@ -134,7 +130,6 @@ contract HandoverScript is Script, JsonUtils, Constants, RoleHandover {
     function _report(Contracts memory c, Governance memory g) private pure {
         console.log("  admin       ", g.admin);
         console.log("  guardian    ", g.guardian);
-        console.log("  rescuer     ", g.rescuer);
         console.log("  beaconOwner ", g.beaconOwner);
         c; // silences the unused-parameter warning while keeping the call sites symmetric
     }

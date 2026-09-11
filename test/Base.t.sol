@@ -50,7 +50,6 @@ abstract contract BaseTest is Test, IAIDeployer {
 
     address internal admin = address(this);
     address internal guardian = makeAddr("guardian");
-    address internal rescuer = makeAddr("rescuer");
     address internal foundation = makeAddr("foundation");
 
     address internal alice = makeAddr("alice");
@@ -93,7 +92,6 @@ abstract contract BaseTest is Test, IAIDeployer {
         // adds the roles a real launch would hand out afterwards. Deliberately not
         // re-granting PAUSER here -- doing so would hide a deployment that forgot to.
         vault.grantRole(vault.PAUSER_ROLE(), guardian);
-        vault.grantRole(vault.RESCUE_ROLE(), rescuer);
         registry.grantRole(registry.PAUSER_ROLE(), guardian);
 
         // Issuance deploys paused; open it for the tests that are not about pausing. The
@@ -126,7 +124,7 @@ abstract contract BaseTest is Test, IAIDeployer {
         vault.mint(d, type(uint256).max, block.timestamp);
     }
 
-    function _burnFor(address who, uint256 b) internal {
+    function _burn(address who, uint256 b) internal {
         vm.prank(who);
         vault.burn(b, block.timestamp);
     }

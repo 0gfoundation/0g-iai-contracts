@@ -5,7 +5,7 @@
 #   ./handover.sh grant      put every role and beacon on its target; deployer keeps its own
 #   ./handover.sh renounce   stand the deployer down; refuses unless grant is fully in place
 #
-# Targets come from deployments/iai-$CHAIN_ID.json: Admin, Guardian, Rescuer, BeaconOwner.
+# Targets come from deployments/iai-$CHAIN_ID.json: Admin, Guardian, BeaconOwner.
 # They ship as zero addresses and have to be filled in by hand.
 #
 # Do not run `renounce` in the same sitting as `grant`. Between them, confirm the targets

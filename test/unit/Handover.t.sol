@@ -30,7 +30,6 @@ contract HandoverTest is BaseTest, RoleHandover {
     ///      argument it is evaluated *before* the surrounding call, so it silently consumes
     ///      the `vm.prank` or `vm.expectRevert` meant for that call.
     bytes32 internal PAUSER;
-    bytes32 internal RESCUE;
     bytes32 internal EXEMPTION;
 
     function setUp() public override {
@@ -44,10 +43,9 @@ contract HandoverTest is BaseTest, RoleHandover {
             vaultBeacon: address(vaultBeacon),
             registryBeacon: address(registryBeacon)
         });
-        g = Governance({admin: multisig, guardian: ops, rescuer: timelock, beaconOwner: timelock});
+        g = Governance({admin: multisig, guardian: ops, beaconOwner: timelock});
 
         PAUSER = vault.PAUSER_ROLE();
-        RESCUE = vault.RESCUE_ROLE();
         EXEMPTION = vault.PAUSE_EXEMPT_MINTER_ROLE();
 
         // Something to lose: an occupied system makes "still works afterwards" meaningful.
@@ -64,7 +62,6 @@ contract HandoverTest is BaseTest, RoleHandover {
         assertTrue(registry.hasRole(0x00, multisig), "registry admin");
         assertTrue(vault.hasRole(vault.PAUSER_ROLE(), ops), "vault pauser");
         assertTrue(registry.hasRole(registry.PAUSER_ROLE(), ops), "registry pauser");
-        assertTrue(vault.hasRole(vault.RESCUE_ROLE(), timelock), "rescuer");
         assertEq(iaiBeacon.owner(), timelock, "iAI beacon");
         assertEq(vaultBeacon.owner(), timelock, "vault beacon");
         assertEq(registryBeacon.owner(), timelock, "registry beacon");
@@ -186,31 +183,9 @@ contract HandoverTest is BaseTest, RoleHandover {
         vaultBeacon.upgradeTo(newImpl);
     }
 
-    /// @dev `burnFor` is unreachable after a deployment because nobody holds `RESCUE_ROLE`.
-    ///      The handover is what opens it, so this is the first moment it can be exercised.
-    function test_TheRescuePathOpensOnlyAtHandover() public {
-        vm.prank(alice);
-        iai.transfer(timelock, 1e18);
-
-        vm.expectRevert(
-            abi.encodeWithSelector(
-                IAccessControl.AccessControlUnauthorizedAccount.selector, timelock, vault.RESCUE_ROLE()
-            )
-        );
-        vm.prank(timelock);
-        vault.burnFor(alice, 1e18, block.timestamp);
-
-        _grantGovernance(c, g);
-
-        uint256 before = a0g.balanceOf(alice);
-        vm.prank(timelock);
-        vault.burnFor(alice, 1e18, block.timestamp);
-        assertGt(a0g.balanceOf(alice), before, "collateral went to the position owner");
-    }
-
-    /// @dev Unlike `RESCUE_ROLE`, the paused-mint exemption is **not** part of the handover:
-    ///      it is granted for one operation and revoked afterwards, so it has no target holder
-    ///      to move. Step 1 must therefore leave it shut, and only an explicit grant opens it.
+    /// @dev The paused-mint exemption is **not** part of the handover: it is granted for one
+    ///      operation and revoked afterwards, so it has no target holder to move. Step 1 must
+    ///      therefore leave it shut, and only an explicit grant opens it.
     function test_ThePausedMintExemptionOpensOnlyByAnExplicitGrant() public {
         vm.prank(guardian);
         vault.pause();
@@ -255,7 +230,7 @@ contract HandoverTest is BaseTest, RoleHandover {
         _mintFor(bob, 2e18);
         assertEq(iai.balanceOf(bob), 2e18, "minting still works");
 
-        _burnFor(alice, 1e18);
+        _burn(alice, 1e18);
         vault.harvest();
 
         vm.prank(bob);

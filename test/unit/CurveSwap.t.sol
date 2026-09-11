@@ -110,7 +110,7 @@ contract CurveSwapTest is BaseTest {
         vault.setCurve(IMintCurve(address(dearer)));
 
         uint256 held = a0g.balanceOf(alice);
-        _burnFor(alice, 100e18);
+        _burn(alice, 100e18);
 
         uint256 expected = (aliceLocked * WAD) / vault.exchangeRate();
         assertEq(a0g.balanceOf(alice) - held, expected, "settled at the position's own average");
@@ -190,9 +190,9 @@ contract CurveSwapTest is BaseTest {
         uint256 bobHeld = a0g.balanceOf(bob);
         uint256 er = vault.exchangeRate();
 
-        _burnFor(alice, 100e18);
+        _burn(alice, 100e18);
         _assertSolvent();
-        _burnFor(bob, 250e18);
+        _burn(bob, 250e18);
         _assertSolvent();
 
         assertEq(a0g.balanceOf(alice) - aliceHeld, (aliceLocked * WAD) / er, "alice got hers back");
@@ -215,7 +215,7 @@ contract CurveSwapTest is BaseTest {
 
         vault.setCurve(IMintCurve(address(cheaper)));
 
-        _burnFor(alice, 100e18);
+        _burn(alice, 100e18);
         uint256 buyBack = cheaper.cost(vault.supply(), 100e18);
         _mintFor(alice, 100e18);
 
@@ -278,7 +278,7 @@ contract CurveSwapTest is BaseTest {
         // Redemption is untouched by a broken curve: it never consults one.
         (uint256 unlocked,) = vault.quoteBurn(alice, 100e18);
         assertEq(unlocked, aliceLocked);
-        _burnFor(alice, 100e18);
+        _burn(alice, 100e18);
 
         // And issuance comes back.
         vault.setCurve(IMintCurve(address(mintCurve)));
@@ -348,7 +348,7 @@ contract CurveSwapTest is BaseTest {
 
         // Alice leaves at her own average, unaffected by any of it.
         uint256 held = a0g.balanceOf(alice);
-        _burnFor(alice, 100e18);
+        _burn(alice, 100e18);
         assertEq(a0g.balanceOf(alice) - held, outBefore, "settled at the pre-swap quote");
         _assertSolvent();
     }
@@ -391,7 +391,7 @@ contract CurveSwapTest is BaseTest {
         (uint256 unlocked, uint256 out) = vault.quoteBurn(carol, 40e18);
         assertEq(unlocked, locked, "the whole position, at its own price");
         uint256 held = a0g.balanceOf(carol);
-        _burnFor(carol, 40e18);
+        _burn(carol, 40e18);
         assertEq(a0g.balanceOf(carol) - held, out);
         assertLe(paid - out, 1, "a round trip costs at most the rounding wei");
         _assertSolvent();

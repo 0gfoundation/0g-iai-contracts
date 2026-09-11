@@ -2,10 +2,10 @@
 pragma solidity 0.8.25;
 
 import {BaseTest} from "../Base.t.sol";
+import {IAccessControl} from "@openzeppelin/contracts/access/IAccessControl.sol";
 import {Prng} from "./Prng.sol";
 import {ICreditRegistry} from "../../src/interfaces/ICreditRegistry.sol";
 import {IIAIVault} from "../../src/interfaces/IIAIVault.sol";
-import {IAccessControl} from "@openzeppelin/contracts/access/IAccessControl.sol";
 import {IMintCurve} from "../../src/interfaces/IMintCurve.sol";
 import {LinearMintCurve} from "../../src/curves/LinearMintCurve.sol";
 import {ExponentialMintCurve} from "../../src/curves/ExponentialMintCurve.sol";
@@ -85,7 +85,6 @@ contract RandomSimTest is BaseTest {
     // --- coverage counters, asserted at the end so a silently degenerate run is caught ---
     uint256 internal nMints;
     uint256 internal nBurns;
-    uint256 internal nRescues;
     uint256 internal nHarvests;
     uint256 internal nStakes;
     uint256 internal nUnstakes;
@@ -112,7 +111,6 @@ contract RandomSimTest is BaseTest {
             vm.prank(a);
             iai.approve(address(registry), type(uint256).max);
         }
-        vault.grantRole(vault.RESCUE_ROLE(), address(this));
 
         mKind = CurveKind.Linear;
         mR0 = R0;
@@ -205,10 +203,8 @@ contract RandomSimTest is BaseTest {
 
         if (roll < 26) {
             _opMint();
-        } else if (roll < 45) {
-            _opBurn();
         } else if (roll < 51) {
-            _opRescue();
+            _opBurn();
         } else if (roll < 58) {
             _opHarvest();
         } else if (roll < 66) {
@@ -415,42 +411,6 @@ contract RandomSimTest is BaseTest {
         nCurveSwaps++;
     }
 
-    /**
-     * @dev Models the real rescue: the role holder first acquires the stranded tokens from
-     *      whoever ended up with them, then settles the original minter's position. The
-     *      collateral must land on the minter, never on the caller — that is what makes the
-     *      role safe to hold, so it is asserted on every single occurrence rather than once.
-     */
-    function _opRescue() internal {
-        address owner = _pickWithPosition();
-        if (owner == address(0)) return;
-        address holder = _actor();
-        uint256 outstanding = mOutstanding[owner];
-        uint256 b = rng.magnitude(1, outstanding);
-        if (b == 0 || iai.balanceOf(holder) < b) return;
-
-        // The rescuer obtains the tokens; this test contract holds RESCUE_ROLE.
-        vm.prank(holder);
-        iai.transfer(address(this), b);
-
-        uint256 expectedUnlock = (mLocked[owner] * b) / outstanding;
-        uint256 expectedOut = (expectedUnlock * WAD) / vault.exchangeRate();
-        uint256 rescuerBefore = a0g.balanceOf(address(this));
-        uint256 ownerBefore = a0g.balanceOf(owner);
-
-        vault.burnFor(owner, b, block.timestamp);
-
-        assertEq(a0g.balanceOf(address(this)), rescuerBefore, "rescuer must never receive collateral");
-        assertEq(a0g.balanceOf(owner) - ownerBefore, expectedOut, "collateral goes to the position owner");
-        assertEq(iai.balanceOf(address(this)), 0, "rescuer supplied the tokens");
-
-        mLocked[owner] -= expectedUnlock;
-        mOutstanding[owner] -= b;
-        mTotalLocked -= expectedUnlock;
-        mSupply -= b;
-        nRescues++;
-    }
-
     function _opHarvest() internal {
         if (mPaused) {
             vm.expectRevert(abi.encodeWithSignature("EnforcedPause()"));
@@ -625,16 +585,17 @@ contract RandomSimTest is BaseTest {
             vm.prank(owner);
             vault.burn(outstanding + 1, block.timestamp);
         } else if (pick == 5) {
-            // The rescue path is role-gated; an ordinary actor must not reach it.
-            address owner = _pickWithPosition();
-            if (owner == address(0) || a == address(this)) return;
+            // A governance function from an ordinary wallet. Every other case here is a value
+            // or state guard; without this one the run asserts nothing about the role gates,
+            // and `setCap` is the cheapest of them to provoke from any reached state -- the
+            // modifier fires before the body, so the cap it is handed does not matter.
             vm.expectRevert(
                 abi.encodeWithSelector(
-                    IAccessControl.AccessControlUnauthorizedAccount.selector, a, vault.RESCUE_ROLE()
+                    IAccessControl.AccessControlUnauthorizedAccount.selector, a, bytes32(0)
                 )
             );
             vm.prank(a);
-            vault.burnFor(owner, 1, block.timestamp);
+            vault.setCap(mCap);
         } else if (pick == 6) {
             // Withdrawing more than is staked.
             uint256 staked = mStaked[a];
@@ -737,7 +698,6 @@ contract RandomSimTest is BaseTest {
     function _assertCoverage() internal view {
         assertGt(nMints, 100, "coverage: mints");
         assertGt(nBurns, 100, "coverage: burns");
-        assertGt(nRescues, 10, "coverage: rescues");
         assertGt(nHarvests, 100, "coverage: harvests");
         assertGt(nStakes, 100, "coverage: stakes");
         assertGt(nUnstakes, 10, "coverage: unstakes");
