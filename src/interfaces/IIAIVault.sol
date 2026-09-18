@@ -199,8 +199,13 @@ interface IIAIVault {
      * @dev Prospective in time, not in cohort: every outstanding position is restated by value
      *      at the current rate, so appreciation already earned keeps the split it was earned
      *      under and everything after this point uses the new one. Nothing moves between
-     *      minter and foundation at the moment of the change, so there is no advantage in
-     *      choosing when to make it.
+     *      minter and foundation at the moment of the change.
+     *
+     *      It is not forward-neutral, though, and integrators sizing a position should know
+     *      it. Until a change, a minter keeps `1 - share` of the appreciation of the a0G they
+     *      deposited; afterwards, of the appreciation of what the position is now worth, which
+     *      is less. Re-issuing the same share therefore still shifts a little future yield to
+     *      the foundation, and doing it often shifts more.
      *
      *      Refused if the rate has fallen since the last change. See `EpochMath`.
      */

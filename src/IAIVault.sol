@@ -508,10 +508,16 @@ contract IAIVault is IIAIVault, AccessControlUpgradeable, PausableUpgradeable, R
      * @inheritdoc IIAIVault
      * @dev Value-neutral at the instant it runs: every position is restated by value at the
      *      current rate, and the obligation the sweep is measured against comes out unchanged
-     *      to within the rounding. Nothing therefore rides on choosing the moment, which is
-     *      the whole reason the split is restated at a change rather than accrued
-     *      continuously -- an accrual whose result depended on how often someone poked it
-     *      would hand the timing to whoever benefits.
+     *      to within the rounding.
+     *
+     *      **That is not the same as the change being free.** Until it is made, a minter keeps
+     *      `1 - share` of the appreciation of the a0G they deposited; afterwards, of the
+     *      appreciation of what their position is now worth, which is less -- the foundation
+     *      has already taken its part -- and that part becomes shares which compound for the
+     *      foundation. Re-issuing the *same* share therefore still moves a little future yield
+     *      across. Restating at a change rather than accruing continuously is what keeps that
+     *      out of reach of anyone who can call a permissionless function; it does not remove
+     *      it, and this role can still ratchet by acting often. Deliberate, and recorded.
      *
      *      The totals move here, in one step. Positions are left for `_settled` to catch up
      *      whenever each is next touched; by linearity the two agree.
