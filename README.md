@@ -2,8 +2,9 @@
 
 Smart contracts for **iAI**, a compute-entitlement token on 0G. Users lock **a0G** (a yield-bearing
 restaking share) as collateral, mint iAI along a rising bonding curve, and stake iAI to earn a daily
-allowance of AI compute. Collateral is never sold: redeeming returns the same *0G value* that was
-locked, and the yield the collateral earned in the meantime is swept to the foundation.
+allowance of AI compute. Collateral is never sold: redeeming returns the 0G value that was locked
+plus the minter's share of what the collateral earned in the meantime, and the rest of that yield is
+swept to the foundation. The split is a governance parameter — currently **50/50**.
 
 ```
         a0G                    iAI                      compute
@@ -22,7 +23,8 @@ locked, and the yield the collateral earned in the meantime is swept to the foun
 | Contract | Role |
 | --- | --- |
 | `src/IAI.sol` | The ERC-20. Mint and burn restricted to `MINTER_BURNER_ROLE`, held only by the vault; the supply ceiling is the vault's, not the token's. Deliberately **not** `ERC20Burnable` — a holder burning their own tokens would strand the collateral behind them. |
-| `src/IAIVault.sol` | Custody, positions, the supply cap, and which curve is pricing. `mint` / `burn` / `harvest`. |
+| `src/IAIVault.sol` | Custody, positions, the supply cap, which curve is pricing, and how collateral appreciation is split. `mint` / `burn` / `harvest`. |
+| `src/EpochMath.sol` | The bookkeeping behind that split: how a claim is held in two denominations, and why changing the split costs a constant however many times it has changed before. |
 | `src/CreditRegistry.sol` | Staking with a cooldown. Records who has how much iAI earning; the allowance itself is metered off-chain. |
 | `src/interfaces/IMintCurve.sol` | The pricing surface the vault calls. Three `view` functions, so a curve reaches the vault by `STATICCALL` and can neither write state nor reenter. |
 | `src/curves/ExponentialMintCurve.sol` | The curve in force: the exponential curve as a table of 371 bucket prices, 25 iAI per bucket. The table is storage written once by the constructor and nothing can write it again — no setter, no owner, no proxy — so a curve is still a value, and replacing one means deploying another and repointing the vault. |
@@ -95,6 +97,43 @@ is gated by `pause`, not by the cap, so `setCap(0)` is not a wind-down switch on
 plus revoking that role. Because the ceiling check lives in `mint`'s body rather than in a modifier,
 `setCap(0)` is the one switch that closes issuance to everyone.
 
+### How the yield is split
+
+A position's claim is recorded in **two denominations**, and which one a wei sits in decides who
+receives its appreciation:
+
+- **0G-denominated** — redeems for `claim / rate` a0G, so as a0G appreciates it buys fewer shares
+  and the difference is left behind for the foundation.
+- **a0G-denominated** — returned exactly as deposited, so its appreciation stays with the minter.
+
+There is no third denomination, so the proportion between the two *is* the split, and
+`harvestShare` is exactly that proportion (WAD; `5e17` is 50%, `1e18` sends everything to the
+foundation, `0` sends everything to minters). A position's marginal capture is fixed when it is
+opened and does not drift however far the rate travels, so the split is path-independent: cycling
+through a redemption and a fresh mint gains nothing.
+
+`harvest` is unchanged in shape. It moves the vault's balance down to what the vault owes, which is
+a function of recorded claims and never of the balance itself — so calling it twice in a row is
+harmless, and there is no accrual anyone can advance by poking it.
+
+**Changing the split is prospective in time, not in cohort.** `setHarvestShare` restates every
+outstanding position by value at the current rate: appreciation already earned keeps the split it
+was earned under, and everything after that point uses the new one. Nothing moves at the moment of
+the change — the obligation and every position come out worth what they were worth an instant
+earlier — so there is no advantage in choosing when to make it. Positions are restated lazily,
+whenever each is next touched, and catching up costs the same whether one change was missed or a
+hundred.
+
+Two consequences worth knowing:
+
+- A change is **refused if the rate has fallen** since the last one. The rate is recorded
+  permanently when a change is made and is a divisor in every later settlement, so a reading taken
+  during a dip would be baked in. This blocks only the governance action; minting, redemption and
+  harvesting are untouched.
+- The vault's totals are rounded up where a position is rounded down, so they sit a few wei above
+  the sum of the positions they stand for. That residue is claimable by nobody and leaves as
+  surplus.
+
 ### Rounding
 
 Every division that can lose a wei rounds in the vault's favour: value entering rounds **up**, value
@@ -104,9 +143,10 @@ arbitrage in either direction.
 
 ## What redemption does and does not promise
 
-Burning returns the position's own average rate — the same **0G value** that was locked. Because a0G
-appreciates, that is fewer *a0G tokens* than went in. This is the design, not a loss, and any UI must
-denominate in 0G value with a0G counts secondary.
+Burning returns the position's own blend: the **0G value** that was locked, plus the minter's share
+of what the collateral appreciated since. Because a0G appreciates, that is still fewer *a0G tokens*
+than went in — the 0G value has risen while each token costs more. This is the design, not a loss,
+and any UI must denominate in 0G value with a0G counts secondary.
 
 Two caveats are real and must be stated to users:
 
@@ -116,7 +156,25 @@ Two caveats are real and must be stated to users:
   ceiling.** A redeemer releases 0G at their average rate while the freed supply is resold at the
   marginal rate, so churn ratchets the total upward. There is no numeric bound to quote: the cap can
   be raised and the curve replaced with a dearer one. Never write `require(totalLocked0G <= X)` for
-  any curve-derived `X`.
+  any curve-derived `X`. It also now rises with the exchange rate, by the minters' share of the
+  appreciation.
+
+### What to read, and what to leave alone
+
+Integrate against these, which mean what their names say and are stable:
+
+| Read | For |
+| --- | --- |
+| `positionOf(account)` | what a position is worth in 0G now, the iAI outstanding, and the 0G behind each iAI. Dividing the first by `exchangeRate()` gives the a0G a full redemption pays |
+| `quoteBurn(account, amount)` | the 0G released and the a0G paid for a given redemption |
+| `quoteMint(amount)` / `quoteMintForA0G(a0G)` | what a mint costs, and what a given amount of a0G buys |
+| `totalLocked0G()` | what every outstanding position is worth, in 0G |
+| `harvestShare()` | the foundation's current cut of appreciation, WAD |
+
+`totalClaim0G()`, `totalClaimA0G()`, `positionClaims(account)`, `epochAt(i)` and `currentEpoch()`
+are **internal accounting**, exposed so that tests, the deployment checker and monitoring can watch
+the two denominations move independently. They are not a stable integration surface and reading
+them requires understanding the split above — use `positionOf` and `totalLocked0G()` instead.
 
 ## Layout
 
@@ -224,7 +282,8 @@ everything — a mistyped address stops there, with the deployer still in contro
 with nobody in control. Beacon ownership is one-step `Ownable` with no acceptance step, so that
 precondition is the only safety net it has.
 
-Other operator entrypoints: `./run.sh pause`, `./run.sh harvest`, `./run.sh quote <amount>`,
+Other operator entrypoints: `./run.sh setHarvestShare <wad>`, `./run.sh harvestShare`,
+`./run.sh pause`, `./run.sh harvest`, `./run.sh quote <amount>`,
 `./run.sh mint <amount> <maxA0GIn>`, `./run.sh pausedMinter|grantPausedMinter|revokePausedMinter
 <addr>`, and `forge script script/deploy/IAI.s.sol --sig "setFoundation(address)" <addr>`.
 

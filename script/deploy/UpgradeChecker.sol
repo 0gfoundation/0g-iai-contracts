@@ -33,14 +33,23 @@ abstract contract UpgradeChecker {
         // Not snapshotting it would leave the rehearsal blind to exactly that.
         address curve;
         uint256 cap;
+        // The split of collateral appreciation, and how much history it has. An upgrade that
+        // moved either would silently redirect every future wei of yield -- the same class of
+        // change as repointing the curve, and just as invisible in the accounting totals.
+        uint256 harvestShare;
+        uint256 epoch;
         // Wiring.
         address iai;
         address a0G;
         address oracle;
         address foundation;
         address registryIai;
-        // Live accounting. Every 0G in here is someone's redeemable collateral.
+        // Live accounting. Every 0G in here is someone's redeemable collateral. The two
+        // halves are carried alongside the combined figure because value moved between them
+        // leaves the combined figure untouched.
         uint256 totalLocked0G;
+        uint256 totalClaim0G;
+        uint256 totalClaimA0G;
         uint256 supply;
         uint256 tokenSupply;
         bool paused;
@@ -57,6 +66,8 @@ abstract contract UpgradeChecker {
         address[] accounts;
         uint256[] locked;
         uint256[] outstanding;
+        uint256[] claim0G;
+        uint256[] claimA0G;
     }
 
     /**
@@ -73,6 +84,8 @@ abstract contract UpgradeChecker {
     {
         s.curve = address(vault.curve());
         s.cap = vault.cap();
+        s.harvestShare = vault.harvestShare();
+        s.epoch = vault.currentEpoch();
 
         s.iai = address(vault.iai());
         s.a0G = address(vault.a0G());
@@ -81,6 +94,8 @@ abstract contract UpgradeChecker {
         s.registryIai = address(registry.iai());
 
         s.totalLocked0G = vault.totalLocked0G();
+        s.totalClaim0G = vault.totalClaim0G();
+        s.totalClaimA0G = vault.totalClaimA0G();
         s.supply = vault.supply();
         s.tokenSupply = token.totalSupply();
         s.paused = vault.paused();
@@ -98,8 +113,11 @@ abstract contract UpgradeChecker {
         s.accounts = accounts;
         s.locked = new uint256[](accounts.length);
         s.outstanding = new uint256[](accounts.length);
+        s.claim0G = new uint256[](accounts.length);
+        s.claimA0G = new uint256[](accounts.length);
         for (uint256 i = 0; i < accounts.length; i++) {
             (s.locked[i], s.outstanding[i],) = vault.positionOf(accounts[i]);
+            (s.claim0G[i], s.claimA0G[i],) = vault.positionClaims(accounts[i]);
         }
     }
 
@@ -112,6 +130,8 @@ abstract contract UpgradeChecker {
     function _assertUnchanged(Snapshot memory before_, Snapshot memory after_) internal pure {
         _eqAddr(after_.curve, before_.curve, "curve");
         _eq(after_.cap, before_.cap, "cap");
+        _eq(after_.harvestShare, before_.harvestShare, "harvestShare");
+        _eq(after_.epoch, before_.epoch, "epoch");
 
         _eqAddr(after_.iai, before_.iai, "iai");
         _eqAddr(after_.a0G, before_.a0G, "a0G");
@@ -120,6 +140,8 @@ abstract contract UpgradeChecker {
         _eqAddr(after_.registryIai, before_.registryIai, "registryIai");
 
         _eq(after_.totalLocked0G, before_.totalLocked0G, "totalLocked0G");
+        _eq(after_.totalClaim0G, before_.totalClaim0G, "totalClaim0G");
+        _eq(after_.totalClaimA0G, before_.totalClaimA0G, "totalClaimA0G");
         _eq(after_.supply, before_.supply, "supply");
         _eq(after_.tokenSupply, before_.tokenSupply, "tokenSupply");
         require(after_.paused == before_.paused, "changed across upgrade: paused");
@@ -139,6 +161,8 @@ abstract contract UpgradeChecker {
             _eqAddr(after_.accounts[i], before_.accounts[i], "accounts[i]");
             _eq(after_.locked[i], before_.locked[i], "position.locked0G");
             _eq(after_.outstanding[i], before_.outstanding[i], "position.iaiOutstanding");
+            _eq(after_.claim0G[i], before_.claim0G[i], "position.claim0G");
+            _eq(after_.claimA0G[i], before_.claimA0G[i], "position.claimA0G");
         }
     }
 

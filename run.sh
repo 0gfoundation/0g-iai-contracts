@@ -17,6 +17,10 @@
 #   ./run.sh setCurve <Kind>      point the vault at a previously deployed curve
 #   ./run.sh setCap <amount>      move the supply ceiling (wei-iAI; below the live supply
 #                                 closes issuance and leaves redemption open)
+#   ./run.sh setHarvestShare <share>  move the foundation's cut of collateral appreciation
+#                                     (WAD; 5e17 is 50%). Applies to future yield on every
+#                                     position, and moves nothing at the moment it is made
+#   ./run.sh harvestShare         the cut in force, read off the chain
 #   ./run.sh quote <amount>       what minting that much iAI costs right now (wei-iAI in,
 #                                 0G value and a0G out; works while paused)
 #   ./run.sh mint <amount> <maxA0GIn>   mint to the broadcasting key, approving first
@@ -109,6 +113,16 @@ case "${1:-deploy}" in
   setCap)
     [ $# -eq 2 ] || { echo "usage: ./run.sh setCap <amount in wei-iAI>"; exit 1; }
     send script/deploy/IAI.s.sol --sig "setCap(uint256)" "$2"
+    ;;
+  setHarvestShare)
+    [ $# -eq 2 ] || { echo "usage: ./run.sh setHarvestShare <share in WAD>   e.g. 500000000000000000 for 50%"; exit 1; }
+    send script/deploy/IAI.s.sol --sig "setHarvestShare(uint256)" "$2"
+    # Read the chain back: the split governs how every future wei of yield is divided, and a
+    # change that did not land looks exactly like one that did until the next harvest.
+    read_only script/deploy/IAI.s.sol --sig "harvestShare()"
+    ;;
+  harvestShare)
+    read_only script/deploy/IAI.s.sol --sig "harvestShare()"
     ;;
   quote)
     [ $# -eq 2 ] || { echo "usage: ./run.sh quote <amount in wei-iAI>"; exit 1; }

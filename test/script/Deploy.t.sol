@@ -221,6 +221,37 @@ contract DeployScriptTest is Test {
     }
 
     /**
+     * @notice The harvest-share entry point, and the record it leaves behind.
+     *
+     * @dev Unlike the cap, the split has a history on chain, so the record carries only the
+     *      value in force -- an operator reconciling an old position reads the vault's epochs,
+     *      not the file. What the record must do is stay in step with the chain, because
+     *      `checkDeployment` holds one against the other.
+     */
+    function test_SetHarvestShare_MovesTheChainAndTheRecordTogether() public {
+        _bootstrap("harvest-share");
+        _MockScript().run();
+        _IAIScript().run();
+
+        IAIVault vault = IAIVault(vm.parseJsonAddress(vm.readFile(file), ".IAIVault"));
+        assertEq(vault.harvestShare(), vm.parseJsonUint(vm.readFile(file), ".HarvestShare"), "deployed as recorded");
+        assertEq(vault.currentEpoch(), 0, "one epoch at deployment");
+
+        _IAIScript().setHarvestShare(0.25e18);
+        assertEq(vault.harvestShare(), 0.25e18, "the chain moved");
+        assertEq(vm.parseJsonUint(vm.readFile(file), ".HarvestShare"), 0.25e18, "and so did the record");
+        assertEq(vault.currentEpoch(), 1, "a change opens an epoch");
+        _IAIScript().checkDeployment();
+
+        // Both extremes are reachable from the operator surface, not just the interior.
+        _IAIScript().setHarvestShare(1e18);
+        _IAIScript().setHarvestShare(0);
+        assertEq(vault.harvestShare(), 0, "the whole range is reachable");
+        assertEq(vm.parseJsonUint(vm.readFile(file), ".HarvestShare"), 0, "record still in step");
+        _IAIScript().checkDeployment();
+    }
+
+    /**
      * @dev `deployCurve` and `setCurve` are two steps on purpose, and the check has to work in
      *      between them -- that gap is precisely where an operator wants to look at a curve
      *      before putting it in service. The check used to require the active curve to equal
