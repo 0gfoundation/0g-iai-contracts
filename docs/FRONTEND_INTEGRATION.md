@@ -186,10 +186,13 @@ do. That is deliberate: a quote that answered anyway would hand you a number the
 moment later. Validate the input against `remainingCap()` and `positionOf().iaiOutstanding`
 before quoting, or catch the error and treat it as "too much".
 
-**That includes zero.** `quoteMint(0)` reverts with `ZeroAmount`, because `mint(0)` does. An empty
-or cleared input box is not a quote request: skip the call and show nothing. `quoteMintForA0G(0)`
-is the exception and answers `0` — it was asked what a budget buys, and "nothing" is a true answer
-to that — so do not feed its result into `mint` without checking it first.
+**For `quoteMint` that includes zero**: `quoteMint(0)` reverts with `ZeroAmount`, because `mint(0)`
+does. An empty or cleared input box is not a quote request — skip the call and show nothing.
+
+The two other quotes answer `0` instead of reverting, and both are deliberate: `quoteMintForA0G(0)`
+and `quoteBurn(account, 0)` were asked what a budget buys and what an empty redemption releases,
+and "nothing" is a true answer to either. Neither `mint` nor `burn` accepts a zero, so do not feed
+those answers into a transaction without checking them first.
 
 **The reverse direction.** If your UI has a "spend all my a0G" button:
 
@@ -550,6 +553,7 @@ this for you.
 | `0x2aab8ce8` | `NothingInCooldown()` | `unstake()` with nothing pending. | The user must call `initiateUnstake` first. |
 | `0x45be0a26` | `InsufficientStake(requested, staked)` | Withdrawing more than is staked. | Cap the input at `stakedOf`. |
 | `0x1f2a2005` | `ZeroAmount()` | An amount of zero. `quoteMint(0)` raises it too, so an empty input box must not be quoted. | Validate before quoting and before sending. |
+| `0x8826817b` | `BucketOutOfRange(index, bucketCount)` | A bucket index past the end of the curve's table — from `priceAt`, typically a "next price" hint computed at the top bucket. | Clamp the index to `bucketCount() - 1`; at the last bucket there is no next price to show. |
 | `0xf480e285` | `CapExceeded(supplyAfter, cap)` | The mint — or the quote for it — would exceed the supply limit. | Cap the input at `remainingCap()`. `quoteMint` raises this too, so it surfaces while typing rather than on submit. When `remainingCap()` is `0` there is no amount that works — minting is closed; see §"When minting is closed". |
 
 ### Errors that mean the system is closed, not the user

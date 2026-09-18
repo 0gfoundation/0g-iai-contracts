@@ -335,7 +335,9 @@ Three layers, all required to stay green:
 
   Curve swaps alternate between the two shapes -- a random monotone step table of 500-iAI buckets,
   then a linear curve whose anchor is its ceiling -- and go in both directions, a narrowing swap
-  drawing fewer buckets so its top lands under the live supply. The shadow tracks the kind in force
+  drawing fewer buckets so its top lands under the live supply. A full table is 38 buckets, which
+  reaches 19,000 iAI: past any ceiling a linear swap can set, and that is the point of the number.
+  Shrink it and the alternating swaps stop covering the case where the incoming curve is wider. The shadow tracks the kind in force
   and prices each mint accordingly, so a mint after a swap is priced at the new curve while a burn
   of a pre-swap position is still settled at that position's own average: the guarantee that a swap
   reprices nothing already minted, checked wei for wei thousands of times from states no
@@ -453,6 +455,7 @@ and 8 above. Numbering there is append-only, because these are cited from outsid
 | R10 | a pause-exempt minter narrows what `pause()` guarantees |
 | R11 | governance can redirect every future wei of collateral yield |
 | R12 | a change of the harvest share anchors on the live rate, permanently |
+| R13 | an unstaked holder can cycle around an oracle write and keep one step of the sweep |
 
 Three of them carry an **operational requirement** rather than only a consequence: R1 (watch the
 oracle; `pause()` and revoke `PAUSE_EXEMPT_MINTER_ROLE` on an unexpected move), R5 (close the

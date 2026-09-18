@@ -26,12 +26,33 @@ costs nothing at all** (the share-denominated half comes back exactly as deposit
 mint can be front-run for position. Accepted; slippage protection is the only defence, and the
 contracts are upgradeable if a holding period ever becomes necessary.
 
+**The same property makes every mint blockable, and that is accepted too.** An attacker who sees a
+pending mint can mint ahead of it, pushing the price past the victim's `maxA0GIn` so the mint
+reverts `ExcessiveInput`, and burn back in the next transaction for the wei. Neither `pause()` nor a
+narrower curve reaches it -- both legs are ordinary operations. What bounds it is that it pays
+nothing: the attacker recovers their capital and spends two mints and a burn in gas so that one
+victim loses the gas of one failed mint, per victim, every time. It is not free in capital either,
+though it is cheaper on a pure exponential than it was on the cubic, since the price now steps by a
+constant 1.279% per bucket everywhere rather than being nearly flat at low supply: breaking a 1%
+bound on a 10-iAI mint takes about 22.8 iAI of pre-emptive minting, roughly 37,000 0G at a supply of
+2,000 and 172,000 0G at 5,000, held across one block in a0G, which is not flash-loanable. A widened
+`maxA0GIn` defeats it outright, and a mint fee or a holding period would charge every honest user to
+price out an attack that already pays its attacker nothing.
+
 **R3 — if the a0G oracle stops updating for 21 days, `mint`, `burn`, `harvest`, `setHarvestShare`,
 `initialize` and every quote revert.** Settling a position across past changes of the harvest share
 does *not* need the oracle — `EpochMath.sync` uses only rates already recorded — so a stall adds no
 new way for redemption to fail, but it does mean a deployment cannot be made and the share cannot
 be retuned while the feed is down. An external dependency. Note that setting the upstream `maxAge` to zero freezes the system
 permanently rather than temporarily.
+
+**The same applies if the oracle contract is replaced rather than merely going quiet.** The vault
+reads a0G's oracle address once, in `initialize`, and caches it. a0G has no setter for it, but a0G
+is itself behind a proxy a third party controls, so the implementation that answers `oracle()` can
+be replaced without a setter existing -- and the vault would go on reading the old contract until
+its staleness guard starts reverting. There is no function to refresh the address. Accepted: the
+stale reading gives weeks of warning before anything reverts, and the vault is beacon-upgradeable,
+so the answer if it ever happens is an upgrade.
 
 **R4 — `totalLocked0G` can exceed what the curve accounts for, and has no computable upper
 bound.** A redeemer releases 0G at their own average rate while the freed supply is resold at the
@@ -41,10 +62,27 @@ replaced with a longer or dearer one without limit, and the table's two-billion-
 sizing choice, not a bound on custody. **Never write `require(totalLocked0G <= target)`**,
 and do not reintroduce a numeric ceiling in its place.
 
-**R5 — a falling exchange rate leaves late redeemers short.** The harvest sweep goes quiet and
-redemption becomes first come, first served. Accepted on the premise that a0G does not depreciate;
+**R5 — a falling exchange rate leaves late redeemers short, and the fall itself can be
+front-run.** The harvest sweep goes quiet and redemption becomes first come, first served.
 `test_RateFall_SweepGoesQuietButLateRedeemersAreLeftShort` pins the actual behaviour so it is a known
 quantity rather than a surprise.
+
+**Do not read this entry as describing only a passive loss.** The keeper writes the rate in a public
+transaction, so a pending decrease is visible before it lands: mint immediately before it at the
+higher rate, burn immediately after at the lower one, and the difference is profit funded by
+everyone else's collateral. The extraction is `harvestShare * delta0G * (1/r' - 1/r)` -- only the
+0G-denominated half of a claim converts at the prevailing rate -- and it scales with the attacker's
+capital rather than with the existing book, up to whatever the curve in force will issue. The round
+trip is free (R2), so nothing else limits the size.
+
+Accepted on a premise narrower than "a0G does not depreciate": **slashing is not enabled on the
+restaking side and there is no plan to enable it**, so the rate is a value-per-share figure that
+only rises, which is checkable on chain. Two things bound it further, neither load-bearing: the
+keeper refuses to publish a value that falls or that deviates by more than 1% from the previous
+reading, so a decrease would be a deliberate human action rather than one of the routine 8-hourly
+writes; and the split halves the exposed half of every claim at the deployed 50%. **No minimum
+holding period was added, and none should be**: a delay between mint and burn is a gate in front of
+redemption, which is the one thing this vault does not have and must not acquire.
 
 The exposure now scales with `harvestShare`: only the 0G-denominated half of a claim grows in a0G
 terms as the rate falls, and the share-denominated half tracks the asset down of its own accord. A
@@ -200,3 +238,22 @@ operational rule covers.
 **Operational requirement: do not move the harvest share while the oracle is behaving unusually.**
 It is the same rule R1 already imposes, with a worse failure mode attached — R1's damage leaves the
 accounting intact, this writes a permanent divisor into it.
+
+**R13 — an unstaked holder can cycle around an oracle write and keep the foundation's share of one
+step.** Burn immediately before a write and mint the same amount back immediately after it, and the
+position is restored for fewer a0G: the appreciation that would have been swept stays with the
+holder. The vault stays solvent and no other holder is affected; what is lost is the foundation's
+cut for that position, that step.
+
+Accepted, because the curve already charges more for it than it is worth. A burn releases 0G at the
+position's own average rate while the re-mint pays the price at the current supply, and prices are
+flat only inside a bucket -- so the cycle is free only for a holder whose position was opened in the
+bucket the supply is in now, 25 iAI wide. One bucket of drift costs 1.279%, uniformly, because a
+pure exponential rises by a constant factor per bucket; one cycle captures about 0.285 bps at the
+deployed share and the steady-state 0.57 bps per write. Recovering the cost of a single cycle
+therefore takes some 450 more of them, about five months.
+
+The second bound is structural: staked iAI cannot be burned without unstaking and waiting out the
+cooldown, so a holder running this is outside the credit system for as long as they run it. They
+avoid contributing yield and receive none of the compute the yield pays for. An exit fee large
+enough to change the arithmetic would be paid by every ordinary redeemer instead.

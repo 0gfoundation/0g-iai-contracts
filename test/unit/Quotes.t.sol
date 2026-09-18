@@ -38,13 +38,6 @@ contract QuotesTest is BaseTest {
         vault.quoteMint(1e18);
     }
 
-    /// @dev The one deliberate exception, and the reason it is not the same rule: the caller
-    ///      asked what a budget buys, and "nothing" is a true answer to that question where
-    ///      "mint nothing" is not an action. A client must not pass the zero straight on.
-    function test_QuoteMintForA0G_AnswersZeroWhereQuoteMintWouldRevert() public view {
-        assertEq(vault.quoteMintForA0G(0), 0);
-    }
-
     function test_QuoteMintForA0G_RoundTripsIntoAMintThatSucceeds() public {
         uint256 x = 10_000e18;
 
@@ -106,7 +99,10 @@ contract QuotesTest is BaseTest {
         assertEq(iai.totalSupply(), CAP, "the cap is reachable, exactly");
     }
 
-    /// @dev Below the price of one wei of iAI there is nothing to sell.
+    /// @dev Below the price of one wei of iAI there is nothing to sell -- and zero is answered
+    ///      rather than refused, where `quoteMint(0)` reverts like the `mint(0)` it prices. The
+    ///      caller asked what a budget buys, and "nothing" is a true answer to that question
+    ///      where "mint nothing" is not an action. A client must not pass the zero straight on.
     function test_QuoteMintForA0G_ReturnsZeroForDust() public view {
         assertEq(vault.quoteMintForA0G(0), 0);
         assertEq(vault.quoteMintForA0G(1), 0, "one wei of a0G buys no iAI at 4,330 0G each");
