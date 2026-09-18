@@ -67,3 +67,41 @@ contract BreakableCurve is IMintCurve {
         return 2 ** 127;
     }
 }
+
+/**
+ * @title MutableCeilingCurve
+ * @notice A curve whose ceiling can be moved after installation, at the same address.
+ *
+ * @dev The vault cannot tell a plain curve from a proxy in front of one, and a proxied curve can
+ *      be upgraded underneath it. This is that shape in one contract: the ceiling moves while
+ *      `IAIVault.curve()` still returns the same address, which is exactly the change a snapshot
+ *      that compared only the curve address would miss.
+ */
+contract MutableCeilingCurve is IMintCurve {
+    uint256 public top;
+
+    /// @param top_ The ceiling to start with, in wei-iAI.
+    constructor(
+        uint256 top_
+    ) {
+        top = top_;
+    }
+
+    function setTop(
+        uint256 top_
+    ) external {
+        top = top_;
+    }
+
+    function cost(uint256, uint256 amount) external pure returns (uint256) {
+        return amount;
+    }
+
+    function quoteForValue(uint256, uint256 delta0G) external pure returns (uint256) {
+        return delta0G;
+    }
+
+    function maxSafeSupply() external view returns (uint256) {
+        return top;
+    }
+}

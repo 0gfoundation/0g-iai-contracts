@@ -220,8 +220,8 @@ on what leaves the wallet, so it can be reasoned about directly: the transaction
 `maxA0GIn`, never more. `50` bps is a reasonable starting point.
 
 One case to be aware of with a stepped price: if the supply sits just under a bucket boundary and a
-competing mint crosses it first, your mint is repriced by a whole step rather than by a sliver. Near
-A step is 1.28% on the current table, wider than 50 bps. The remedy is the same one already
+competing mint crosses it first, your mint is repriced by a whole step rather than by a sliver. A
+step is 1.28% on the current table, wider than 50 bps. The remedy is the same one already
 recommended — re-quote right before sending — and, if you want the tolerance to be exact, size it
 from the next bucket's price: `priceAt(bucketOf(supply) + 1)` against `priceAt(bucketOf(supply))`
 (§4) tells you precisely how much one step costs at the current supply. Guard it in two steps:

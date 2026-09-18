@@ -33,6 +33,12 @@ abstract contract UpgradeChecker {
         // replacing this address is the only way a vault upgrade can reprice or re-cap. Not
         // snapshotting it would leave the rehearsal blind to exactly that.
         address curve;
+        // The ceiling as the vault reports it. Derived from the curve, not stored, and
+        // compared anyway: an upgrade whose `_cap` regressed -- a wrong clamp, or a vault that
+        // stopped reading the curve -- leaves the address alone and moves this. Unavailable
+        // while the curve in force cannot answer `maxSafeSupply()`; the flag is compared first.
+        bool ceilingAvailable;
+        uint256 cap;
         // The split of collateral appreciation, and how much history it has. An upgrade that
         // moved either would silently redirect every future wei of yield -- the same class of
         // change as repointing the curve, and just as invisible in the accounting totals.
@@ -83,6 +89,13 @@ abstract contract UpgradeChecker {
         returns (Snapshot memory s)
     {
         s.curve = address(vault.curve());
+        // A curve that reverts takes `cap()` down with it, and an upgrade rehearsed from that
+        // state -- the state an operator is most likely to be upgrading out of -- has to stay
+        // runnable. Recorded as unavailable rather than failing the capture.
+        try vault.cap() returns (uint256 ceiling) {
+            s.ceilingAvailable = true;
+            s.cap = ceiling;
+        } catch {}
         s.harvestShare = vault.harvestShare();
         s.epoch = vault.currentEpoch();
 
@@ -101,9 +114,9 @@ abstract contract UpgradeChecker {
         s.totalStaked = registry.totalStaked();
         s.cooldownDuration = registry.cooldownDuration();
 
-        // Probe only within the headroom. A full or lowered cap makes `quoteMint` revert,
-        // and an upgrade rehearsal has to stay runnable in that state.
-        s.quotesAvailable = vault.remainingCap() >= 100e18;
+        // Probe only within the headroom. A full ceiling, or one swapped in below the supply,
+        // makes `quoteMint` revert, and an upgrade rehearsal has to stay runnable in that state.
+        s.quotesAvailable = s.ceilingAvailable && vault.remainingCap() >= 100e18;
         if (s.quotesAvailable) {
             (s.quote1,) = vault.quoteMint(1e18);
             (s.quote100,) = vault.quoteMint(100e18);
@@ -128,6 +141,8 @@ abstract contract UpgradeChecker {
      */
     function _assertUnchanged(Snapshot memory before_, Snapshot memory after_) internal pure {
         _eqAddr(after_.curve, before_.curve, "curve");
+        require(after_.ceilingAvailable == before_.ceilingAvailable, "changed across upgrade: ceilingAvailable");
+        _eq(after_.cap, before_.cap, "cap");
         _eq(after_.harvestShare, before_.harvestShare, "harvestShare");
         _eq(after_.epoch, before_.epoch, "epoch");
 
@@ -175,7 +190,14 @@ abstract contract UpgradeChecker {
      *      Silent when there is no headroom: `quoteMint` reverts at or past the ceiling.
      */
     function _assertPricingMatchesCurve(IAIVault vault) internal view {
-        uint256 headroom = vault.remainingCap();
+        uint256 headroom;
+        // Silent, too, while the curve in force cannot say where it ends: there is no price
+        // to compare, and the rehearsal must not die on the state it is rehearsing out of.
+        try vault.remainingCap() returns (uint256 h) {
+            headroom = h;
+        } catch {
+            return;
+        }
         if (headroom == 0) return;
         uint256 probe = headroom < 1e18 ? headroom : 1e18;
         (uint256 quoted,) = vault.quoteMint(probe);

@@ -83,9 +83,9 @@ supply the table does not price is a supply nobody has decided a price for. `bas
 `target` are provenance on the curve, recording how the table was derived, and enforce nothing.
 
 Governance can also replace the whole curve — the linear curve, `LinearMintCurve`, is still
-deployable from the same record, and its ceiling is its anchor. Neither reaches anything already
-minted — see below — but it does mean no figure on this page is a permanent bound. Read them from the
-chain rather than hard-coding them.
+deployable from the same record, and its ceiling is its anchor. Neither a swap nor the ceiling it
+brings reaches anything already minted — see below — but it does mean no figure on this page is a
+permanent bound. Read them from the chain rather than hard-coding them.
 
 ### Replacing the curve, and with it the ceiling
 
@@ -101,6 +101,11 @@ and redemption, staking and the harvest sweep all carry on untouched. It needs n
 deliberately does not refuse such a curve. Note that `harvest` is gated by `pause`, not by the
 ceiling, so a narrower curve is not a wind-down switch on its own — and `pause()` is not one either
 while anybody holds `PAUSE_EXEMPT_MINTER_ROLE`. A full stop is `pause()` plus revoking that role.
+
+One consequence of the ceiling living in the curve: a curve that starts reverting takes `cap()`,
+`remainingCap()` and every quote down with it, so `run.sh status` and `run.sh check` fail until it
+is swapped out. That is a broken curve, not a broken vault — redemption never consults the curve
+and keeps working, and `setCurve` never reads the outgoing curve, so the exit is always open.
 
 ### How the yield is split
 

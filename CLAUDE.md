@@ -111,6 +111,13 @@ reason to move the curve. What `setCurve` does check of the incoming curve is on
 `maxSafeSupply()` at all, so a contract that cannot is refused now rather than discovered on the
 first mint. Its value is not judged.
 
+What was given up with it: a curve that starts reverting *after* installation now takes `cap()`,
+`remainingCap()`, every quote, `run.sh status` and `run.sh check` down with it, where `setCap(0)`
+used to keep them readable. `burn` never touches the curve and `setCurve` never reads the outgoing
+one, so redemption and the exit are unaffected; the upgrade rehearsal records the ceiling as
+unavailable rather than failing (`test_SnapshotsABrokenCurveAsAnUnavailableCeiling`). An operator
+seeing `status` revert should read it as "the curve is broken, swap it", not as a vault failure.
+
 Note what burn-only does **not** stop: `harvest` is gated by `pause`, not by the ceiling, so a
 narrower curve closes issuance while the sweep keeps running. Neither switch is a wind-down on its
 own, and they fail in opposite directions: a narrower curve leaves the sweep running, and `pause()`
@@ -314,8 +321,9 @@ Three layers, all required to stay green:
   step so a mismatch names the operation that caused it. Coverage counters are asserted at the end,
   so a run that degenerates into no-ops fails instead of passing vacuously.
 
-  Pausing, curve swaps (which are also how the ceiling moves, and two in five of which put it
-  below the live supply), changes of the harvest share and rejected operations are all part of the
+  Pausing, curve swaps (which are also how the ceiling moves; two in five draws try to put it
+  below the live supply, and about one in five swaps actually does, since a draw needs a supply
+  to be below), changes of the harvest share and rejected operations are all part of the
   operation mix. That makes "redemption is never gated" a property held across the whole run rather
   than one assertion, against both switches: a 10k-operation run redeems ~975 times while paused and
   ~390 times with the ceiling below the live supply. It also checks **which** error each guard
@@ -610,15 +618,15 @@ Decisions, not oversights. They are recorded here so nobody has to rediscover th
 change that quietly "fixes" one gets discussed rather than merged.
 
 **R1 — the a0G oracle's write key can drain the vault.** Upstream `setValue` has no bounds, no
-monotonicity requirement, no rate limit and no timelock. Set the rate absurdly high, mint to the cap
-for dust, restore it, redeem: the collateral is gone. iAI does not defend against this, because the
+monotonicity requirement, no rate limit and no timelock. Set the rate absurdly high, mint to the
+ceiling for dust, restore it, redeem: the collateral is gone. iAI does not defend against this, because the
 root cause is the combination of yield-bearing collateral and recording curve value rather than
 deposited tokens — both deliberate. **Operational requirement:** monitor the oracle's `ValueSet`
 events and, on any move outside the expected daily band, `pause()` **and** revoke
 `PAUSE_EXEMPT_MINTER_ROLE` if anyone holds it (R10) — the second is part of the response, not a
 follow-up to it. `pause()` stops minting but not redemption, so the window between alert and human
-response is the exposure. Note the cap is not a
-bound on this: it is adjustable upward, so "mint to the cap" is not a fixed quantity of damage.
+response is the exposure. Note the ceiling is not a bound on this: it is the curve's, and a swap
+raises it, so "mint to the ceiling" is not a fixed quantity of damage.
 
 **R2 — a mint and an immediate full burn costs at most 1 wei, and at a harvest share of zero
 costs nothing at all** (the share-denominated half comes back exactly as deposited). Round-trips are effectively free, so a large

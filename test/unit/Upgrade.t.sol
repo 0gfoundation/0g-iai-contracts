@@ -4,6 +4,7 @@ pragma solidity 0.8.25;
 import {BaseTest} from "../Base.t.sol";
 import {LinearMintCurve} from "../../src/curves/LinearMintCurve.sol";
 import {IMintCurve} from "../../src/interfaces/IMintCurve.sol";
+import {MutableCeilingCurve, BreakableCurve} from "./mocks/StubCurves.sol";
 import {UpgradeChecker} from "../../script/deploy/UpgradeChecker.sol";
 import {IAI} from "../../src/IAI.sol";
 import {IAIVault} from "../../src/IAIVault.sol";
@@ -113,6 +114,39 @@ contract UpgradeTest is BaseTest, UpgradeChecker {
         Snapshot memory after_ = _snap();
         vm.expectRevert(bytes("changed across upgrade: curve"));
         this.assertUnchangedExternal(before_, after_);
+    }
+
+    /// @dev The ceiling is derived from the curve, and the snapshot compares it anyway: a curve
+    ///      behind a proxy can change what it reports without the vault's `curve()` moving, and
+    ///      so can an upgrade that broke `_cap`. Neither shows up in the address.
+    function test_CatchesACeilingThatMovedUnderTheSameCurveAddress() public {
+        MutableCeilingCurve movable = new MutableCeilingCurve(CAP);
+        vault.setCurve(IMintCurve(address(movable)));
+        Snapshot memory before_ = _snap();
+        assertTrue(before_.ceilingAvailable);
+        assertEq(before_.cap, CAP);
+
+        movable.setTop(CAP / 2);
+
+        Snapshot memory after_ = _snap();
+        assertEq(after_.curve, before_.curve, "the address did not move");
+        vm.expectRevert(bytes("changed across upgrade: cap"));
+        this.assertUnchangedExternal(before_, after_);
+    }
+
+    /// @dev A rehearsal has to be runnable from the state it is rehearsing out of, and a curve
+    ///      that reverts is one of those states: `cap()` reverts with it, so the snapshot records
+    ///      the ceiling as unavailable instead of failing, and compares cleanly against itself.
+    function test_SnapshotsABrokenCurveAsAnUnavailableCeiling() public {
+        BreakableCurve curve = new BreakableCurve();
+        vault.setCurve(IMintCurve(address(curve)));
+        curve.breakIt();
+
+        Snapshot memory before_ = _snap();
+        assertFalse(before_.ceilingAvailable, "no ceiling to read");
+        assertFalse(before_.quotesAvailable, "and so no quotes");
+        _assertPricingMatchesCurve(vault); // must not revert
+        _assertUnchanged(before_, _snap());
     }
 
     /// @dev Balances are the other half: a layout shift that strands a position must be caught.

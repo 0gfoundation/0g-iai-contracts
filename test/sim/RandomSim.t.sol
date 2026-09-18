@@ -426,8 +426,9 @@ contract RandomSimTest is BaseTest {
      *      vault's and the curve's arithmetic, not the table's provenance -- and its prices
      *      sit in the production range so the amounts involved are realistic.
      *
-     *      The ceiling is the curve's, so this is also the operation that moves it. Roughly
-     *      two in five swaps install a curve whose top is below the current supply, which is
+     *      The ceiling is the curve's, so this is also the operation that moves it. Two in
+     *      five draws try to install a curve whose top is below the current supply -- about one
+     *      swap in five actually does, since the draw needs a supply to be below -- which is
      *      the burn-only mode: `mint` refuses, everything else carries on. Sampling it this
      *      often is the point -- it is a state the system is expected to sit in during an
      *      emergency, so thousands of operations run from inside it rather than one test
