@@ -170,6 +170,34 @@ contract ExponentialMintCurveTest is CurveConformanceTest {
         assertEq(curve.cost(TOP - 1, 1), 1_015_745, "the last wei of the table is priceable");
     }
 
+    /// @dev Past the top the two pricing functions answer in different shapes on purpose, and
+    ///      neither answer is a statement about where the table ends: `quoteForValue` returns
+    ///      the same zero it gives a budget that buys nothing. `maxSafeSupply` is the only
+    ///      thing that tells a caller the edge, which is what the interface now says.
+    function test_PastTheTop_TheTwoFunctionsDisagreeByDesign() public {
+        vm.expectRevert(abi.encodeWithSelector(ExponentialMintCurve.SupplyOutOfDomain.selector, TOP + 1e18 + 1, TOP));
+        curve.cost(TOP + 1e18, 1);
+
+        assertEq(curve.quoteForValue(TOP + 1e18, 1e30), 0, "off the table reads as zero");
+        assertEq(curve.quoteForValue(0, 0), 0, "and so does an empty budget on it");
+        assertEq(curve.maxSafeSupply(), TOP, "only this separates the two");
+    }
+
+    /// @dev `priceAt` is a helper for charts and the deployment checker, so an index past the
+    ///      table is a caller's mistake rather than a state the vault can reach. It still
+    ///      names the size it was measured against instead of leaving the array to panic.
+    function test_PriceAt_RevertsPastTheTable() public {
+        assertEq(curve.priceAt(COUNT - 1), P586, "the last bucket reads");
+
+        vm.expectRevert(abi.encodeWithSelector(ExponentialMintCurve.BucketOutOfRange.selector, COUNT, COUNT));
+        curve.priceAt(COUNT);
+
+        vm.expectRevert(
+            abi.encodeWithSelector(ExponentialMintCurve.BucketOutOfRange.selector, type(uint256).max, COUNT)
+        );
+        curve.priceAt(type(uint256).max);
+    }
+
     // --- the inverse ---
 
     /// @dev Inside a flat bucket the inverse is exact integer division, so a quote is not just

@@ -4,6 +4,29 @@ pragma solidity 0.8.25;
 import {IMintCurve} from "../../../src/interfaces/IMintCurve.sol";
 
 /**
+ * @title FreeCurve
+ * @notice A curve that sells iAI for nothing.
+ *
+ * @dev The vault has to refuse it at `mint`, and price nothing against it at `quoteMint`,
+ *      because a curve is an external contract and its return value is not something to be
+ *      trusted. Property 2 of `IMintCurve` forbids this, which is exactly why a stub is
+ *      needed to reach the guard.
+ */
+contract FreeCurve is IMintCurve {
+    function cost(uint256, uint256) external pure returns (uint256) {
+        return 0;
+    }
+
+    function quoteForValue(uint256, uint256) external pure returns (uint256) {
+        return type(uint128).max;
+    }
+
+    function maxSafeSupply() external pure returns (uint256) {
+        return 2 ** 127;
+    }
+}
+
+/**
  * @title NarrowCurve
  * @notice A curve that prices one 0G per iAI and declares whatever ceiling it is given.
  *

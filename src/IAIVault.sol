@@ -534,14 +534,19 @@ contract IAIVault is IIAIVault, AccessControlUpgradeable, PausableUpgradeable, R
 
     /// @inheritdoc IIAIVault
     function quoteMint(uint256 d) external view returns (uint256 delta0G, uint256 a0GIn) {
+        // Fails exactly where `mint` would, with the same errors and in the same order, so a
+        // caller cannot be handed a price for an amount that can never be issued. The
+        // zero-cost case is unreachable with a curve that honours the interface, and is
+        // mirrored here anyway: `mint` refuses it, so a quote must not display it.
+        if (d == 0) revert ZeroAmount();
+
         VaultStorage storage $ = _s();
         uint256 s = $.iai.totalSupply();
-        // Fails exactly where `mint` would, with the same error, so a caller cannot be handed
-        // a price for an amount that can never be issued.
         uint256 supplyAfter = s + d;
         uint256 cap_ = _cap($);
         if (supplyAfter > cap_) revert CapExceeded(supplyAfter, cap_);
         delta0G = $.curve.cost(s, d);
+        if (delta0G == 0) revert ZeroAmount();
         a0GIn = Math.mulDiv(delta0G, WAD, $.oracle.getValue(), Math.Rounding.Ceil);
     }
 

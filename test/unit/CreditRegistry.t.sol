@@ -2,7 +2,10 @@
 pragma solidity 0.8.25;
 
 import {BaseTest} from "../Base.t.sol";
+import {CreditRegistry} from "../../src/CreditRegistry.sol";
 import {ICreditRegistry} from "../../src/interfaces/ICreditRegistry.sol";
+import {BeaconProxy} from "@openzeppelin/contracts/proxy/beacon/BeaconProxy.sol";
+import {UpgradeableBeacon} from "@openzeppelin/contracts/proxy/beacon/UpgradeableBeacon.sol";
 import {IAccessControl} from "@openzeppelin/contracts/access/IAccessControl.sol";
 import {PausableUpgradeable} from "@openzeppelin/contracts-upgradeable/utils/PausableUpgradeable.sol";
 
@@ -228,9 +231,31 @@ contract CreditRegistryTest is BaseTest {
         assertEq(registry.cooldownDuration(), 1 hours);
     }
 
+    /// @dev Zero is the one duration that defeats the delay outright -- stake, initiate and
+    ///      unstake would all succeed in one transaction -- so it is refused where it enters
+    ///      and a deployment cannot ship it. Nothing else is bounded here: how long the wait
+    ///      should be is governance's to set, and the role sits behind a timelock.
+    function test_Initialize_RejectsAZeroCooldown() public {
+        // The beacon must exist before expectRevert, or the cheatcode latches onto its
+        // construction instead of the proxy's initializer call.
+        address beacon = address(new UpgradeableBeacon(address(new CreditRegistry()), admin));
+
+        vm.expectRevert(ICreditRegistry.ZeroCooldown.selector);
+        new BeaconProxy(beacon, abi.encodeCall(CreditRegistry.initialize, (address(iai), 0)));
+
+        BeaconProxy shortest = new BeaconProxy(beacon, abi.encodeCall(CreditRegistry.initialize, (address(iai), 1)));
+        assertEq(CreditRegistry(address(shortest)).cooldownDuration(), 1, "one second is the contract's floor");
+    }
+
+    function test_SetCooldownDuration_RejectsZero() public {
+        vm.expectRevert(ICreditRegistry.ZeroCooldown.selector);
+        registry.setCooldownDuration(0);
+        assertEq(registry.cooldownDuration(), COOLDOWN, "and the duration in force is untouched");
+    }
+
     /// @dev A withdrawal already in flight keeps the end time it was given, so a governance
-    ///      change cannot retroactively extend someone's wait.
-    function test_SetCooldownDuration_DoesNotAffectInFlightWithdrawals() public {
+    ///      change cannot retroactively extend the wait of someone who leaves it alone.
+    function test_SetCooldownDuration_LeavesAnUntouchedWithdrawalAlone() public {
         vm.prank(alice);
         registry.stake(STAKE);
         vm.prank(alice);
@@ -244,6 +269,30 @@ contract CreditRegistryTest is BaseTest {
         vm.prank(alice);
         registry.unstake();
         assertEq(iai.balanceOf(alice), 100e18);
+    }
+
+    /// @dev The other half of that rule, and the reason the interface states it: a change
+    ///      does reach a withdrawal in flight the moment its owner calls `initiateUnstake`
+    ///      again, because that restarts the clock on the whole pending balance at whatever
+    ///      duration is in force then. A wei still staked is enough to do it. The effect only
+    ///      ever grants the owner the wait a fresh withdrawal would get, so nothing is gained
+    ///      by it -- but an already emitted `coolDownEnd` is not a promise they cannot revise.
+    function test_SetCooldownDuration_AShorterOneReachesAWithdrawalItsOwnerReInitiates() public {
+        vm.prank(alice);
+        registry.stake(STAKE);
+        vm.prank(alice);
+        registry.initiateUnstake(STAKE - 1);
+        uint256 longEnd = registry.stakedInfoOf(alice).coolDownEnd;
+
+        registry.setCooldownDuration(1 hours);
+
+        vm.prank(alice);
+        registry.initiateUnstake(1);
+
+        ICreditRegistry.StakedInfo memory info = registry.stakedInfoOf(alice);
+        assertEq(info.coolDownEnd, block.timestamp + 1 hours, "the whole pending balance moves to the new clock");
+        assertLt(info.coolDownEnd, longEnd, "including the part that was already in flight");
+        assertEq(info.coolDownAmount, STAKE, "and all of it is still pending");
     }
 
     // -------------------------------------------------------------------------

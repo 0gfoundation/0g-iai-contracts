@@ -8,7 +8,7 @@ import {IMintCurve} from "../../src/interfaces/IMintCurve.sol";
 import {LinearMintCurve} from "../../src/curves/LinearMintCurve.sol";
 import {ExponentialMintCurve} from "../../src/curves/ExponentialMintCurve.sol";
 import {ExponentialTable} from "./curves/ExponentialTable.sol";
-import {NarrowCurve} from "./mocks/StubCurves.sol";
+import {FreeCurve, NarrowCurve} from "./mocks/StubCurves.sol";
 import {IAccessControl} from "@openzeppelin/contracts/access/IAccessControl.sol";
 
 /// @dev A curve that reverts on every call, for the recovery test. The point of `setCurve`
@@ -20,22 +20,6 @@ contract BrokenCurve is IMintCurve {
 
     function quoteForValue(uint256, uint256) external pure returns (uint256) {
         revert("broken");
-    }
-
-    function maxSafeSupply() external pure returns (uint256) {
-        return 2 ** 127;
-    }
-}
-
-/// @dev A curve that sells iAI for nothing. The vault has to refuse it at `mint`, because a
-///      curve is an external contract and its return value is not something to be trusted.
-contract FreeCurve is IMintCurve {
-    function cost(uint256, uint256) external pure returns (uint256) {
-        return 0;
-    }
-
-    function quoteForValue(uint256, uint256) external pure returns (uint256) {
-        return type(uint128).max;
     }
 
     function maxSafeSupply() external pure returns (uint256) {

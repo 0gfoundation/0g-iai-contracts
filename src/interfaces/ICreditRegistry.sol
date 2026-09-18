@@ -25,6 +25,7 @@ interface ICreditRegistry {
     error InsufficientStake(uint256 requested, uint256 staked);
     error NothingInCooldown();
     error CooldownNotOver(uint256 coolDownEnd, uint256 nowTs);
+    error ZeroCooldown();
 
     /// @dev Post-state is carried on every event so an indexer can rebuild the staking set
     ///      from logs alone and detect a missed event by checking the running total.
@@ -62,8 +63,12 @@ interface ICreditRegistry {
 
     /**
      * @notice Changes the withdrawal delay. `DEFAULT_ADMIN_ROLE`.
-     * @param newDuration New delay in seconds. Applies to withdrawals started after this
-     *                    call; those already in flight keep the end time they were given.
+     * @param newDuration New delay in seconds. Must be non-zero. It applies to every
+     *                    withdrawal started after this call, and to a withdrawal already in
+     *                    flight the moment its owner calls `initiateUnstake` again -- that
+     *                    restarts the clock on the whole pending balance at the duration in
+     *                    force then, so a `coolDownEnd` already emitted is not a promise the
+     *                    owner cannot revise.
      */
     function setCooldownDuration(uint256 newDuration) external;
 

@@ -41,6 +41,11 @@ pragma solidity 0.8.25;
  * 5. A quote is affordable: `cost(s, quoteForValue(s, d)) <= d`. This is a genuine
  *    cross-check between the two functions rather than a curve grading its own work.
  * 6. No arithmetic reverts anywhere in `[0, maxSafeSupply()]`.
+ * 7. Outside that range a curve owes no answer, and the two functions need not fail alike:
+ *    `cost` may revert where `quoteForValue` returns zero, which is also what it returns for
+ *    a budget that buys nothing. Neither return value distinguishes "nothing is available
+ *    here" from "this supply is off the curve", so a caller that needs the edge reads
+ *    `maxSafeSupply()` -- the only authoritative answer -- rather than inferring it.
  */
 interface IMintCurve {
     /**

@@ -186,6 +186,11 @@ do. That is deliberate: a quote that answered anyway would hand you a number the
 moment later. Validate the input against `remainingCap()` and `positionOf().iaiOutstanding`
 before quoting, or catch the error and treat it as "too much".
 
+**That includes zero.** `quoteMint(0)` reverts with `ZeroAmount`, because `mint(0)` does. An empty
+or cleared input box is not a quote request: skip the call and show nothing. `quoteMintForA0G(0)`
+is the exception and answers `0` — it was asked what a budget buys, and "nothing" is a true answer
+to that — so do not feed its result into `mint` without checking it first.
+
 **The reverse direction.** If your UI has a "spend all my a0G" button:
 
 ```solidity
@@ -544,7 +549,7 @@ this for you.
 | `0xfa07c026` | `CooldownNotOver(availableAt, nowTs)` | `unstake()` called before the cooldown elapsed. | `availableAt` is `coolDownEnd`, a Unix timestamp in seconds; it is also readable up front from `stakedInfoOf`. |
 | `0x2aab8ce8` | `NothingInCooldown()` | `unstake()` with nothing pending. | The user must call `initiateUnstake` first. |
 | `0x45be0a26` | `InsufficientStake(requested, staked)` | Withdrawing more than is staked. | Cap the input at `stakedOf`. |
-| `0x1f2a2005` | `ZeroAmount()` | An amount of zero. | Validate before sending. |
+| `0x1f2a2005` | `ZeroAmount()` | An amount of zero. `quoteMint(0)` raises it too, so an empty input box must not be quoted. | Validate before quoting and before sending. |
 | `0xf480e285` | `CapExceeded(supplyAfter, cap)` | The mint — or the quote for it — would exceed the supply limit. | Cap the input at `remainingCap()`. `quoteMint` raises this too, so it surfaces while typing rather than on submit. When `remainingCap()` is `0` there is no amount that works — minting is closed; see §"When minting is closed". |
 
 ### Errors that mean the system is closed, not the user
@@ -589,7 +594,7 @@ requested from the contracts team. It is not in this repository.
 
 ```solidity
 // ---- read (free, no wallet prompt) ----
-IAIVault.quoteMint(uint256 d)                    -> (uint256 delta0G, uint256 a0GIn)   // reverts past the ceiling
+IAIVault.quoteMint(uint256 d)                    -> (uint256 delta0G, uint256 a0GIn)   // reverts on zero and past the ceiling
 IAIVault.quoteMintForA0G(uint256 a0GAmount)      -> (uint256 d)                        // clamps at the ceiling
 IAIVault.quoteBurn(address minter, uint256 b)    -> (uint256 unlocked0G, uint256 a0GOut) // reverts past the position
 IAIVault.positionOf(address account)             -> (uint256 locked0G, uint256 iaiOutstanding, uint256 avgRate)  // ARRAY

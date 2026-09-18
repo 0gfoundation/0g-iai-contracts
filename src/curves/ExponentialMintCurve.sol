@@ -30,6 +30,12 @@ import {IMintCurve} from "../interfaces/IMintCurve.sol";
  *      is configured by the table it is given, and the record beside the deployment says how
  *      long that table was made.
  *
+ *      **Past the top the two pricing functions answer in different shapes, deliberately.**
+ *      `cost` reverts with `SupplyOutOfDomain`, because a price nobody has decided is not a
+ *      number to hand back; `quoteForValue` returns zero, which is also what it answers a
+ *      budget too small to buy a wei. Neither return value is a statement about the domain,
+ *      and a caller that needs the edge reads `maxSafeSupply()`.
+ *
  *      **The table is storage, written once in the constructor, and nothing can write it
  *      again.** There is no setter, no owner and no proxy. That is the same immutability
  *      `LinearMintCurve` gets from `immutable` fields -- Solidity has no immutable arrays --
@@ -98,6 +104,8 @@ contract ExponentialMintCurve is IMintCurve {
     error TargetBeyondTable(uint256 target, uint256 top);
     /// @notice The requested slice ends past the last bucket.
     error SupplyOutOfDomain(uint256 supplyAfter, uint256 top);
+    /// @notice The requested bucket lies past the last one in the table.
+    error BucketOutOfRange(uint256 index, uint256 bucketCount);
 
     /**
      * @param bucketWidth_ Width of every bucket, in wei-iAI.
@@ -190,6 +198,9 @@ contract ExponentialMintCurve is IMintCurve {
     function priceAt(
         uint256 index
     ) external view returns (uint256) {
+        // Checked rather than left to the array: an out-of-range read is a caller's mistake,
+        // and a bare panic tells them neither the table's size nor the value it rejected.
+        if (index >= bucketCount) revert BucketOutOfRange(index, bucketCount);
         return _prices[index];
     }
 
