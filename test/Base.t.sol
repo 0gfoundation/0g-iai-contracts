@@ -201,7 +201,7 @@ abstract contract BaseTest is Test, IAIDeployer {
     /**
      * @notice Advances the clock by `by` seconds.
      *
-     * @dev Use this rather than `_warp(by)`. Under `via_ir` the compiler
+     * @dev Use this rather than `vm.warp` of a timestamp read inline. Under `via_ir` the compiler
      *      reads `TIMESTAMP` once per function and reuses the value across the cheatcode
      *      calls between, so a second warp written that way targets the same moment as the
      *      first and the clock silently stops advancing -- no revert, no warning, just a test

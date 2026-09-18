@@ -243,26 +243,107 @@ contract EpochMathTest is Test {
         assertApproxEqAbs(afterwards, before, tol, "a change may not destroy value");
     }
 
-    /// @dev Once settled, the minter captures `1 - share` of every further increment.
-    ///
-    ///      Stated in shares rather than as a ratio. The position's value moves by
-    ///      `claimA0G * d(rate)` while its whole backing moves by `payout * d(rate)`, so the
-    ///      slice captured is `claimA0G / payout` -- but dividing two floored share counts
-    ///      magnifies a one-unit loss into whatever `WAD / payout` happens to be. Comparing
-    ///      `claimA0G` against its share of the backing keeps the error at the few units the
-    ///      flooring actually costs, whatever the rate.
-    function testFuzz_MarginalCaptureIsOneMinusShare(uint256 value, uint256 rateSeed, uint256 shareSeed) public pure {
-        value = bound(value, 1e18, 1e26);
+    /// @dev What `split` promises: the minter keeps `1 - share` of the appreciation of the a0G
+    ///      they actually deposited, for as long as the split stands.
+    function testFuzz_SplitKeepsOneMinusShareOfTheDeposit(uint256 deposit, uint256 rateSeed, uint256 shareSeed)
+        public
+        pure
+    {
         uint256 rate = bound(rateSeed, 0.5e18, 1e21);
         uint256 share = bound(shareSeed, 0, WAD);
+        uint256 a0GIn = bound(deposit, 1e15, 1e26);
+        uint256 delta0G = Math.mulDiv(a0GIn, rate, WAD);
+        vm.assume(delta0G != 0);
 
-        uint256 claim0G = Math.mulDiv(value, share, WAD);
-        uint256 claimA0G = Math.mulDiv(value, WAD - share, rate);
-        uint256 backing = EpochMath.payout(claim0G, claimA0G, rate);
+        (uint256 c, uint256 a) = EpochMath.split(delta0G, a0GIn, share);
 
+        uint256 higher = rate + rate / 10;
+        uint256 toHolder = EpochMath.value0G(c, a, higher) - EpochMath.value0G(c, a, rate);
+        uint256 expected = Math.mulDiv(Math.mulDiv(a0GIn, higher - rate, WAD), WAD - share, WAD);
+
+        // Absolute, not relative. `split` floors the share-denominated half, and one share is
+        // worth `(higher - rate) / WAD` in 0G -- an error that is fixed in size and so becomes
+        // arbitrarily large *relative* to the slice as the share approaches one.
         assertApproxEqAbs(
-            claimA0G, Math.mulDiv(backing, WAD - share, WAD), 4, "minter's slice of the next increment"
+            toHolder, expected, 2 * ((higher - rate) / WAD) + 4, "the minter's slice of the deposit's gain"
         );
+    }
+
+    /**
+     * @dev What `sync` promises, and the reason this is worth a test of its own: a settled
+     *      position must come out in the canonical ratio for the epoch now in force, so that
+     *      from here it captures `1 - share` of the gain on *its own* redeemable backing.
+     *
+     *      Deliberately measured against `sync`'s output rather than against a position this
+     *      test built. Constructing `claimA0G = value * (1 - share) / rate` and then asserting
+     *      `claimA0G ~= backing * (1 - share)` reduces to an identity of the test's own
+     *      arithmetic -- the assertion this one replaces did exactly that and could not have
+     *      failed. `sync` arrives at its answer through the running product from an unrelated
+     *      starting point, so the same comparison against its result says something.
+     */
+    function testFuzz_SettlementRestoresTheCanonicalCapture(
+        uint256 claim0G,
+        uint256 claimA0G,
+        uint256 seed,
+        uint8 countSeed,
+        uint8 fromSeed
+    ) public pure {
+        claim0G = bound(claim0G, 1e15, 1e26);
+        claimA0G = bound(claimA0G, 1e15, 1e26);
+        uint256 count = bound(countSeed, 2, 40);
+        EpochMath.Epoch[] memory eps = _randomChain(seed, count);
+        uint256 from = bound(fromSeed, 0, count - 2);
+
+        (uint256 c, uint256 a) = _oneShot(claim0G, claimA0G, eps, from);
+
+        uint256 rate = eps[count - 1].rate;
+        uint256 share = eps[count - 1].share;
+        uint256 backing = EpochMath.payout(c, a, rate);
+
+        uint256 higher = rate + rate / 10;
+        uint256 toHolder = EpochMath.value0G(c, a, higher) - EpochMath.value0G(c, a, rate);
+        uint256 expected = Math.mulDiv(Math.mulDiv(backing, higher - rate, WAD), WAD - share, WAD);
+        assertApproxEqAbs(toHolder, expected, 2 * ((higher - rate) / WAD) + 4, "capture after settling");
+    }
+
+    /**
+     * @dev The property that keeps the vault's `totalClaim0G -= unlocked0G` from underflowing.
+     *      The totals are restated once per change and rounded up; each position is restated
+     *      separately and rounded down. Linearity says the two agree before rounding, so the
+     *      totals must dominate -- but only if every rounding goes the way it is supposed to,
+     *      which is what this checks over arbitrary chains.
+     */
+    function testFuzz_TotalsCoverThePositionsTheyStandFor(uint256 seed, uint8 countSeed) public pure {
+        uint256 count = bound(countSeed, 2, 25);
+        EpochMath.Epoch[] memory eps = _randomChain(seed, count);
+
+        uint256[8] memory c;
+        uint256[8] memory a;
+        uint256 t0;
+        uint256 tA;
+        for (uint256 k = 0; k < 8; k++) {
+            c[k] = uint256(keccak256(abi.encode(seed, "c", k))) % 1e26;
+            a[k] = uint256(keccak256(abi.encode(seed, "a", k))) % 1e26;
+            t0 += c[k];
+            tA += a[k];
+        }
+
+        // Walk the chain, restating the totals the way the vault does -- once, in place.
+        for (uint256 i = 1; i < count; i++) {
+            (t0, tA) = EpochMath.resplitTotals(t0, tA, eps[i].rate, eps[i].share);
+        }
+
+        // And each position the way a settlement does, in one step from where it started.
+        uint256 sum0;
+        uint256 sumA;
+        for (uint256 k = 0; k < 8; k++) {
+            (uint256 ck, uint256 ak) = EpochMath.sync(c[k], a[k], eps[1], eps[count - 1]);
+            sum0 += ck;
+            sumA += ak;
+        }
+
+        assertLe(sum0, t0, "the totals must cover the 0G halves");
+        assertLe(sumA, tA, "the totals must cover the a0G halves");
     }
 
     // -------------------------------------------------------------------------

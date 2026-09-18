@@ -110,30 +110,49 @@ contract HarvestShareTest is BaseTest {
         assertLe(bobOutAfter, bobOutBefore, "never more");
     }
 
-    /// @dev The point of restating rather than accruing: repeating the change, or making it at
-    ///      a different moment, cannot be used to shift value. Two vaults, same history, one
-    ///      changed early and often, the other once at the end.
-    function test_Change_RepeatedChangesDoNotShiftValue() public {
-        _mintFor(alice, 20e18);
+    /**
+     * @dev Re-issuing the *same* share is not a no-op going forward, and this pins the
+     *      direction rather than claiming it away.
+     *
+     *      Within an epoch the minter keeps `1 - share` of the appreciation of the a0G they
+     *      deposited. A change re-bases that onto the position's current value -- smaller,
+     *      because the foundation has already taken its part -- and turns the foundation's
+     *      accrued part into shares that compound for it. So each change moves a little future
+     *      yield to the foundation, even one that changes nothing.
+     *
+     *      Admin-only, always in the foundation's favour, unreachable by a user, and bounded
+     *      by how often governance acts. Removing it would need each position's original
+     *      deposit kept as a third figure and a 0G half allowed to go negative, which two
+     *      unsigned buckets cannot express. It is recorded here so that a future change which
+     *      quietly reverses or worsens it has to argue with a failing test.
+     */
+    function test_Change_ReissuingTheSameShareRatchetsTowardTheFoundation() public {
+        uint256 none = _holdTwoYears(0);
+        uint256 once = _holdTwoYears(1);
+        uint256 often = _holdTwoYears(24);
 
-        for (uint256 i = 0; i < 12; i++) {
-            _warp(10 days);
-            _setShare(i % 2 == 0 ? 0.9e18 : 0.1e18);
+        assertLt(once, none, "one same-share change costs the minter");
+        assertLt(often, once, "and more changes cost more");
+
+        // Small, and not a rounding artefact: tenths of a percent over two years.
+        assertGt(none - often, none / 1_000, "the effect is real");
+        assertLt(none - often, none / 50, "and stays small");
+    }
+
+    /// @dev Mints, spreads `changes` same-share changes across two years, and reports what the
+    ///      position is worth at the end. Each call runs in its own test-state snapshot.
+    function _holdTwoYears(uint256 changes) internal returns (uint256 value) {
+        uint256 snapshot = vm.snapshotState();
+        _mintFor(alice, 100e18);
+        uint256 step = 730 days / (changes + 1);
+        for (uint256 i = 0; i < changes; i++) {
+            _warp(step);
+            _setShare(HARVEST_SHARE);
         }
-        _setShare(HARVEST_SHARE);
-
-        // Whatever the churn, the vault still covers everyone and the two sides still add up.
+        _warp(730 days - step * changes);
+        (value,,) = vault.positionOf(alice);
         _assertSolvent();
-        (, uint256 out) = vault.quoteBurn(alice, 20e18);
-        assertGt(out, 0, "the position survives the churn");
-
-        vm.prank(alice);
-        vault.burn(20e18, block.timestamp);
-
-        // Not exactly zero: the totals are restated rounded up at every change while the
-        // position is rounded down, so an emptied vault keeps the few wei of that ceiling.
-        // They are claimable by nobody and leave as surplus.
-        assertLe(vault.totalClaim0G(), 4 * (vault.currentEpoch() + 1), "only the ceiling's dust is left");
+        vm.revertToState(snapshot);
     }
 
     /// @dev Prospective in time: appreciation earned under the old split keeps it, and only
@@ -220,6 +239,12 @@ contract HarvestShareTest is BaseTest {
         _warp(10 days);
         _setShare(0.6e18);
 
+        // Cooled, so each measurement pays for its own cold storage the way a real
+        // transaction would. Measured warm, both readings sit inside one Foundry transaction
+        // and every epoch entry after the first is already paid for -- the two come out within
+        // a few hundred gas of each other whatever the implementation does, so the assertion
+        // would pass even for a loop over every missed change.
+        vm.cool(address(vault));
         uint256 gasBefore = gasleft();
         vault.positionClaims(alice);
         uint256 oneChange = gasBefore - gasleft();
@@ -229,12 +254,14 @@ contract HarvestShareTest is BaseTest {
             _setShare(0.4e18 + (i % 3) * 0.1e18);
         }
 
+        vm.cool(address(vault));
         gasBefore = gasleft();
         vault.positionClaims(bob);
         uint256 manyChanges = gasBefore - gasleft();
 
-        // Same two epoch reads either way; only the values differ.
-        assertApproxEqAbs(manyChanges, oneChange, 500, "settling is not paid for per missed change");
+        // Sixty extra changes, and the same two epoch entries are read either way. A loop
+        // would cost about 2.2k gas per missed change, so some 130k more than this allows.
+        assertLt(manyChanges, oneChange + 20_000, "settling is not paid for per missed change");
     }
 
     // -------------------------------------------------------------------------

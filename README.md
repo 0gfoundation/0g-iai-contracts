@@ -120,9 +120,17 @@ harmless, and there is no accrual anyone can advance by poking it.
 outstanding position by value at the current rate: appreciation already earned keeps the split it
 was earned under, and everything after that point uses the new one. Nothing moves at the moment of
 the change — the obligation and every position come out worth what they were worth an instant
-earlier — so there is no advantage in choosing when to make it. Positions are restated lazily,
-whenever each is next touched, and catching up costs the same whether one change was missed or a
-hundred.
+earlier. Positions are restated lazily, whenever each is next touched, and catching up costs the
+same whether one change was missed or a hundred.
+
+**Value-neutral is not the same as forward-neutral.** Within one setting of the split a minter
+keeps `1 - harvestShare` of the appreciation of the a0G they deposited. A change re-bases that onto
+the position's current value, which is smaller because the foundation has already taken its part,
+and turns the foundation's accrued part into shares that compound for it. So re-issuing the *same*
+share still moves a little future yield to the foundation — measurably: a position held two years
+is worth about 0.4% less after twenty-four same-share changes than after none. It is admin-only,
+always in the foundation's direction, and bounded by how often governance acts; it is pinned by
+`test_Change_ReissuingTheSameShareRatchetsTowardTheFoundation` rather than left to be discovered.
 
 Two consequences worth knowing:
 

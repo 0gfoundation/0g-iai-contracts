@@ -102,9 +102,11 @@ contract IAIVaultTest is BaseTest {
         assertApproxEqAbs(avgRate, delta0G, _mintDust(1), "average entry rate for a single 1-iAI mint");
     }
 
+    /// @dev The 0G-denominated half of a claim comes from the curve, never from the a0G that
+    ///      happened to buy it. (Its other half *is* denominated in a0G -- deliberately, that
+    ///      is what leaves the minter their share of the appreciation -- but that half is
+    ///      `a0GIn` scaled by the split, not a substitute for the curve's price.)
     function test_Mint_RecordsCurveValueNotA0GAmount() public {
-        // The position must be denominated in 0G value. Recording the a0G amount instead
-        // would make a position's worth depend on the rate at the moment it was opened.
         uint256 d = 10e18;
         (uint256 delta0G, uint256 a0GIn) = vault.quoteMint(d);
         _mintFor(alice, d);

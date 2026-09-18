@@ -24,9 +24,19 @@ import {Math} from "@openzeppelin/contracts/utils/math/Math.sol";
  *          V(rate) = claim0G + claimA0G * rate
  *
  *      whose derivative in `rate` is `claimA0G`, a constant, while the derivative of the
- *      backing shares' value is the (also constant) number of shares deposited. The minter
- *      therefore captures the same fraction of every increment of appreciation for as long as
- *      the position stands, no matter how far the rate travels or by what path.
+ *      deposited shares' value is the (also constant) number of shares deposited. So for as
+ *      long as the split stands the minter captures the same fraction of every increment,
+ *      however far the rate travels and by whatever path: the two sides divide the gain since
+ *      the mint linearly, and neither compounds on what it has already accrued.
+ *
+ *      **That last part stops holding across a change of split, and the difference is real.**
+ *      A change re-bases the minter's share onto the position's current value rather than the
+ *      deposit, and turns the foundation's accrued part into shares that do compound for it.
+ *      Re-issuing the same share is therefore not a no-op going forward -- it moves a little
+ *      future yield to the foundation each time. Nothing here can prevent that: expressing
+ *      "the new split applies to the original deposit's appreciation" needs the deposit kept
+ *      as a third figure and a 0G half allowed to go negative, which two unsigned buckets
+ *      cannot represent.
  *
  *      **Why a cumulative factor can stand in for replaying every past change.** A change of
  *      split, made at rate `r_i` with new share `s_i`, rewrites every position by value:
@@ -35,9 +45,10 @@ import {Math} from "@openzeppelin/contracts/utils/math/Math.sol";
  *          claim0G'  = s_i * V
  *          claimA0G' = (1 - s_i) * V / r_i
  *
- *      Value is preserved exactly -- `claim0G' + claimA0G' * r_i == V` -- so a change moves
- *      nothing between minter and foundation and confers no advantage on whoever picks the
- *      moment. It only sets how the *next* increment is divided. The foundation's already
+ *      Value is preserved exactly -- `claim0G' + claimA0G' * r_i == V` -- so nothing moves
+ *      between minter and foundation at the moment of the change, whatever rate it is made at.
+ *      It only sets how the *next* increment is divided, and re-bases what that increment is
+ *      measured against; see the note above on why that is not the same as being neutral. The foundation's already
  *      accrued share needs no handling here at all: it is the vault's balance in excess of
  *      what the positions claim, so it is untouched by a rewrite of the positions and goes on
  *      appreciating as shares.
@@ -67,7 +78,7 @@ import {Math} from "@openzeppelin/contracts/utils/math/Math.sol";
  *      **Rates may not go backwards, and that is what keeps `cumG` safe.** Requiring
  *      `r_{i+1} >= r_i` at each change makes `g_i >= 1` by construction, so `cumG` never
  *      decreases from its starting value of one. Since `cumG` appears as a divisor, a value of
- *      zero would brick every position that pointed at or before it -- and `_sync` sits in
+ *      zero would brick every position that pointed at or before it -- and settling sits in
  *      front of redemption, so that would be permanent and unrecoverable. Monotonicity rules
  *      the case out structurally rather than guarding against it, which is why no such guard
  *      appears below. Growth is the only remaining direction, and an overflow there reverts
