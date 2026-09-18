@@ -34,7 +34,6 @@ contract IAIScript is Script, JsonUtils, Constants, IAIDeployer {
             a0G: vm.parseJsonAddress(json, ".A0G"),
             foundation: vm.parseJsonAddress(json, ".Foundation"),
             curveKind: vm.parseJsonString(json, ".MintCurveKind"),
-            cap: vm.parseJsonUint(json, ".Cap"),
             harvestShare: vm.parseJsonUint(json, ".HarvestShare"),
             cooldownDuration: vm.parseJsonUint(json, ".CooldownDuration"),
             name: vm.parseJsonString(json, ".Name"),
@@ -64,10 +63,9 @@ contract IAIScript is Script, JsonUtils, Constants, IAIDeployer {
         vm.serializeAddress(obj, "A0G", c.a0G);
         vm.serializeAddress(obj, "Foundation", c.foundation);
         vm.serializeString(obj, "MintCurveKind", c.curveKind);
-        // `Cap` is echoed because `setCap` rewrites it; the curve's own parameters under
-        // `CurveParams` are never written by any script, and seeding the object from the file
-        // above already carries them through untouched.
-        vm.serializeString(obj, "Cap", vm.toString(c.cap));
+        // The curve's own parameters under `CurveParams` are never written by any script;
+        // seeding the object from the file above already carries them through untouched. There
+        // is no `Cap` to echo: the ceiling is the curve's, read off the chain by `status`.
         vm.serializeString(obj, "HarvestShare", vm.toString(c.harvestShare));
         vm.serializeString(obj, "CooldownDuration", vm.toString(c.cooldownDuration));
         vm.serializeString(obj, "Name", c.name);
@@ -316,28 +314,11 @@ contract IAIScript is Script, JsonUtils, Constants, IAIDeployer {
     }
 
     /**
-     * @notice Moves the supply ceiling. `DEFAULT_ADMIN_ROLE`.
-     * @param newCap New ceiling in wei-iAI. Below the current supply this closes issuance
-     *               while leaving redemption working.
-     */
-    function setCap(uint256 newCap) public {
-        (string memory json, string memory path) = loadOrInitJson("iai");
-        vm.startBroadcast(vm.envUint("PRIVATE_KEY"));
-        IAIVault(vm.parseJsonAddress(json, ".IAIVault")).setCap(newCap);
-        vm.stopBroadcast();
-
-        string memory o = "iai";
-        vm.serializeJson(o, json);
-        vm.writeJson(vm.serializeString(o, "Cap", vm.toString(newCap)), path);
-        console.log("cap            ", newCap);
-    }
-
-    /**
      * @notice Moves the foundation's cut of collateral appreciation. `DEFAULT_ADMIN_ROLE`.
      * @param newShare New cut, WAD. `1e18` sends every wei of appreciation to the foundation,
      *                 zero sends all of it to minters.
      *
-     * @dev Writes the record after the chain, like `setCap`. Nothing about a past cut needs
+     * @dev Writes the record after the chain. Nothing about a past cut needs
      *      recording: the vault keeps its own history, and a position settled under an older
      *      one is restated on chain rather than reconstructed from a file.
      */
@@ -493,7 +474,6 @@ contract IAIScript is Script, JsonUtils, Constants, IAIDeployer {
             a0G: vm.parseJsonAddress(json, ".A0G"),
             foundation: vm.parseJsonAddress(json, ".Foundation"),
             curveKind: vm.parseJsonString(json, ".MintCurveKind"),
-            cap: vm.parseJsonUint(json, ".Cap"),
             harvestShare: vm.parseJsonUint(json, ".HarvestShare"),
             cooldownDuration: vm.parseJsonUint(json, ".CooldownDuration"),
             name: vm.parseJsonString(json, ".Name"),
@@ -564,7 +544,7 @@ contract IAIScript is Script, JsonUtils, Constants, IAIDeployer {
         console.log("network        ", networkName());
         console.log("paused (vault) ", vault.paused());
         console.log("supply         ", token.totalSupply());
-        console.log("cap            ", vault.cap());
+        console.log("cap (curve's)  ", vault.cap());
         console.log("remainingCap   ", vault.remainingCap());
         console.log("curve          ", address(vault.curve()));
         console.log("harvestShare   ", vault.harvestShare());

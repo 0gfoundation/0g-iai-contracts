@@ -41,8 +41,8 @@ interface IIAIVault {
      * @param iai        The iAI token. The vault must hold its minter/burner role.
      * @param a0G        Collateral token.
      * @param foundation Recipient of harvested yield.
-     * @param curve      Pricing curve to start with. Swappable afterwards via `setCurve`.
-     * @param cap          Starting supply ceiling, wei-iAI. Adjustable afterwards via `setCap`.
+     * @param curve      Pricing curve to start with, and with it the supply ceiling: the vault
+     *                   has no cap of its own. Swappable afterwards via `setCurve`.
      * @param harvestShare Foundation's starting cut of collateral appreciation, WAD.
      *                     Adjustable afterwards via `setHarvestShare`.
      */
@@ -51,13 +51,12 @@ interface IIAIVault {
         address a0G;
         address foundation;
         address curve;
-        uint256 cap;
         uint256 harvestShare;
     }
 
     error ZeroAddress();
     error ZeroAmount();
-    /// @notice Mint would push supply past the hard cap.
+    /// @notice Mint would push supply past the ceiling, which is the curve's `maxSafeSupply()`.
     error CapExceeded(uint256 supplyAfter, uint256 cap);
     /// @notice Transaction sat past the caller's deadline.
     error Expired(uint256 deadline, uint256 nowTs);
@@ -71,12 +70,6 @@ interface IIAIVault {
     error BurnExceedsPosition(uint256 requested, uint256 outstanding);
     /// @notice A curve address with no code behind it. Installing it would kill issuance.
     error NotAContract(address target);
-    /**
-     * @notice The cap would sit above the supply the curve's arithmetic is proven at.
-     * @dev `bound` is the lower of the curve's own `maxSafeSupply()` and the vault's hard
-     *      limit, so a curve reporting an absurd domain cannot widen it.
-     */
-    error CapAboveCurveDomain(uint256 requested, uint256 bound);
 
     /// @dev Every event carries the resulting state so an indexer can rebuild the full
     ///      picture from the log stream alone, with no follow-up RPC calls.
@@ -131,9 +124,6 @@ interface IIAIVault {
      */
     event CurveUpdated(address indexed previous, address indexed current);
 
-    /// @notice The supply ceiling moved. Below the current supply this closes issuance.
-    event CapUpdated(uint256 previous, uint256 current);
-
     /**
      * @notice Locks a0G and mints exactly `d` iAI to the caller. Requires an a0G allowance.
      * @param d        Amount of iAI to mint, in wei-iAI.
@@ -174,21 +164,15 @@ interface IIAIVault {
     function setFoundation(address newFoundation) external;
 
     /**
-     * @notice Replaces the pricing curve. `DEFAULT_ADMIN_ROLE`.
-     * @param newCurve The curve to install. Must hold code, and the current cap must sit
-     *                 inside its safe domain.
+     * @notice Replaces the pricing curve, and with it the supply ceiling. `DEFAULT_ADMIN_ROLE`.
+     * @param newCurve The curve to install. Must hold code and answer `maxSafeSupply()`. **Its
+     *                 ceiling may be below the current supply** -- that closes issuance while
+     *                 leaving redemption untouched.
      *
      * @dev Prices only future mints. Positions already open record an absolute 0G amount and
      *      redeem at their own average, untouched.
      */
     function setCurve(IMintCurve newCurve) external;
-
-    /**
-     * @notice Moves the supply ceiling. `DEFAULT_ADMIN_ROLE`.
-     * @param newCap New ceiling in wei-iAI. **May be below the current supply, and may be
-     *               zero** -- that closes issuance while leaving redemption untouched.
-     */
-    function setCap(uint256 newCap) external;
 
     /**
      * @notice Sets the foundation's cut of collateral appreciation from here on.
@@ -272,9 +256,9 @@ interface IIAIVault {
 
     /**
      * @notice How much more iAI may still be minted.
-     * @return Headroom in wei-iAI. Zero once supply has reached or passed the cap — including
-     *         after the cap was lowered below it, where `cap - supply` would be negative.
-     *         Prefer this over computing the difference yourself.
+     * @return Headroom in wei-iAI. Zero once supply has reached or passed the ceiling —
+     *         including after a curve swap put the ceiling below it, where `cap - supply`
+     *         would be negative. Prefer this over computing the difference yourself.
      */
     function remainingCap() external view returns (uint256);
 
@@ -299,8 +283,13 @@ interface IIAIVault {
     /// @return Current recipient of harvested yield.
     function foundation() external view returns (address);
 
-    /// @return Current supply ceiling, in wei-iAI. Governance-adjustable, so read it rather
-    ///         than assuming the value a deployment started with.
+    /**
+     * @notice The supply ceiling in force.
+     * @return The curve's `maxSafeSupply()`, clamped to the vault's own hard bound of 2^127,
+     *         in wei-iAI. The vault stores no ceiling of its own: this number changes when,
+     *         and only when, the curve is swapped, so index `CurveUpdated` and re-read it
+     *         rather than assuming the value a deployment started with.
+     */
     function cap() external view returns (uint256);
 
     /**

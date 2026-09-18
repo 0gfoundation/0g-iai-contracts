@@ -11,25 +11,33 @@ import {IMintCurve} from "../interfaces/IMintCurve.sol";
  *
  * @dev The curve the product publishes is
  *
- *          rate(s) = base * e^(exponent * (s / target)^3)         (0G per iAI)
+ *          rate(s) = base * e^(exponent * s / target)         (0G per iAI)
  *
- *      There is no closed form for its integral and no `exp` on chain. Instead, supply is
- *      cut into buckets of `bucketWidth` iAI and each bucket is priced **flat, at the value
- *      the smooth formula takes at the bucket's upper bound**. The table is computed off
- *      chain by `script/curve/gen_exponential_table.py`, every price rounded up to the wei,
- *      and handed to the constructor. Pricing at the upper bound means the step function
- *      never sits below the smooth curve anywhere in a bucket; the table's total therefore
- *      slightly exceeds the smooth integral, in the vault's favour.
+ *      Its integral has a closed form, but there is no `exp` on chain and the vault charges
+ *      a step function anyway: supply is cut into buckets of `bucketWidth` iAI and each
+ *      bucket is priced **flat, at the value the smooth formula takes at the bucket's upper
+ *      bound**. The table is computed off chain by `script/curve/gen_exponential_table.py`,
+ *      every price rounded up to the wei, and handed to the constructor. Pricing at the
+ *      upper bound means the step function never sits below the smooth curve anywhere in a
+ *      bucket; the table's total therefore slightly exceeds the smooth integral, in the
+ *      vault's favour.
+ *
+ *      **The table's top is the vault's supply ceiling.** The vault has no cap of its own:
+ *      `mint` refuses anything past `maxSafeSupply()`, which here is `bucketCount *
+ *      bucketWidth`. The generator sizes the table from a 0G budget -- the smallest number
+ *      of buckets whose total reaches it -- so the ceiling is "the supply that budget buys",
+ *      rounded up to a whole bucket. The budget is not a constructor argument: this contract
+ *      is configured by the table it is given, and the record beside the deployment says how
+ *      long that table was made.
  *
  *      **The table is storage, written once in the constructor, and nothing can write it
  *      again.** There is no setter, no owner and no proxy. That is the same immutability
  *      `LinearMintCurve` gets from `immutable` fields -- Solidity has no immutable arrays --
  *      and it is verifiable from the ABI: no non-view function exists. `base`, `exponent`
  *      and `target` are recorded for provenance only; they are how the table was derived,
- *      and nothing here reads them to make a decision. The vault's cap is a separate,
- *      adjustable number and is deliberately unrelated to the table's top.
+ *      and nothing here reads them to make a decision.
  *
- *      Changing the curve -- a higher target, a new base -- means generating a new table,
+ *      Changing the curve -- a longer table, a new base -- means generating a new table,
  *      deploying a new instance and pointing the vault at it. Venice's DIEM does the same
  *      thing by rewriting a table inside an upgradeable contract; here the rewrite is a new
  *      address, so history keeps every table that ever priced a mint.
@@ -45,7 +53,7 @@ import {IMintCurve} from "../interfaces/IMintCurve.sol";
  *
  *      Gas is linear in the buckets a mint touches: one packed storage read covers two
  *      buckets, so an ordinary mint reads one or two slots and a mint across the whole table
- *      reads about two hundred. The bucket index is arithmetic (`supply / bucketWidth`), so
+ *      reads about three hundred. The bucket index is arithmetic (`supply / bucketWidth`), so
  *      nothing scans from the bottom of the table as the supply grows.
  */
 contract ExponentialMintCurve is IMintCurve {
@@ -55,16 +63,16 @@ contract ExponentialMintCurve is IMintCurve {
     uint256 public immutable bucketWidth;
     /// @notice Number of buckets in the table.
     uint256 public immutable bucketCount;
-    /// @notice `bucketCount * bucketWidth`: the supply the table prices up to, exclusive of nothing.
-    ///         Also `maxSafeSupply()`.
+    /// @notice `bucketCount * bucketWidth`: the supply the table prices up to, and the vault's
+    ///         supply ceiling. Also `maxSafeSupply()`.
     uint256 public immutable top;
     /// @notice Marginal price at supply zero the table was derived from, in wei-0G per iAI.
     ///         Provenance only.
     uint256 public immutable base;
     /// @notice Exponent coefficient the table was derived from, scaled by 1e18. Provenance only.
     uint256 public immutable exponent;
-    /// @notice Supply the exponent is normalised against, in wei-iAI. Provenance only -- the
-    ///         vault's cap is its own number.
+    /// @notice Supply the exponent is normalised against, in wei-iAI. Provenance only -- a
+    ///         scale in the formula, not a ceiling of anything.
     uint256 public immutable target;
 
     /// @dev Price of each bucket in wei-0G per iAI. Two entries share a storage slot. Written
@@ -85,7 +93,8 @@ contract ExponentialMintCurve is IMintCurve {
     ///         supply bound of 2^127.
     error TableTooTall(uint256 top);
     /// @notice The provenance `target` lies beyond the table, so the table cannot be the one
-    ///         derived for it.
+    ///         derived for it: the generator never ends a table below the supply its exponent
+    ///         is normalised against.
     error TargetBeyondTable(uint256 target, uint256 top);
     /// @notice The requested slice ends past the last bucket.
     error SupplyOutOfDomain(uint256 supplyAfter, uint256 top);
@@ -116,10 +125,10 @@ contract ExponentialMintCurve is IMintCurve {
      *      a change: against the production table in `ExponentialMintCurve.t.sol`.
      *
      *      `_prices = prices_` copies the whole array in one statement. A `push` loop would
-     *      rewrite the length slot once per entry, about a million gas more for the
-     *      production table. The initcode carries the table as constructor calldata: 371
-     *      entries are about 12KB, well under EIP-3860's 49,152-byte limit, which is the
-     *      bound a much finer table would eventually meet.
+     *      rewrite the length slot once per entry, well over a million gas for the
+     *      production table. The initcode carries the table as constructor calldata: 587
+     *      entries are about 19KB, under EIP-3860's 49,152-byte limit, which is the bound a
+     *      much finer table would eventually meet.
      */
     constructor(uint256 bucketWidth_, uint128[] memory prices_, uint256 base_, uint256 exponent_, uint256 target_) {
         if (prices_.length == 0) revert EmptyTable();
@@ -163,9 +172,9 @@ contract ExponentialMintCurve is IMintCurve {
 
     /**
      * @inheritdoc IMintCurve
-     * @dev The top of the table. Unlike the linear curve's arithmetic bound this is a real
-     *      edge: `cost` reverts past it. The vault refuses a cap above it, so raising the cap
-     *      past the table means deploying a taller table first -- deliberately, since a
+     * @dev The top of the table, which is the vault's supply ceiling. It is a real edge:
+     *      `cost` reverts past it, and `mint` refuses to reach it. Raising the ceiling means
+     *      deploying a longer table and pointing the vault at it -- deliberately, since a
      *      supply the table does not price is a supply nobody has decided a price for.
      */
     function maxSafeSupply() external view returns (uint256) {

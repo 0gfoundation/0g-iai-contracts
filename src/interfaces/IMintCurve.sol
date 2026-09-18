@@ -69,15 +69,22 @@ interface IMintCurve {
     function quoteForValue(uint256 supply, uint256 delta0G) external view returns (uint256 amount);
 
     /**
-     * @notice The highest supply this curve's arithmetic is proven safe at.
+     * @notice The supply this curve permits issuance up to.
      * @return Supply ceiling, in wei-iAI.
      *
-     * @dev An **arithmetic domain bound, not a policy cap.** The vault's cap is separate and
-     *      governance-adjustable; this is the curve saying how far up it can be evaluated
-     *      without an intermediate product overflowing. The vault refuses a cap above it.
+     * @dev **This is the vault's supply cap.** The vault keeps no ceiling of its own: `mint`
+     *      and every quote refuse to take the supply past this figure, so the ceiling moves
+     *      when, and only when, governance swaps the curve. A curve may report a ceiling
+     *      below the live supply; the vault then simply issues nothing until it is swapped
+     *      again, and redemption is unaffected.
+     *
+     *      `cost` and `quoteForValue` must be evaluable everywhere in `[0, maxSafeSupply()]`
+     *      (property 6 above). Whether they are evaluable beyond it is the curve's own
+     *      business; the vault never asks.
      *
      *      The vault does not trust this figure on its own — it also applies its own hard
-     *      bound, so a curve reporting `type(uint256).max` cannot widen the domain.
+     *      bound of 2^127, so a curve reporting `type(uint256).max` cannot widen the domain
+     *      past what the vault's own arithmetic is proven at.
      */
     function maxSafeSupply() external view returns (uint256);
 }

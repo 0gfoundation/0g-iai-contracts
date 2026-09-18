@@ -8,6 +8,7 @@ import {IMintCurve} from "../../src/interfaces/IMintCurve.sol";
 import {LinearMintCurve} from "../../src/curves/LinearMintCurve.sol";
 import {ExponentialMintCurve} from "../../src/curves/ExponentialMintCurve.sol";
 import {ExponentialTable} from "./curves/ExponentialTable.sol";
+import {NarrowCurve} from "./mocks/StubCurves.sol";
 import {IAccessControl} from "@openzeppelin/contracts/access/IAccessControl.sol";
 
 /// @dev A curve that reverts on every call, for the recovery test. The point of `setCurve`
@@ -248,19 +249,41 @@ contract CurveSwapTest is BaseTest {
         vault.setCurve(IMintCurve(empty));
     }
 
-    /// @dev The vault's cap has to stay inside whatever domain the incoming curve declares,
-    ///      or the very next mint would evaluate the curve outside its safe range.
-    function test_SetCurve_RejectsACurveWhoseDomainIsNarrowerThanTheCap() public {
-        NarrowCurve narrow = new NarrowCurve(CAP - 1);
-        vm.expectRevert(
-            abi.encodeWithSelector(IIAIVault.CapAboveCurveDomain.selector, CAP, CAP - 1)
-        );
-        vault.setCurve(IMintCurve(address(narrow)));
+    /// @dev The ceiling is the curve's, so a swap moves it -- in either direction, including
+    ///      below the live supply. Nothing about the incoming curve's top is judged: a curve
+    ///      narrower than the supply is accepted and simply closes issuance, which is the
+    ///      supported way to close it to everyone. Adding a `maxSafeSupply() >= supply` guard
+    ///      here is the obvious instinct and would remove exactly that.
+    function test_SetCurve_AcceptsACurveNarrowerThanTheSupply_AndTheCeilingFollows() public {
+        uint256 supply = vault.supply();
+        NarrowCurve narrow = new NarrowCurve(supply - 1);
 
-        // Lower the cap into its domain and the same curve is accepted.
-        vault.setCap(CAP - 1);
         vault.setCurve(IMintCurve(address(narrow)));
         assertEq(address(vault.curve()), address(narrow));
+        assertEq(vault.cap(), supply - 1, "the ceiling is whatever the curve in force says");
+        assertEq(vault.remainingCap(), 0, "headroom saturates at zero, it does not go negative");
+
+        vm.expectRevert(abi.encodeWithSelector(IIAIVault.CapExceeded.selector, supply + 1, supply - 1));
+        vm.prank(carol);
+        vault.mint(1, type(uint256).max, block.timestamp);
+
+        // Positions opened under the wider curve are untouched, and leave as they always could.
+        _burn(alice, 100e18);
+
+        // Swapping back reopens issuance at the wider ceiling.
+        vault.setCurve(IMintCurve(address(mintCurve)));
+        assertEq(vault.cap(), CAP);
+        _mintFor(carol, 10e18);
+    }
+
+    /// @dev The probe is the only thing `setCurve` asks of the incoming curve: it must answer
+    ///      `maxSafeSupply()`. A curve that cannot would take every mint and quote down with
+    ///      it, so it is refused now rather than discovered on the first mint.
+    function test_SetCurve_RefusesACurveThatCannotReportItsCeiling() public {
+        UnansweringCurve mute = new UnansweringCurve();
+        vm.expectRevert(bytes("no ceiling"));
+        vault.setCurve(IMintCurve(address(mute)));
+        assertEq(address(vault.curve()), address(mintCurve), "nothing changed");
     }
 
     /**
@@ -354,28 +377,26 @@ contract CurveSwapTest is BaseTest {
         _assertSolvent();
     }
 
-    /// @dev The table has a top, and the vault's cap must stay under it while the table is in
-    ///      force. Five iAI of slack (9,275 against 9,270) is what the last partial bucket
-    ///      leaves; one wei more is refused. Raising the cap further means a taller table.
-    function test_Swap_ToTheExponentialCurve_BoundsTheCapByItsTable() public {
+    /// @dev The table has a top, and while the table is in force that top is the ceiling: the
+    ///      production table ends at 14,675 iAI, the supply two billion 0G buys. Swapping back
+    ///      to the linear curve brings its own ceiling, the anchor, with it.
+    function test_Swap_ToTheExponentialCurve_MovesTheCeilingToItsTop() public {
+        uint256 top = exponential.maxSafeSupply();
+        assertEq(top, 14_675e18, "587 buckets of 25 iAI");
+
         vault.setCurve(IMintCurve(address(exponential)));
+        assertEq(vault.cap(), top, "the ceiling is the table's top");
+        assertEq(vault.remainingCap(), top - vault.supply());
 
-        vault.setCap(9275e18);
-        assertEq(vault.cap(), 9275e18, "up to the table's top is fine");
+        // One wei past the top is refused by the vault, with the table's top as the ceiling,
+        // before the curve is ever asked to price it.
+        uint256 supply = vault.supply();
+        vm.expectRevert(abi.encodeWithSelector(IIAIVault.CapExceeded.selector, top + 1, top));
+        vm.prank(carol);
+        vault.mint(top - supply + 1, type(uint256).max, block.timestamp);
 
-        vm.expectRevert(abi.encodeWithSelector(IIAIVault.CapAboveCurveDomain.selector, 9275e18 + 1, 9275e18));
-        vault.setCap(9275e18 + 1);
-
-        // Lowering never consults the curve, so burn-only stays reachable under this curve too.
-        vault.setCap(0);
-        assertEq(vault.cap(), 0);
-        vault.setCap(CAP);
-
-        // And the linear curve, whose domain is wide, can take the cap anywhere again.
         vault.setCurve(IMintCurve(address(mintCurve)));
-        vault.setCap(CAP * 2);
-        vm.expectRevert(abi.encodeWithSelector(IIAIVault.CapAboveCurveDomain.selector, CAP * 2, 9275e18));
-        vault.setCurve(IMintCurve(address(exponential)));
+        assertEq(vault.cap(), CAP, "and the linear curve's ceiling is its anchor");
     }
 
     /// @dev A position opened on the table survives a swap back to the linear curve exactly as
@@ -399,14 +420,8 @@ contract CurveSwapTest is BaseTest {
     }
 }
 
-/// @dev A curve that declares a domain narrower than the vault's cap.
-contract NarrowCurve is IMintCurve {
-    uint256 private immutable top;
-
-    constructor(uint256 top_) {
-        top = top_;
-    }
-
+/// @dev A curve that prices but cannot say where it ends. `setCurve` must refuse it.
+contract UnansweringCurve is IMintCurve {
     function cost(uint256, uint256 amount) external pure returns (uint256) {
         return amount;
     }
@@ -415,7 +430,7 @@ contract NarrowCurve is IMintCurve {
         return delta0G;
     }
 
-    function maxSafeSupply() external view returns (uint256) {
-        return top;
+    function maxSafeSupply() external pure returns (uint256) {
+        revert("no ceiling");
     }
 }

@@ -28,11 +28,11 @@ abstract contract UpgradeChecker {
      *      something an upgrade has no business changing.
      */
     struct Snapshot {
-        // Pricing. The curve address is the whole of it now: pricing lives outside the
-        // beacon, so replacing this address is the only way a vault upgrade can reprice.
-        // Not snapshotting it would leave the rehearsal blind to exactly that.
+        // Pricing, and the supply ceiling with it. The curve address is the whole of it:
+        // pricing lives outside the beacon and the vault reads its ceiling off the curve, so
+        // replacing this address is the only way a vault upgrade can reprice or re-cap. Not
+        // snapshotting it would leave the rehearsal blind to exactly that.
         address curve;
-        uint256 cap;
         // The split of collateral appreciation, and how much history it has. An upgrade that
         // moved either would silently redirect every future wei of yield -- the same class of
         // change as repointing the curve, and just as invisible in the accounting totals.
@@ -83,7 +83,6 @@ abstract contract UpgradeChecker {
         returns (Snapshot memory s)
     {
         s.curve = address(vault.curve());
-        s.cap = vault.cap();
         s.harvestShare = vault.harvestShare();
         s.epoch = vault.currentEpoch();
 
@@ -129,7 +128,6 @@ abstract contract UpgradeChecker {
      */
     function _assertUnchanged(Snapshot memory before_, Snapshot memory after_) internal pure {
         _eqAddr(after_.curve, before_.curve, "curve");
-        _eq(after_.cap, before_.cap, "cap");
         _eq(after_.harvestShare, before_.harvestShare, "harvestShare");
         _eq(after_.epoch, before_.epoch, "epoch");
 
@@ -174,7 +172,7 @@ abstract contract UpgradeChecker {
      *      recomputing would be the curve grading its own work. That belongs to the curve's
      *      conformance suite and golden vectors.
      *
-     *      Silent when there is no headroom: `quoteMint` reverts at or past the cap.
+     *      Silent when there is no headroom: `quoteMint` reverts at or past the ceiling.
      */
     function _assertPricingMatchesCurve(IAIVault vault) internal view {
         uint256 headroom = vault.remainingCap();

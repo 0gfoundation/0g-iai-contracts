@@ -91,12 +91,14 @@ contract LinearMintCurveTest is CurveConformanceTest {
         assertEq(curve.cost(0, CAP), TARGET - 37_260_550, "the whole curve");
     }
 
-    /// @dev The arithmetic domain, which is a property of the expression rather than of the
-    ///      anchor cap. `cost` multiplies `d * (2s + d)` outside `mulDiv`; at `s = d = 2^127`
-    ///      that is `3 * 2^254`, the last point that still fits.
-    function test_MaxSafeSupply_IsTheArithmeticBoundNotThePolicyCap() public view {
-        assertEq(curve.maxSafeSupply(), 2 ** 127);
-        assertGt(curve.maxSafeSupply(), curve.anchorCap(), "the domain is wider than the anchor");
+    /// @dev The anchor is the ceiling: the vault has no cap of its own and refuses any mint
+    ///      past this figure. The arithmetic reaches far beyond it -- `cost` multiplies
+    ///      `d * (2s + d)` outside `mulDiv` and only overflows past `s = d = 2^127` -- so a
+    ///      supply above the anchor is refused by the vault, not by a revert here.
+    function test_MaxSafeSupply_IsTheAnchor() public view {
+        assertEq(curve.maxSafeSupply(), curve.anchorCap(), "the ceiling is the anchor");
+        assertEq(curve.maxSafeSupply(), CAP);
+        assertGt(curve.cost(CAP, 1), 0, "the arithmetic still works past the ceiling; the vault never asks");
     }
 
     // --- the constructor is the only chance to reject a malformed curve ---

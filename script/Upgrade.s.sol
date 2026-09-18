@@ -78,7 +78,6 @@ contract UpgradeScript is Script, JsonUtils, Constants, UpgradeChecker {
 
         string memory o = "snap";
         vm.serializeAddress(o, "curve", s.curve);
-        vm.serializeString(o, "cap", vm.toString(s.cap));
         vm.serializeAddress(o, "iai", s.iai);
         vm.serializeAddress(o, "a0G", s.a0G);
         vm.serializeAddress(o, "oracle", s.oracle);
@@ -130,7 +129,6 @@ contract UpgradeScript is Script, JsonUtils, Constants, UpgradeChecker {
      */
     function _readSnapshot(string memory snap) private pure returns (Snapshot memory s) {
         s.curve = vm.parseJsonAddress(snap, ".curve");
-        s.cap = _uint(snap, ".cap");
         s.iai = vm.parseJsonAddress(snap, ".iai");
         s.a0G = vm.parseJsonAddress(snap, ".a0G");
         s.oracle = vm.parseJsonAddress(snap, ".oracle");

@@ -115,17 +115,6 @@ contract UpgradeTest is BaseTest, UpgradeChecker {
         this.assertUnchangedExternal(before_, after_);
     }
 
-    /// @dev The other half of the same failure: the supply ceiling moving under an upgrade.
-    function test_CatchesACapThatMoved() public {
-        Snapshot memory before_ = _snap();
-
-        vault.setCap(CAP - 1);
-
-        Snapshot memory after_ = _snap();
-        vm.expectRevert(bytes("changed across upgrade: cap"));
-        this.assertUnchangedExternal(before_, after_);
-    }
-
     /// @dev Balances are the other half: a layout shift that strands a position must be caught.
     function test_CatchesAStrandedPosition() public {
         Snapshot memory before_ = _snap();

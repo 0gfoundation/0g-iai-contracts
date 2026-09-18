@@ -23,11 +23,11 @@ swept to the foundation. The split is a governance parameter — currently **50/
 | Contract | Role |
 | --- | --- |
 | `src/IAI.sol` | The ERC-20. Mint and burn restricted to `MINTER_BURNER_ROLE`, held only by the vault; the supply ceiling is the vault's, not the token's. Deliberately **not** `ERC20Burnable` — a holder burning their own tokens would strand the collateral behind them. |
-| `src/IAIVault.sol` | Custody, positions, the supply cap, which curve is pricing, and how collateral appreciation is split. `mint` / `burn` / `harvest`. |
+| `src/IAIVault.sol` | Custody, positions, which curve is pricing — and with it the supply ceiling, which the vault reads off the curve rather than storing — and how collateral appreciation is split. `mint` / `burn` / `harvest`. |
 | `src/EpochMath.sol` | The bookkeeping behind that split: how a claim is held in two denominations, and why changing the split costs a constant however many times it has changed before. |
 | `src/CreditRegistry.sol` | Staking with a cooldown. Records who has how much iAI earning; the allowance itself is metered off-chain. |
 | `src/interfaces/IMintCurve.sol` | The pricing surface the vault calls. Three `view` functions, so a curve reaches the vault by `STATICCALL` and can neither write state nor reenter. |
-| `src/curves/ExponentialMintCurve.sol` | The curve in force: the exponential curve as a table of 371 bucket prices, 25 iAI per bucket. The table is storage written once by the constructor and nothing can write it again — no setter, no owner, no proxy — so a curve is still a value, and replacing one means deploying another and repointing the vault. |
+| `src/curves/ExponentialMintCurve.sol` | The curve in force: the exponential curve as a table of 587 bucket prices, 25 iAI per bucket, whose top is the supply ceiling. The table is storage written once by the constructor and nothing can write it again — no setter, no owner, no proxy — so a curve is still a value, and replacing one means deploying another and repointing the vault. |
 | `script/curve/gen_exponential_table.py` | The one definition of how that table is derived from the formula. Standard-library Python; `run.sh check` re-derives and compares. |
 | `src/curves/LinearMintCurve.sol` | The original curve, still deployable. Every parameter `immutable`, zero storage. |
 | `src/curves/LinearCurveMath.sol` | The linear curve's closed form. A library: no storage, no state. |
@@ -35,53 +35,59 @@ swept to the foundation. The split is a governance parameter — currently **50/
 
 ### The curve
 
-The marginal price rises exponentially in the cube of the supply:
+The marginal price rises exponentially in the supply:
 
 ```
-rate(s) = base · e^(exponent · (s / target)³)        0G per iAI
+rate(s) = base · e^(exponent · s / target)        0G per iAI
 ```
 
-There is no closed form for its integral and no `exp` on chain, so the contract holds a **table**:
-supply is cut into buckets of 25 iAI and each bucket is priced flat at the value the formula takes at
-the bucket's **upper** bound, rounded up to the wei. A mint is charged the exact sum of bucket price
-times overlap for every bucket it touches, divided by 1e18 once and rounded up — one ceiling, not one
-per bucket, which is what keeps the price monotonic at the wei and makes splitting a mint never
-cheaper. Pricing at the upper bound means the table never sits below the smooth curve anywhere.
+Its integral has a closed form, but there is no `exp` on chain and the vault charges a step function
+anyway, so the contract holds a **table**: supply is cut into buckets of 25 iAI and each bucket is
+priced flat at the value the formula takes at the bucket's **upper** bound, rounded up to the wei. A
+mint is charged the exact sum of bucket price times overlap for every bucket it touches, divided by
+1e18 once and rounded up — one ceiling, not one per bucket, which is what keeps the price monotonic
+at the wei and makes splitting a mint never cheaper. Pricing at the upper bound means the table never
+sits below the smooth curve anywhere.
 
 The table is produced off chain by `script/curve/gen_exponential_table.py` (standard-library Python,
 60 significant digits) and written into the deployment record beside the parameters it came from;
-`run.sh check` re-derives it and compares entry by entry. With the shipped parameters:
+`run.sh check` re-derives it and compares entry by entry. **The table's length is where the supply
+ceiling comes from.** The generator keeps adding buckets until the whole table would absorb a 0G
+`budget` — two billion 0G, twice 0G's total supply — so the top is the supply that budget buys,
+rounded up to a whole bucket, and the vault will not issue past it. With the shipped parameters:
 
 | | |
 | --- | --- |
-| `base` (price at zero supply) | 3,237.4 0G / iAI |
-| `exponent` | 3.419 |
+| `base` (price at zero supply) | 586 0G / iAI |
+| `exponent` | 4.711 |
 | `target` (the supply the exponent is normalised against) | 9,270 iAI |
-| `bucketWidth` | 25 iAI, 371 buckets, table top 9,275 iAI |
-| price of the first bucket | 3,237.40 0G / iAI |
-| price at 2,000 iAI (the first public mint after the pre-mint) | 3,354.86 0G / iAI |
-| price of the last bucket | 99,415.29 0G / iAI, 30.7× the base |
-| 0G locked by the first 2,000 iAI | 6,532,352 0G |
-| 0G locked at the cap of 9,270 iAI | 128,170,726 0G (the smooth integral is 126.96M) |
-| largest step between adjacent buckets | 2.80%, at the top; 0.13% near 2,000 |
+| `budget` (the 0G the table must absorb; sizes the table, not a constructor argument) | 2,000,000,000 0G |
+| `bucketWidth` | 25 iAI, 587 buckets, table top **14,675 iAI** |
+| price of the first bucket | 593.49 0G / iAI |
+| price at 2,000 iAI (the first public mint after the pre-mint) | 1,639.95 0G / iAI (the smooth curve says 1,619) |
+| price at 9,270 iAI | 65,142 0G / iAI on the smooth curve, 111× the base |
+| price of the last bucket | 1,015,745 0G / iAI, 1,711× the first |
+| 0G locked by the first 2,000 iAI | 2,046,100 0G |
+| 0G locked at 9,270 iAI | 127,838,783 0G (the smooth integral is 127.03M) |
+| 0G locked by the whole table | 2,010,279,809 0G; one bucket fewer is 1,984,886,191, under the budget |
+| step between adjacent buckets | 1.28%, everywhere — a pure exponential rises by a constant factor per bucket |
 
 `cost()` is the only pricing primitive. `lockedAt()` floors and exists for charts and reconciliation
 only. `priceAt(i)`, `prices()`, `bucketOf(s)` and `rateAt(s)` expose the table for tooling.
 
-**The table has a top, and the cap must stay under it.** `maxSafeSupply()` is 9,275 iAI, so
-`setCap` above that is refused while this curve is in force. Raising the target means generating a
-new table, deploying a new curve and repointing the vault — the cap can only follow once the new
-table covers it. That ordering is deliberate: a supply the table does not price is a supply nobody
-has decided a price for.
+**The table's top is the supply ceiling.** The vault has no cap of its own: `mint` and every quote
+refuse anything past the curve in force's `maxSafeSupply()`, which for this curve is 14,675 iAI.
+Raising the ceiling means generating a longer table with a larger `budget`, deploying it and
+repointing the vault — three commands, and the ceiling moves at the last one. That is deliberate: a
+supply the table does not price is a supply nobody has decided a price for. `base`, `exponent` and
+`target` are provenance on the curve, recording how the table was derived, and enforce nothing.
 
-**The curve and the supply cap are separate, and both move.** The vault's cap is its own number and
-is adjustable in either direction; `base`, `exponent` and `target` are provenance on the curve,
-recording how the table was derived, and enforce nothing. Governance can also replace the whole
-curve — the linear curve, `LinearMintCurve`, is still deployable from the same record. Neither
-reaches anything already minted — see below — but it does mean no figure on this page is a permanent
-bound. Read them from the chain rather than hard-coding them.
+Governance can also replace the whole curve — the linear curve, `LinearMintCurve`, is still
+deployable from the same record, and its ceiling is its anchor. Neither reaches anything already
+minted — see below — but it does mean no figure on this page is a permanent bound. Read them from the
+chain rather than hard-coding them.
 
-### Replacing the curve, and moving the cap
+### Replacing the curve, and with it the ceiling
 
 Positions record an **absolute amount of 0G**, not the curve parameters that produced it, and
 redemption never consults a curve. So swapping the curve reprices nothing already minted: a holder
@@ -89,13 +95,12 @@ who minted before a swap redeems for exactly what they locked, and mints after i
 A holder who mints on both sides gets one blended average for the whole position — the guarantee is
 "nobody's existing collateral is repriced", not "every coin redeems at the price it was minted at".
 
-Lowering the cap below the live supply is a supported state, **burn-only mode**: `mint` refuses,
+A curve whose top is below the live supply is a supported state, **burn-only mode**: `mint` refuses,
 and redemption, staking and the harvest sweep all carry on untouched. It needs no mode flag
-— `mint`'s ceiling check is simply always true once the cap is under the supply. Note that `harvest`
-is gated by `pause`, not by the cap, so `setCap(0)` is not a wind-down switch on its own — and
-`pause()` is not one either while anybody holds `PAUSE_EXEMPT_MINTER_ROLE`. A full stop is `pause()`
-plus revoking that role. Because the ceiling check lives in `mint`'s body rather than in a modifier,
-`setCap(0)` is the one switch that closes issuance to everyone.
+— `mint`'s ceiling check is simply always true once the ceiling is under the supply — and `setCurve`
+deliberately does not refuse such a curve. Note that `harvest` is gated by `pause`, not by the
+ceiling, so a narrower curve is not a wind-down switch on its own — and `pause()` is not one either
+while anybody holds `PAUSE_EXEMPT_MINTER_ROLE`. A full stop is `pause()` plus revoking that role.
 
 ### How the yield is split
 
@@ -163,8 +168,8 @@ Two caveats are real and must be stated to users:
   `burn`. `burn` itself is never pausable, but reaching it can take a day.
 - **`totalLocked0G` can exceed what the curve accounts for at the live supply, with no computable
   ceiling.** A redeemer releases 0G at their average rate while the freed supply is resold at the
-  marginal rate, so churn ratchets the total upward. There is no numeric bound to quote: the cap can
-  be raised and the curve replaced with a dearer one. Never write `require(totalLocked0G <= X)` for
+  marginal rate, so churn ratchets the total upward. There is no numeric bound to quote: the curve
+  can be replaced with a longer or dearer one. Never write `require(totalLocked0G <= X)` for
   any curve-derived `X`. It also now rises with the exchange rate, by the minters' share of the
   appreciation.
 
@@ -246,11 +251,10 @@ $EDITOR deployments/iai-<chainid>.json   # start from iai-example.json
 from stranding the rest of a deployment.
 
 Changing the curve on a live network is three commands, in this order: `./run.sh genCurve ...`
-rewrites the table in the record, `./run.sh deployCurve ExponentialMintCurve` deploys it and records
-the address under its kind, and `./run.sh setCurve ExponentialMintCurve` puts it in service. Nothing
-already minted is repriced. The vault's cap has to fit under the table in force: if the new table is
-taller than the old, `setCap` may follow the swap but cannot precede it; if the new table's top is
-below the current cap, `setCap` to at most the new top comes first or the swap is refused.
+rewrites the table in the record (`--budget` sizes it, and so the ceiling), `./run.sh deployCurve
+ExponentialMintCurve` deploys it and records the address under its kind, and `./run.sh setCurve
+ExponentialMintCurve` puts it in service. Nothing already minted is repriced, and the supply ceiling
+becomes the new table's top at the last step — there is no separate cap to move before or after.
 
 Running `forge script` by hand works too, but set **`FOUNDRY_PROFILE=deploy`**: under the default
 profile `deployments/` is read-only, so that a test which forgets to redirect a script fails with a
@@ -298,9 +302,9 @@ Other operator entrypoints: `./run.sh setHarvestShare <wad>`, `./run.sh harvestS
 
 | Role | Intended holder | Can do |
 | --- | --- | --- |
-| `DEFAULT_ADMIN_ROLE` | multisig | grant and revoke roles, `setFoundation`, and — this is what makes it upgrade-grade — `setCurve` and `setCap` |
+| `DEFAULT_ADMIN_ROLE` | multisig | grant and revoke roles, `setFoundation`, and — this is what makes it upgrade-grade — `setCurve` (which also moves the ceiling) and `setHarvestShare` |
 | `PAUSER_ROLE` | guardian | close and open issuance and staking; `harvest` is pause-gated too, so it can also withhold the sweep. It cannot move funds, reprice or grant — a lighter key, because speed matters more than ceremony |
-| `PAUSE_EXEMPT_MINTER_ROLE` | nobody by default | `mint` while issuance is paused — same price, same cap, same slippage bound, same recipient. Granted per operation and revoked after; not part of the handover |
+| `PAUSE_EXEMPT_MINTER_ROLE` | nobody by default | `mint` while issuance is paused — same price, same ceiling, same slippage bound, same recipient. Granted per operation and revoked after; not part of the handover |
 | beacon owner | multisig + timelock | upgrade one contract; each has its own beacon |
 
 ## Upgrades
@@ -317,8 +321,8 @@ export CHECK_ACCOUNTS=0xLargestHolder,0xNextOne   # optional but recommended
 ./upgrade.sh vault             # only after the rehearsal passes
 ```
 
-The rehearsal forks the configured chain, snapshots the curve address and cap, every balance and the
+The rehearsal forks the configured chain, snapshots the curve address, every balance and the
 positions named in `CHECK_ACCOUNTS`, upgrades, and reverts if anything moved. The curve address is
-in there because pricing lives outside the beacon now: repointing it is the one thing an upgrade can
-still do to reprice the system. `iai` and `registry`
+in there because pricing and the ceiling both live outside the beacon now: repointing it is the one
+thing an upgrade can still do to reprice or re-cap the system. `iai` and `registry`
 are the other two targets.

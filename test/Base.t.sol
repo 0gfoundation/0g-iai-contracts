@@ -70,7 +70,6 @@ abstract contract BaseTest is Test, IAIDeployer {
                 a0G: address(a0g),
                 foundation: foundation,
                 curveKind: "LinearMintCurve",
-                cap: CAP,
                 harvestShare: HARVEST_SHARE,
                 cooldownDuration: COOLDOWN,
                 name: "Infinite AI",

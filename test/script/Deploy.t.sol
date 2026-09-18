@@ -33,7 +33,11 @@ contract DeployScriptTest is Test {
     uint256 internal constant DEPLOYER_PK =
         0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80;
 
+    /// @dev The linear curve's anchor, and so the ceiling while it is in force.
     uint256 internal constant CAP = 9_270e18;
+    /// @dev The production table's top: the supply 2,000,000,000 0G buys, rounded up to a
+    ///      whole bucket. The ceiling while the exponential curve is in force.
+    uint256 internal constant TOP = 14_675e18;
 
     string internal dir;
     string internal file;
@@ -92,22 +96,23 @@ contract DeployScriptTest is Test {
         assertEq(recordedCurve, address(vault.curve()), "recorded curve matches the chain");
         assertEq(vm.parseJsonAddress(json, ".ExponentialMintCurve"), recordedCurve, "recorded under its kind");
         assertEq(vm.parseJsonString(json, ".MintCurveKind"), "ExponentialMintCurve", "the default kind");
-        assertEq(vm.parseJsonUint(json, ".Cap"), vault.cap(), "inputs echoed back intact");
+        assertFalse(vm.keyExistsJson(json, ".Cap"), "there is no cap of the vault's own to record");
 
         // The curve's own parameters are nested under its kind, and the script rewrites the
         // record around them without flattening or dropping them. Worth an assertion because
         // every other key in this file is a single flat level, so a future `serializeJson`
         // change would take the nesting out silently and `deployCurve` would stop resolving.
-        // The exponential block carries a 371-entry array, which is the shape most at risk.
+        // The exponential block carries a 587-entry array, which is the shape most at risk.
         string memory at = string.concat(".CurveParams.", vm.parseJsonString(json, ".MintCurveKind"), ".");
         assertEq(vm.parseJsonUint(json, string.concat(at, "BucketWidth")), 25e18);
-        assertEq(vm.parseJsonUint(json, string.concat(at, "Base")), 3237.4e18);
-        assertEq(vm.parseJsonUint(json, string.concat(at, "Exponent")), 3.419e18);
-        assertEq(vm.parseJsonUint(json, string.concat(at, "Target")), CAP);
+        assertEq(vm.parseJsonUint(json, string.concat(at, "Base")), 586e18);
+        assertEq(vm.parseJsonUint(json, string.concat(at, "Exponent")), 4.711e18);
+        assertEq(vm.parseJsonUint(json, string.concat(at, "Target")), 9_270e18);
+        assertEq(vm.parseJsonUint(json, string.concat(at, "Budget")), 2_000_000_000e18, "the budget the table was sized to");
         uint256[] memory prices = vm.parseJsonUintArray(json, string.concat(at, "Prices"));
-        assertEq(prices.length, 371, "the whole table survived the rewrite");
-        assertEq(prices[0], 3_237_400_217_108_237_297_865, "and so did its entries");
-        assertEq(prices[370], 99_415_286_098_687_872_720_911);
+        assertEq(prices.length, 587, "the whole table survived the rewrite");
+        assertEq(prices[0], 593_492_603_713_227_388_873, "and so did its entries");
+        assertEq(prices[586], 1_015_744_731_151_825_140_869_680);
 
         // The other kind's block is carried along too, so `deployCurve("LinearMintCurve")`
         // keeps resolving on a record whose default is the exponential curve.
@@ -118,9 +123,10 @@ contract DeployScriptTest is Test {
         // And the deployed curve is the table the record describes, entry for entry -- which
         // is also what `checkDeployment` re-verifies on every run.
         ExponentialMintCurve deployedCurve = ExponentialMintCurve(recordedCurve);
-        assertEq(deployedCurve.bucketCount(), 371);
+        assertEq(deployedCurve.bucketCount(), 587);
         assertEq(deployedCurve.priceAt(80), prices[80]);
-        assertEq(deployedCurve.maxSafeSupply(), 9275e18, "the table's top, five iAI above the cap");
+        assertEq(deployedCurve.maxSafeSupply(), TOP, "the table's top: what two billion 0G buys");
+        assertEq(vault.cap(), TOP, "which is the vault's ceiling, read off the curve");
 
         // A deployment that arrives open would be a launch incident.
         assertTrue(vault.paused(), "vault must arrive paused");
@@ -182,18 +188,16 @@ contract DeployScriptTest is Test {
     }
 
     /**
-     * @dev The curve's anchor and the vault's cap start life as the same number and then part
-     *      company: `setCap` moves the vault's, while the anchor is burned into a deployed
-     *      curve and only records how its slope was reached.
-     *
-     *      They used to share one record key, so deploying a curve after any cap change
+     * @dev A curve is built from its own block and nothing else. The linear curve's anchor once
+     *      shared a record key with the vault's cap, so deploying a curve after a cap change
      *      derived a **different curve** from the same published `R0` and `Target` -- silently,
-     *      since every number involved still looked reasonable. Doubling the cap and
-     *      redeploying produced a slope of 271850478687441015 instead of
-     *      2021598247004348741: a curve nobody asked for, and one the golden vectors would
-     *      never be checked against because they only ever run against the constants.
+     *      since every number involved still looked reasonable (doubling the anchor turned a
+     *      slope of 2021598247004348741 into 271850478687441015). The vault no longer has a cap
+     *      key at all; what this pins is that the curve's block is the whole of its input, so
+     *      redeploying from an unchanged block reproduces the curve exactly, whatever else in
+     *      the record has moved.
      */
-    function test_DeployCurve_IsUnaffectedByACapChange() public {
+    function test_DeployCurve_ReadsOnlyItsOwnBlock() public {
         _bootstrap("curve-anchor");
         _MockScript().run();
         _IAIScript().run();
@@ -204,26 +208,23 @@ contract DeployScriptTest is Test {
         address original = vm.parseJsonAddress(vm.readFile(file), ".LinearMintCurve");
         uint256 slope = LinearMintCurve(original).slope();
         assertEq(slope, 2_021_598_247_004_348_741, "the deployed curve is the published one");
+        assertEq(LinearMintCurve(original).maxSafeSupply(), CAP, "and its ceiling is its anchor");
 
-        // Governance moves the ceiling; the record follows. Lowered rather than raised: the
-        // exponential curve in force prices up to 9,275 iAI and the vault refuses a cap above
-        // that, while lowering never consults the curve.
-        _IAIScript().setCap(CAP / 2);
-        assertEq(vm.parseJsonUint(vm.readFile(file), ".Cap"), CAP / 2, "the vault's cap moved");
-
+        // Something else in the record moves; the curve's block does not.
+        _IAIScript().setHarvestShare(0.25e18);
         _IAIScript().deployCurve("LinearMintCurve");
 
         LinearMintCurve redeployed =
             LinearMintCurve(vm.parseJsonAddress(vm.readFile(file), ".LinearMintCurve"));
         assertTrue(address(redeployed) != original, "a new curve was deployed");
         assertEq(redeployed.slope(), slope, "the same parameters produced the same curve");
-        assertEq(redeployed.anchorCap(), CAP, "the anchor did not follow the cap");
+        assertEq(redeployed.anchorCap(), CAP, "the anchor is the block's, not anything else's");
     }
 
     /**
      * @notice The harvest-share entry point, and the record it leaves behind.
      *
-     * @dev Unlike the cap, the split has a history on chain, so the record carries only the
+     * @dev The split has a history on chain, so the record carries only the
      *      value in force -- an operator reconciling an old position reads the vault's epochs,
      *      not the file. What the record must do is stay in step with the chain, because
      *      `checkDeployment` holds one against the other.
@@ -269,7 +270,7 @@ contract DeployScriptTest is Test {
         address first = vm.parseJsonAddress(vm.readFile(file), ".MintCurve");
         _IAIScript().checkDeployment();
 
-        _IAIScript().setCap(CAP / 2); // the record changes underneath; the curve does not care
+        _IAIScript().setHarvestShare(0.25e18); // the record changes underneath; the curve does not care
         _IAIScript().deployCurve("LinearMintCurve");
         address second = vm.parseJsonAddress(vm.readFile(file), ".LinearMintCurve");
         assertTrue(second != first, "the linear kind key names a curve the default never deployed");
@@ -356,38 +357,27 @@ contract DeployScriptTest is Test {
     }
 
     /**
-     * @dev The consequence operators will meet first: the exponential curve prices up to the
-     *      top of its table and no further, so a cap above it cannot be paired with it in
-     *      either order. Raising the cap past the table means deploying a taller table first.
+     * @dev The consequence operators will meet first: the ceiling is whichever curve is in
+     *      force, so a swap moves it. The exponential table ends at 14,675 iAI, the linear
+     *      curve at its anchor of 9,270; switching between them switches the ceiling, and the
+     *      check passes on both sides.
      */
-    function test_SetCurve_ExponentialRefusesACapAboveItsTable() public {
+    function test_SetCurve_MovesTheCeilingWithTheCurve() public {
         _bootstrap("curve-domain");
         _MockScript().run();
         _IAIScript().run();
 
-        // The reverts are provoked on the vault directly, as the deployer: a revert inside a
-        // script leaves forge's broadcast open and the next script call trips over it.
         IAIVault vault = IAIVault(vm.parseJsonAddress(vm.readFile(file), ".IAIVault"));
-        address deployer = vm.addr(DEPLOYER_PK);
-        vm.prank(deployer);
-        vm.expectRevert(abi.encodeWithSelector(IIAIVault.CapAboveCurveDomain.selector, CAP * 2, 9275e18));
-        vault.setCap(CAP * 2);
+        assertEq(vault.cap(), TOP, "the table's top while the table is in force");
 
-        // The linear curve has room to spare, so the cap can move once it is in force ...
         _IAIScript().deployCurve("LinearMintCurve");
         _IAIScript().setCurve("LinearMintCurve");
-        _IAIScript().setCap(CAP * 2);
-
-        // ... but the exponential curve then cannot come back until the cap is inside its table.
-        address exponentialCurve = vm.parseJsonAddress(vm.readFile(file), ".ExponentialMintCurve");
-        vm.prank(deployer);
-        vm.expectRevert(abi.encodeWithSelector(IIAIVault.CapAboveCurveDomain.selector, CAP * 2, 9275e18));
-        vault.setCurve(IMintCurve(exponentialCurve));
-
-        _IAIScript().setCap(9275e18);
-        _IAIScript().setCurve("ExponentialMintCurve");
+        assertEq(vault.cap(), CAP, "the anchor while the linear curve is in force");
         _IAIScript().checkDeployment();
-        assertEq(address(vault.curve()), exponentialCurve, "back on the table, with the cap at its top");
+
+        _IAIScript().setCurve("ExponentialMintCurve");
+        assertEq(vault.cap(), TOP, "and back");
+        _IAIScript().checkDeployment();
     }
 
     /// @dev The unit tests may not read files, so they use a generated Solidity copy of the
@@ -407,39 +397,40 @@ contract DeployScriptTest is Test {
         assertEq(ExponentialTable.BASE, vm.parseJsonUint(template, string.concat(at, "Base")));
         assertEq(ExponentialTable.EXPONENT, vm.parseJsonUint(template, string.concat(at, "Exponent")));
         assertEq(ExponentialTable.TARGET, vm.parseJsonUint(template, string.concat(at, "Target")));
+        assertEq(ExponentialTable.BUDGET, vm.parseJsonUint(template, string.concat(at, "Budget")));
     }
 
     /**
-     * @dev The documented way to raise the target, end to end on the Solidity side: a taller
-     *      table lands in the record (what `genCurve --target` writes; synthesised here because
-     *      tests cannot run the generator), then `deployCurve`, `setCurve`, and only then
-     *      `setCap` -- which is refused until the new table is in force.
+     * @dev The documented way to raise the ceiling, end to end on the Solidity side: a longer
+     *      table lands in the record (what `genCurve --budget` writes; synthesised here because
+     *      tests cannot run the generator), then `deployCurve`, then `setCurve` -- and the
+     *      ceiling moves at that last step, with nothing left to do afterwards.
      */
-    function test_RaisingTheTarget_IsGenCurveDeployCurveSetCurveThenSetCap() public {
-        _bootstrap("curve-raise-target");
+    function test_RaisingTheCeiling_IsGenCurveDeployCurveThenSetCurve() public {
+        _bootstrap("curve-raise-ceiling");
         _MockScript().run();
         _IAIScript().run();
 
-        // A table four buckets taller, as the generator would produce for a target of 9,363
-        // iAI: 375 buckets, top 9,375. The extra prices only need to keep the table monotone.
+        // A table four buckets longer, as the generator would produce for a larger budget:
+        // 591 buckets, top 14,775. The extra prices only need to keep the table monotone.
         uint128[] memory current = ExponentialTable.prices();
-        uint256[] memory taller = new uint256[](current.length + 4);
+        uint256[] memory longer = new uint256[](current.length + 4);
         for (uint256 i = 0; i < current.length; i++) {
-            taller[i] = current[i];
+            longer[i] = current[i];
         }
-        for (uint256 i = current.length; i < taller.length; i++) {
-            taller[i] = taller[i - 1] + 1e21;
+        for (uint256 i = current.length; i < longer.length; i++) {
+            longer[i] = longer[i - 1] + 1e21;
         }
         string memory o = "exp";
-        vm.serializeUint(o, "Base", 3_237.4e18);
+        vm.serializeUint(o, "Base", ExponentialTable.BASE);
         vm.serializeUint(o, "BucketWidth", 25e18);
-        vm.serializeUint(o, "Exponent", 3.419e18);
-        vm.serializeUint(o, "Prices", taller);
-        string memory block_ = vm.serializeUint(o, "Target", 9_363e18);
+        vm.serializeUint(o, "Budget", 2_100_000_000e18);
+        vm.serializeUint(o, "Exponent", ExponentialTable.EXPONENT);
+        vm.serializeUint(o, "Prices", longer);
+        string memory block_ = vm.serializeUint(o, "Target", ExponentialTable.TARGET);
         vm.writeJson(block_, file, ".CurveParams.ExponentialMintCurve");
 
         IAIVault vault = IAIVault(vm.parseJsonAddress(vm.readFile(file), ".IAIVault"));
-        address deployer = vm.addr(DEPLOYER_PK);
 
         // The record now describes a curve that is not deployed; the check says so.
         IAIScript checker = _IAIScript();
@@ -449,44 +440,40 @@ contract DeployScriptTest is Test {
         _IAIScript().deployCurve("ExponentialMintCurve");
         _IAIScript().checkDeployment(); // the kind key now matches the record again
         address newer = vm.parseJsonAddress(vm.readFile(file), ".ExponentialMintCurve");
-        assertEq(ExponentialMintCurve(newer).maxSafeSupply(), 9_375e18, "the new table is taller");
-        assertEq(ExponentialMintCurve(newer).target(), 9_363e18);
-
-        // Too early: the old table is still in force and stops at 9,275.
-        vm.prank(deployer);
-        vm.expectRevert(abi.encodeWithSelector(IIAIVault.CapAboveCurveDomain.selector, 9_363e18, 9_275e18));
-        vault.setCap(9_363e18);
+        assertEq(ExponentialMintCurve(newer).maxSafeSupply(), TOP + 100e18, "the new table is longer");
+        assertEq(vault.cap(), TOP, "the old table is still in force, so the ceiling has not moved");
 
         _IAIScript().setCurve("ExponentialMintCurve");
-        _IAIScript().setCap(9_363e18);
         _IAIScript().checkDeployment();
 
         assertEq(address(vault.curve()), newer);
-        assertEq(vault.cap(), 9_363e18);
-        assertEq(vm.parseJsonUint(vm.readFile(file), ".Cap"), 9_363e18);
+        assertEq(vault.cap(), TOP + 100e18, "the ceiling moved with the curve");
         assertEq(vm.parseJsonAddressArray(vm.readFile(file), ".MintCurveHistory").length, 2, "both tables kept");
     }
 
     /**
-     * @dev The mirror image of raising the target: a table whose top is below the current cap
-     *      cannot be put in force until the cap is brought down to it. The order is `setCap`,
-     *      then `setCurve` -- and the check keeps working throughout.
+     * @dev The mirror image: a shorter table is put in force the same way, and the ceiling
+     *      comes down with it. Nothing has to be lowered first -- there is nothing else to
+     *      lower -- and if the new top sits below the live supply the system is simply in
+     *      burn-only mode until the next swap. The check keeps working throughout.
      */
-    function test_LoweringTheTarget_IsSetCapThenSetCurve() public {
-        _bootstrap("curve-lower-target");
+    function test_LoweringTheCeiling_IsJustSetCurve() public {
+        _bootstrap("curve-lower-ceiling");
         _MockScript().run();
         _IAIScript().run();
 
-        // A shorter table, as `genCurve --target 9000` would produce: 360 buckets, top 9,000.
+        // A shorter table, as `genCurve` with a smaller budget would produce: 360 buckets,
+        // top 9,000.
         uint128[] memory current = ExponentialTable.prices();
         uint256[] memory shorter = new uint256[](360);
         for (uint256 i = 0; i < shorter.length; i++) {
             shorter[i] = current[i];
         }
         string memory o = "exp";
-        vm.serializeUint(o, "Base", 3_237.4e18);
+        vm.serializeUint(o, "Base", ExponentialTable.BASE);
         vm.serializeUint(o, "BucketWidth", 25e18);
-        vm.serializeUint(o, "Exponent", 3.419e18);
+        vm.serializeUint(o, "Budget", 100_000_000e18);
+        vm.serializeUint(o, "Exponent", ExponentialTable.EXPONENT);
         vm.serializeUint(o, "Prices", shorter);
         string memory block_ = vm.serializeUint(o, "Target", 9_000e18);
         vm.writeJson(block_, file, ".CurveParams.ExponentialMintCurve");
@@ -496,17 +483,11 @@ contract DeployScriptTest is Test {
         address shorterCurve = vm.parseJsonAddress(vm.readFile(file), ".ExponentialMintCurve");
         assertEq(ExponentialMintCurve(shorterCurve).maxSafeSupply(), 9_000e18);
 
-        // Refused while the cap (9,270) sits above the new top.
         IAIVault vault = IAIVault(vm.parseJsonAddress(vm.readFile(file), ".IAIVault"));
-        vm.prank(vm.addr(DEPLOYER_PK));
-        vm.expectRevert(abi.encodeWithSelector(IIAIVault.CapAboveCurveDomain.selector, CAP, 9_000e18));
-        vault.setCurve(IMintCurve(shorterCurve));
-
-        _IAIScript().setCap(9_000e18);
         _IAIScript().setCurve("ExponentialMintCurve");
         _IAIScript().checkDeployment();
         assertEq(address(vault.curve()), shorterCurve);
-        assertEq(vault.cap(), 9_000e18);
+        assertEq(vault.cap(), 9_000e18, "the ceiling came down with the curve");
     }
 
     /**
@@ -542,27 +523,25 @@ contract DeployScriptTest is Test {
         assertEq(address(vault.curve()), deployed);
     }
 
-    /// @dev Lowering the cap -- including to zero, the burn-only switch -- is a vault-side act
-    ///      that the curve and its record know nothing about. Every script must keep working.
-    function test_LoweringTheCap_LeavesTheCurveAndItsCheckUntouched() public {
-        _bootstrap("curve-lower-cap");
+    /// @dev A same-kind redeploy from unchanged parameters produces the same table at a new
+    ///      address, and every script keeps working across the two-step swap onto it.
+    function test_RedeployingTheSameTable_LeavesTheCheckWorkingThroughout() public {
+        _bootstrap("curve-redeploy-same");
         _MockScript().run();
         _IAIScript().run();
 
-        _IAIScript().setCap(4_000e18);
-        _IAIScript().checkDeployment();
+        address first = vm.parseJsonAddress(vm.readFile(file), ".MintCurve");
         _IAIScript().deployCurve("ExponentialMintCurve"); // same parameters, same table, new address
-        _IAIScript().checkDeployment();
-
-        _IAIScript().setCap(0);
         _IAIScript().checkDeployment();
         _IAIScript().setCurve("ExponentialMintCurve");
         _IAIScript().checkDeployment();
 
         string memory json = vm.readFile(file);
-        assertEq(vm.parseJsonUint(json, ".Cap"), 0);
-        assertEq(vm.parseJsonUintArray(json, ".CurveParams.ExponentialMintCurve.Prices").length, 371, "the table did not follow the cap");
-        assertEq(ExponentialMintCurve(vm.parseJsonAddress(json, ".MintCurve")).maxSafeSupply(), 9_275e18);
+        address second = vm.parseJsonAddress(json, ".MintCurve");
+        assertTrue(second != first, "a new curve is in force");
+        assertEq(vm.parseJsonUintArray(json, ".CurveParams.ExponentialMintCurve.Prices").length, 587);
+        assertEq(ExponentialMintCurve(second).maxSafeSupply(), TOP, "the same table");
+        assertEq(IAIVault(vm.parseJsonAddress(json, ".IAIVault")).cap(), TOP, "and the same ceiling");
     }
 
     /**
@@ -587,7 +566,6 @@ contract DeployScriptTest is Test {
         vm.writeJson("[]", file, ".MintCurveHistory");
         assertEq(vm.parseJsonAddressArray(vm.readFile(file), ".MintCurveHistory").length, 0);
 
-        _IAIScript().setCap(CAP / 2); // lowered: the curve in force does not price above its table
         _IAIScript().deployCurve("LinearMintCurve");
 
         address[] memory history = vm.parseJsonAddressArray(vm.readFile(file), ".MintCurveHistory");
