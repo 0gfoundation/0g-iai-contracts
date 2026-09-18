@@ -41,20 +41,19 @@ The marginal price rises exponentially in the supply:
 rate(s) = base · e^(exponent · s / target)        0G per iAI
 ```
 
-Its integral has a closed form, but there is no `exp` on chain and the vault charges a step function
-anyway, so the contract holds a **table**: supply is cut into buckets of 25 iAI and each bucket is
-priced flat at the value the formula takes at the bucket's **upper** bound, rounded up to the wei. A
-mint is charged the exact sum of bucket price times overlap for every bucket it touches, divided by
-1e18 once and rounded up — one ceiling, not one per bucket, which is what keeps the price monotonic
-at the wei and makes splitting a mint never cheaper. Pricing at the upper bound means the table never
-sits below the smooth curve anywhere.
+There is no `exp` on chain and the vault charges a step function anyway, so the contract holds a
+**table**: supply is cut into buckets of 25 iAI, each priced flat at the value the formula takes at
+the bucket's **upper** bound, rounded up to the wei — so the table never sits below the smooth
+curve. A mint pays the exact sum of price times overlap over every bucket it touches, with one
+ceiling at the end rather than one per bucket, which is what keeps the price monotonic at the wei
+and makes splitting a mint never cheaper.
 
-The table is produced off chain by `script/curve/gen_exponential_table.py` (standard-library Python,
-60 significant digits) and written into the deployment record beside the parameters it came from;
-`run.sh check` re-derives it and compares entry by entry. **The table's length is where the supply
-ceiling comes from.** The generator keeps adding buckets until the whole table would absorb a 0G
-`budget` — two billion 0G, twice 0G's total supply — so the top is the supply that budget buys,
-rounded up to a whole bucket, and the vault will not issue past it. With the shipped parameters:
+The table is produced off chain by `script/curve/gen_exponential_table.py` (standard-library
+Python, 60 significant digits), written into the deployment record beside the parameters it came
+from, and re-derived and compared entry by entry by `run.sh check`. **Its length is where the
+supply ceiling comes from**: the generator adds buckets until the whole table would absorb a 0G
+`budget` — two billion, twice 0G's total supply — so the top is the supply that budget buys,
+rounded up to a whole bucket. With the shipped parameters:
 
 | | |
 | --- | --- |
@@ -76,16 +75,14 @@ rounded up to a whole bucket, and the vault will not issue past it. With the shi
 only. `priceAt(i)`, `prices()`, `bucketOf(s)` and `rateAt(s)` expose the table for tooling.
 
 **The table's top is the supply ceiling.** The vault has no cap of its own: `mint` and every quote
-refuse anything past the curve in force's `maxSafeSupply()`, which for this curve is 14,675 iAI.
-Raising the ceiling means generating a longer table with a larger `budget`, deploying it and
-repointing the vault — three commands, and the ceiling moves at the last one. That is deliberate: a
-supply the table does not price is a supply nobody has decided a price for. `base`, `exponent` and
-`target` are provenance on the curve, recording how the table was derived, and enforce nothing.
+refuse anything past the curve in force's `maxSafeSupply()`, 14,675 iAI here. Raising it means
+generating a longer table with a larger `budget`, deploying it and repointing the vault — three
+commands, and the ceiling moves at the last one. That is deliberate: a supply the table does not
+price is a supply nobody has decided a price for. `base`, `exponent` and `target` are provenance
+and enforce nothing.
 
-Governance can also replace the whole curve — the linear curve, `LinearMintCurve`, is still
-deployable from the same record, and its ceiling is its anchor. Neither a swap nor the ceiling it
-brings reaches anything already minted — see below — but it does mean no figure on this page is a
-permanent bound. Read them from the chain rather than hard-coding them.
+Governance can replace the whole curve, and the ceiling comes with it, so no figure on this page is
+a permanent bound — read them from the chain rather than hard-coding them.
 
 ### Replacing the curve, and with it the ceiling
 
@@ -133,15 +130,14 @@ the change — the obligation and every position come out worth what they were w
 earlier. Positions are restated lazily, whenever each is next touched, and catching up costs the
 same whether one change was missed or a hundred.
 
-**Value-neutral is not the same as forward-neutral.** Within one setting of the split a minter
-keeps `1 - harvestShare` of the appreciation of the a0G they deposited. A change re-bases that onto
+**Value-neutral is not the same as forward-neutral.** A change re-bases the minter's capture onto
 the position's current value, which is smaller because the foundation has already taken its part,
 and turns the foundation's accrued part into shares that compound for it. So re-issuing the *same*
-share still moves a little future yield to the foundation — measurably: on the test fixture a
-position held two years is worth 509,574 0G with no change at all, 507,407 after one, and 505,396
-after twenty-four, so about **0.8%** of the position over that span. It is admin-only,
-always in the foundation's direction, and bounded by how often governance acts; it is pinned by
-`test_Change_ReissuingTheSameShareRatchetsTowardTheFoundation` rather than left to be discovered.
+share still moves a little future yield to the foundation — on the test fixture, about **0.8%** of
+a position over two years and twenty-four changes. Admin-only, always in the foundation's
+direction, bounded by how often governance acts, and pinned by a test rather than left to be
+discovered; accepted risk R11 in `docs/accepted-risks.md` has the measurements and why the
+alternative was not taken.
 
 Two consequences worth knowing:
 
@@ -222,8 +218,7 @@ addresses of what was deployed come back into the same file. `iai-example.json` 
 ## Build and test
 
 ```bash
-forge build
-forge test                      # 223 tests, a few seconds
+forge test                      # the full suite, a few seconds
 SIM_LONG=1 forge test --match-test test_Sim_Long   # 100k-operation simulation
 python3 script/curve/gen_exponential_table.py deployments/iai-example.json --check   # the table is its parameters'
 ```
@@ -233,77 +228,32 @@ test run is also a rehearsal of the real deployment, including its post-deploy s
 fixture that re-implemented the wiring would let the two drift, and the suite could stay green
 against a topology the script no longer produces.
 
-## Deploy
+## Deploy, upgrade, hand over
+
+The procedures, and what each step checks, are in `docs/deployments.md`; so is everything about the
+deployment record. The short form:
 
 ```bash
 cp .env.example .env                  # PRIVATE_KEY, TEST_MNEMONIC
-cp config.example.sh config.sh        # CHAIN_ID and RPC; gitignored
-                                      # (needs python3 >= 3.9 for the curve table; standard library only)
+cp config.example.sh config.sh        # CHAIN_ID, RPC and the gas flags 0G needs; gitignored
 $EDITOR deployments/iai-<chainid>.json   # start from iai-example.json
-./run.sh genCurve     # derive the exponential curve's table from the parameters in the record
-                      # (pass --base/--exponent/--target/--width to change them; the table is
-                      # never edited by hand, and `check` re-derives and compares it)
-
+./run.sh genCurve     # derive the curve's table from the parameters in the record
 ./run.sh              # mock collateral (off mainnet), then the system
-./run.sh accounts     # testnet: derive and fund the account set
 ./run.sh status       # read it back
 ./run.sh unpause      # open issuance
 ./verify.sh           # publish sources to the 0G explorer
+
+./upgrade.sh rehearse vault   # fork, upgrade there, compare state -- never skipped
+./upgrade.sh vault            # only after the rehearsal passes
+
+./handover.sh grant           # governance to its targets, deployer still in place
+./handover.sh renounce        # stand the deployer down, once the targets answer
 ```
 
-`config.sh` carries the gas flags every 0G transaction needs — `--slow --with-gas-price 3gwei
---priority-gas-price 3gwei`, since 0G's EIP-1559 wants both pinned and `--slow` stops a nonce gap
-from stranding the rest of a deployment.
-
-Changing the curve on a live network is three commands, in this order: `./run.sh genCurve ...`
-rewrites the table in the record (`--budget` sizes it, and so the ceiling), `./run.sh deployCurve
-ExponentialMintCurve` deploys it and records the address under its kind, and `./run.sh setCurve
-ExponentialMintCurve` puts it in service. Nothing already minted is repriced, and the supply ceiling
-becomes the new table's top at the last step — there is no separate cap to move before or after.
-
-Running `forge script` by hand works too, but set **`FOUNDRY_PROFILE=deploy`**: under the default
-profile `deployments/` is read-only, so that a test which forgets to redirect a script fails with a
-permission error instead of overwriting a deployment record. See `run.sh` for the exact invocations.
-
-**The vault deploys paused.** Opening issuance is a separate, explicit transaction — that is the only
-launch-timing control the system has, and it is deliberately manual. The `CreditRegistry` deploys
-open; nobody can stake before iAI exists.
-
-Deployment grants `DEFAULT_ADMIN_ROLE`, `PAUSER_ROLE` and beacon ownership to the deploying account.
-One role it grants to nobody: `PAUSE_EXEMPT_MINTER_ROLE`, so nobody can mint through the pause the
-vault comes up in. It opens only when governance says so.
-
-`PAUSE_EXEMPT_MINTER_ROLE` lets one nominated address mint while issuance is paused, on exactly the
-same terms as any other mint — same curve, same supply ceiling, same slippage bound, and the
-collateral and iAI still move on the caller. It exists because the vault's two states were otherwise
-"closed to everyone" and "open to everyone", and admitting a single address meant unpausing and
-re-pausing around the transaction. It is granted for one operation and revoked afterwards, so it is
-not part of the governance handover; `./run.sh grantPausedMinter <addr>` opens it and
-`./run.sh revokePausedMinter <addr>` closes it. What it costs is recorded as accepted risk R10 in
-`CLAUDE.md`: while it is held, `pause()` no longer stops issuance at a manipulated oracle rate.
-
-## Handing over governance
-
-Fill in `Admin`, `Guardian` and `BeaconOwner` in the deployment file, then:
-
-```bash
-./handover.sh status      # who holds what right now
-./handover.sh grant       # every role and beacon to its target; deployer keeps its own
-./handover.sh status      # confirm — and execute something from the Safe
-./handover.sh renounce    # stand the deployer down
-```
-
-Two transactions, deliberately. `grant` leaves the deployer in place, so the targets can be read
-back and a Safe confirmed to actually respond before the only key that still works is given up.
-`renounce` re-reads governance from the chain and refuses unless the targets already hold
-everything — a mistyped address stops there, with the deployer still in control, rather than after,
-with nobody in control. Beacon ownership is one-step `Ownable` with no acceptance step, so that
-precondition is the only safety net it has.
-
-Other operator entrypoints: `./run.sh setHarvestShare <wad>`, `./run.sh harvestShare`,
-`./run.sh pause`, `./run.sh harvest`, `./run.sh quote <amount>`,
-`./run.sh mint <amount> <maxA0GIn>`, `./run.sh pausedMinter|grantPausedMinter|revokePausedMinter
-<addr>`, and `forge script script/deploy/IAI.s.sol --sig "setFoundation(address)" <addr>`.
+**The vault deploys paused.** Opening issuance is a separate, explicit transaction — the only
+launch-timing control the system has, and deliberately manual. The `CreditRegistry` deploys open;
+nobody can stake before iAI exists. Deployment grants `DEFAULT_ADMIN_ROLE`, `PAUSER_ROLE` and
+beacon ownership to the deploying account, and `PAUSE_EXEMPT_MINTER_ROLE` to nobody.
 
 | Role | Intended holder | Can do |
 | --- | --- | --- |
@@ -312,22 +262,9 @@ Other operator entrypoints: `./run.sh setHarvestShare <wad>`, `./run.sh harvestS
 | `PAUSE_EXEMPT_MINTER_ROLE` | nobody by default | `mint` while issuance is paused — same price, same ceiling, same slippage bound, same recipient. Granted per operation and revoked after; not part of the handover |
 | beacon owner | multisig + timelock | upgrade one contract; each has its own beacon |
 
-## Upgrades
-
-Every contract sits behind its own `UpgradeableBeacon`, so one upgrade cannot reach the others.
-Correctness is established by rehearsal on a mainnet fork, not by an on-chain self-check: a guard the
-contract computes about itself is only sound while it reads the right storage slots, which is exactly
-what is in doubt when a layout has shifted.
-
-```bash
-export CHECK_ACCOUNTS=0xLargestHolder,0xNextOne   # optional but recommended
-
-./upgrade.sh rehearse vault    # forks the chain, upgrades there, compares state
-./upgrade.sh vault             # only after the rehearsal passes
-```
-
-The rehearsal forks the configured chain, snapshots the curve address, every balance and the
-positions named in `CHECK_ACCOUNTS`, upgrades, and reverts if anything moved. The curve address is
-in there because pricing and the ceiling both live outside the beacon now: repointing it is the one
-thing an upgrade can still do to reprice or re-cap the system. `iai` and `registry`
-are the other two targets.
+`PAUSE_EXEMPT_MINTER_ROLE` lets one nominated address mint while issuance is paused, on exactly the
+same terms as any other mint. It exists because the vault's two states were otherwise "closed to
+everyone" and "open to everyone", and admitting a single address meant unpausing and re-pausing
+around the transaction. Granted for one operation and revoked after, so it is not part of the
+handover. What it costs is accepted risk R10 in `docs/accepted-risks.md`: while it is held,
+`pause()` no longer stops issuance at a manipulated oracle rate.
