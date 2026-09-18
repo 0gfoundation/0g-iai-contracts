@@ -45,6 +45,10 @@ abstract contract IAIDeployer {
         address foundation;
         string curveKind;
         uint256 cap;
+        /// Foundation's starting cut of collateral appreciation, WAD. A deployment parameter
+        /// rather than a curve one: it governs how the collateral's yield is divided, which
+        /// has nothing to do with what the curve charges to issue.
+        uint256 harvestShare;
         uint256 cooldownDuration;
         string name;
         string symbol;
@@ -189,7 +193,8 @@ abstract contract IAIDeployer {
                             a0G: c.a0G,
                             foundation: c.foundation,
                             curve: d.curve,
-                            cap: c.cap
+                            cap: c.cap,
+                            harvestShare: c.harvestShare
                         })
                     )
                 )
@@ -283,6 +288,7 @@ abstract contract IAIDeployer {
 
         require(address(vault_.curve()) == d.curve, "vault points at the wrong curve");
         require(vault_.cap() == c.cap, "cap mismatch");
+        require(vault_.harvestShare() == c.harvestShare, "harvest share mismatch");
 
         // The vault must actually route to the curve it names. This is not a tautology: it
         // catches an implementation whose pricing ignores the advertised curve. Whether the

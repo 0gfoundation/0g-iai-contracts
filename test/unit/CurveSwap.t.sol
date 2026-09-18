@@ -133,7 +133,7 @@ contract CurveSwapTest is BaseTest {
         (uint256 lockedBefore,,) = vault.positionOf(carol);
         _mintFor(carol, 50e18);
         (uint256 lockedAfter,,) = vault.positionOf(carol);
-        assertEq(lockedAfter - lockedBefore, quoted, "the mint charged what it quoted");
+        assertApproxEqAbs(lockedAfter - lockedBefore, quoted, _mintDust(1), "the mint charged what it quoted");
     }
 
     /**
@@ -160,7 +160,7 @@ contract CurveSwapTest is BaseTest {
 
         // Redeeming half returns half the position, at the blend -- not the cheap leg first.
         (uint256 unlocked,) = vault.quoteBurn(alice, 100e18);
-        assertEq(unlocked, locked / 2, "half the position, at the blended rate");
+        assertApproxEqAbs(unlocked, locked / 2, _mintDust(1), "half the position, at the blended rate");
         assertGt(unlocked, cheapLeg, "more than the cheap leg alone");
         assertLt(unlocked, dearLeg, "less than the dear leg alone");
     }
@@ -303,11 +303,12 @@ contract CurveSwapTest is BaseTest {
     /// @dev The harvest sweep works off collateral actually held against `totalLocked0G`,
     ///      neither of which a swap touches, so the surplus is the same on both sides of one.
     function test_Swap_DoesNotDisturbTheHarvestSweep() public {
-        vm.warp(block.timestamp + 30 days);
+        _warp(30 days);
 
-        uint256 held = a0g.balanceOf(address(vault));
-        uint256 owed = Math_ceilDiv(vault.totalLocked0G() * WAD, vault.exchangeRate());
-        uint256 expected = held - owed;
+        // Read from the vault rather than recomputed here: the obligation is now the sum of
+        // two differently denominated halves, and a local restatement of it would only be a
+        // second, drifting copy of the formula under test.
+        uint256 expected = vault.pendingSurplus();
 
         vault.setCurve(IMintCurve(address(dearer)));
 
@@ -344,7 +345,7 @@ contract CurveSwapTest is BaseTest {
         (uint256 lockedBefore,,) = vault.positionOf(carol);
         _mintFor(carol, 30e18);
         (uint256 lockedAfter,,) = vault.positionOf(carol);
-        assertEq(lockedAfter - lockedBefore, quoted, "the mint charged what it quoted");
+        assertApproxEqAbs(lockedAfter - lockedBefore, quoted, _mintDust(1), "the mint charged what it quoted");
 
         // Alice leaves at her own average, unaffected by any of it.
         uint256 held = a0g.balanceOf(alice);
@@ -384,7 +385,7 @@ contract CurveSwapTest is BaseTest {
         vault.setCurve(IMintCurve(address(exponential)));
         uint256 paid = _mintFor(carol, 40e18);
         (uint256 locked,,) = vault.positionOf(carol);
-        assertEq(locked, exponential.cost(350e18, 40e18), "priced by the table");
+        assertApproxEqAbs(locked, exponential.cost(350e18, 40e18), _mintDust(1), "priced by the table");
 
         vault.setCurve(IMintCurve(address(mintCurve)));
 

@@ -168,7 +168,7 @@ contract MockA0GTest is Test {
     function test_Deposit_BuysFewerSharesAsTheRateRises() public {
         uint256 before_ = a0g.previewDeposit(100e18);
 
-        vm.warp(block.timestamp + 365 days);
+        vm.warp(vm.getBlockTimestamp() + 365 days);
 
         assertGt(oracle.getValue(), ER0, "the rate moved");
         assertLt(a0g.previewDeposit(100e18), before_, "so the same 100 W0G buys less");

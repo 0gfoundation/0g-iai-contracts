@@ -42,16 +42,29 @@ contract RandomSimTest is BaseTest {
     using Prng for Prng.State;
 
     uint256 internal constant SEED = 0x1A1_5EED;
+    /// The running product's fixed-point scale, mirrored from `EpochMath`.
+    uint256 internal constant RAY = 1e27;
     uint256 internal constant ACTORS = 8;
 
     Prng.State internal rng;
     address[ACTORS] internal actors;
 
     // --- shadow model ---
-    mapping(address => uint256) internal mLocked;
+    // A claim is held in two denominations and the proportion is the foundation's share, so
+    // the shadow tracks both halves and the epoch each position was last restated under.
+    mapping(address => uint256) internal mClaim0G;
+    mapping(address => uint256) internal mClaimA0G;
+    mapping(address => uint256) internal mEpoch;
     mapping(address => uint256) internal mOutstanding;
-    uint256 internal mTotalLocked;
+    uint256 internal mTotalClaim0G;
+    uint256 internal mTotalClaimA0G;
     uint256 internal mSupply;
+
+    // The history of the split, mirrored. Plain arrays rather than the contract's struct, so
+    // the shadow shares no type with what it is checking.
+    uint256[] internal mEpochRate;
+    uint256[] internal mEpochShare;
+    uint256[] internal mEpochCumG;
 
     mapping(address => uint256) internal mStaked;
     mapping(address => uint256) internal mCooling;
@@ -93,6 +106,10 @@ contract RandomSimTest is BaseTest {
     uint256 internal nRejections;
     uint256 internal nCapChanges;
     uint256 internal nCurveSwaps;
+    uint256 internal nShareChanges;
+    uint256 internal nExtremeShares;
+    uint256 internal nShareChangesWitnessed;
+    uint256 internal nBurnsAcrossAShareChange;
     uint256 internal nStepSwaps;
     uint256 internal nStepMints;
     uint256 internal nMintsRejectedByCap;
@@ -116,6 +133,9 @@ contract RandomSimTest is BaseTest {
         mR0 = R0;
         mSlope = SLOPE;
         mCap = CAP;
+        mEpochRate.push(ER0);
+        mEpochShare.push(HARVEST_SHARE);
+        mEpochCumG.push(RAY);
         mCurve = address(vault.curve());
     }
 
@@ -171,6 +191,50 @@ contract RandomSimTest is BaseTest {
         return (2 * (target - flat) * (WAD * WAD)) / (anchorCap * anchorCap);
     }
 
+    /**
+     * @dev The epoch arithmetic, restated in plain checked arithmetic instead of `Math.mulDiv`
+     *      and `EpochMath`. Same formulas, same flooring, different code -- so a regression in
+     *      the production rounding shows up as a disagreement here, exactly as it does for the
+     *      curve. What is *not* rechecked here is that the running product is a valid shortcut
+     *      for replaying every change one at a time; that belongs in `EpochMath.t.sol`, which
+     *      holds the shortcut against an independent replay over fuzzed epoch chains.
+     */
+    function _shadowSync(address a) internal view returns (uint256 c, uint256 ca) {
+        c = mClaim0G[a];
+        ca = mClaimA0G[a];
+        uint256 n = mEpochRate.length - 1;
+        uint256 j = mEpoch[a];
+        if (j == n) return (c, ca);
+
+        uint256 v = c + (ca * mEpochRate[j + 1]) / WAD;
+        if (mEpochCumG[n] != mEpochCumG[j + 1]) v = (v * mEpochCumG[n]) / mEpochCumG[j + 1];
+
+        uint256 share = mEpochShare[n];
+        c = (v * share) / WAD;
+        ca = (v * (WAD - share)) / mEpochRate[n];
+    }
+
+    /// @dev Brings a position up to date in the shadow's own storage, mirroring the lazy
+    ///      settlement the vault performs whenever it touches one.
+    function _shadowSettle(address a) internal {
+        (uint256 c, uint256 ca) = _shadowSync(a);
+        mClaim0G[a] = c;
+        mClaimA0G[a] = ca;
+        mEpoch[a] = mEpochRate.length - 1;
+    }
+
+    function _shadowPayout(uint256 c, uint256 ca, uint256 er) internal pure returns (uint256) {
+        return (c * WAD) / er + ca;
+    }
+
+    function _shadowOwed() internal view returns (uint256) {
+        return _shadowCeilDiv(mTotalClaim0G * WAD, vault.exchangeRate()) + mTotalClaimA0G;
+    }
+
+    function _shadowValue0G(uint256 c, uint256 ca, uint256 er) internal pure returns (uint256) {
+        return c + (ca * er) / WAD;
+    }
+
     function _shadowCeilDiv(uint256 a, uint256 b) internal pure returns (uint256) {
         return a == 0 ? 0 : (a - 1) / b + 1;
     }
@@ -223,6 +287,8 @@ contract RandomSimTest is BaseTest {
             _opSetCap();
         } else if (roll < 95) {
             _opSetCurve();
+        } else if (roll < 97) {
+            _opSetHarvestShare();
         } else {
             _opRejection();
         }
@@ -282,9 +348,15 @@ contract RandomSimTest is BaseTest {
 
         assertEq(a0g.balanceOf(a), heldBefore, "mint took exactly what the shadow priced");
 
-        mLocked[a] += expectedDelta;
+        _shadowSettle(a);
+        uint256 share = mEpochShare[mEpochShare.length - 1];
+        uint256 addedClaim0G = (expectedDelta * share) / WAD;
+        uint256 addedClaimA0G = (expectedIn * (WAD - share)) / WAD;
+        mClaim0G[a] += addedClaim0G;
+        mClaimA0G[a] += addedClaimA0G;
         mOutstanding[a] += d;
-        mTotalLocked += expectedDelta;
+        mTotalClaim0G += addedClaim0G;
+        mTotalClaimA0G += addedClaimA0G;
         mSupply += d;
         nMints++;
         if (mKind == CurveKind.Step) nStepMints++;
@@ -300,10 +372,17 @@ contract RandomSimTest is BaseTest {
         uint256 b = rng.chance(35) ? outstanding : rng.magnitude(1, outstanding);
         if (b == 0 || iai.balanceOf(a) < b) return;
 
-        uint256 expectedUnlock = (mLocked[a] * b) / outstanding;
+        // A redemption of a position that has sat through one or more changes of split is
+        // the case the running product exists for; count them so the run cannot stop
+        // exercising it unnoticed.
+        if (mEpoch[a] != mEpochRate.length - 1) nBurnsAcrossAShareChange++;
+        _shadowSettle(a);
+        // Both halves are released in the same proportion, each floored on its own.
+        uint256 unlocked0G = (mClaim0G[a] * b) / outstanding;
+        uint256 unlockedA0G = (mClaimA0G[a] * b) / outstanding;
         // Redemption no longer takes a minimum-output bound, so the shadow checks the payout
         // instead of merely bounding it.
-        uint256 expectedOut = (expectedUnlock * WAD) / vault.exchangeRate();
+        uint256 expectedOut = _shadowPayout(unlocked0G, unlockedA0G, vault.exchangeRate());
         uint256 heldBefore = a0g.balanceOf(a);
 
         vm.prank(a);
@@ -317,9 +396,11 @@ contract RandomSimTest is BaseTest {
         // closes minting, and redemption has to stay open through it.
         if (mSupply > mCap) nBurnsInBurnOnlyMode++;
 
-        mLocked[a] -= expectedUnlock;
+        mClaim0G[a] -= unlocked0G;
+        mClaimA0G[a] -= unlockedA0G;
         mOutstanding[a] -= b;
-        mTotalLocked -= expectedUnlock;
+        mTotalClaim0G -= unlocked0G;
+        mTotalClaimA0G -= unlockedA0G;
         mSupply -= b;
         nBurns++;
     }
@@ -411,6 +492,63 @@ contract RandomSimTest is BaseTest {
         nCurveSwaps++;
     }
 
+    /**
+     * @notice Governance retunes the split, mid-run, in both directions and to both extremes.
+     *
+     * @dev The change must move nothing: every position is worth what it was worth a moment
+     *      before, and so is the obligation the sweep is measured against. Both are asserted
+     *      here, across the whole range of shares rather than at a chosen one.
+     *
+     *      Positions are deliberately *not* settled in the shadow. The vault leaves them for
+     *      whenever each is next touched, and the per-step comparison then has to agree with
+     *      that lazy settlement -- which is the property worth running thousands of times.
+     */
+    function _opSetHarvestShare() internal {
+        uint256 roll = rng.next() % 10;
+        uint256 newShare = roll == 0 ? 0 : (roll == 1 ? WAD : rng.next() % (WAD + 1));
+
+        uint256 er = vault.exchangeRate();
+        uint256 owedBefore = _shadowOwed();
+        // Only a position already settled at the current epoch can be held to the strict
+        // statement. For one that is several changes behind, the before and after readings are
+        // two independent one-shot computations rather than one step applied to the other, so
+        // their flooring is free to differ by a wei in either direction -- which says nothing
+        // about whether the change itself moved anything. The lagging case is covered anyway:
+        // every position is compared against the shadow after every step.
+        address witness = _pickWithPosition();
+        if (witness != address(0) && mEpoch[witness] != mEpochRate.length - 1) witness = address(0);
+        uint256 valueBefore;
+        if (witness != address(0)) {
+            valueBefore = _shadowPayout(mClaim0G[witness], mClaimA0G[witness], er);
+        }
+
+        vault.setHarvestShare(newShare);
+
+        uint256 prevRate = mEpochRate[mEpochRate.length - 1];
+        uint256 prevShare = mEpochShare[mEpochShare.length - 1];
+        uint256 g = (RAY * (prevShare * prevRate + (WAD - prevShare) * er)) / (WAD * prevRate);
+        mEpochCumG.push((mEpochCumG[mEpochCumG.length - 1] * g) / RAY);
+        mEpochRate.push(er);
+        mEpochShare.push(newShare);
+
+        // The totals move in one step and round up, where a position rounds down.
+        uint256 v = mTotalClaim0G + _shadowCeilDiv(mTotalClaimA0G * er, WAD);
+        mTotalClaim0G = _shadowCeilDiv(v * newShare, WAD);
+        mTotalClaimA0G = _shadowCeilDiv(v * (WAD - newShare), er);
+
+        assertGe(_shadowOwed(), owedBefore, "a change may not shrink the obligation");
+        if (witness != address(0)) {
+            (uint256 c2, uint256 ca2) = _shadowSync(witness);
+            uint256 valueAfter = _shadowPayout(c2, ca2, er);
+            assertLe(valueAfter, valueBefore, "a change may not create value");
+            assertApproxEqAbs(valueAfter, valueBefore, 8, "a change may not destroy value");
+            nShareChangesWitnessed++;
+        }
+
+        if (newShare == 0 || newShare == WAD) nExtremeShares++;
+        nShareChanges++;
+    }
+
     function _opHarvest() internal {
         if (mPaused) {
             vm.expectRevert(abi.encodeWithSignature("EnforcedPause()"));
@@ -420,7 +558,7 @@ contract RandomSimTest is BaseTest {
         }
 
         uint256 held = a0g.balanceOf(address(vault));
-        uint256 owed = _shadowCeilDiv(mTotalLocked * WAD, vault.exchangeRate());
+        uint256 owed = _shadowOwed();
         uint256 expected = held > owed ? held - owed : 0;
 
         uint256 got = vault.harvest();
@@ -488,7 +626,7 @@ contract RandomSimTest is BaseTest {
     /// @dev Advancing time is what makes the collateral appreciate, so it is an operation
     ///      in its own right rather than something done between phases.
     function _opWarp() internal {
-        vm.warp(block.timestamp + rng.range(1 hours, 20 days));
+        _warp(rng.range(1 hours, 20 days));
     }
 
     /// @dev Transfers must not touch positions at all: the compute right moves, the
@@ -641,13 +779,24 @@ contract RandomSimTest is BaseTest {
         uint256 sumLocked;
         uint256 sumOutstanding;
         uint256 sumRegistry;
+        uint256 sumPayable;
+        uint256 er = vault.exchangeRate();
 
         for (uint256 i = 0; i < ACTORS; i++) {
             address a = actors[i];
 
             (uint256 locked, uint256 outstanding, uint256 avgRate) = vault.positionOf(a);
-            assertEq(locked, mLocked[a], "position.locked0G");
             assertEq(outstanding, mOutstanding[a], "position.iaiOutstanding");
+
+            // Both halves separately: value shifted from one to the other leaves the combined
+            // figure untouched, so comparing only `positionOf` would not see it.
+            (uint256 claim0G, uint256 claimA0G, uint256 epoch) = vault.positionClaims(a);
+            (uint256 mc, uint256 mca) = _shadowSync(a);
+            assertEq(claim0G, mc, "position.claim0G");
+            assertEq(claimA0G, mca, "position.claimA0G");
+            sumPayable += _shadowPayout(claim0G, claimA0G, er);
+            assertEq(epoch, mEpochRate.length - 1, "a read settles the position to the present");
+
             // F: a position is either fully open or fully closed, never half of each.
             assertEq(locked == 0, outstanding == 0, "F: no half-cleared position");
             if (outstanding != 0) {
@@ -662,9 +811,21 @@ contract RandomSimTest is BaseTest {
             sumRegistry += info.amountStaked + info.coolDownAmount;
         }
 
-        // A: positions reconcile against the running total.
-        assertEq(sumLocked, vault.totalLocked0G(), "A: positions sum to totalLocked0G");
-        assertEq(vault.totalLocked0G(), mTotalLocked, "A: total matches the model");
+        // A: positions reconcile against the running total. Not to the wei any more: a
+        // change of split restates the totals rounded up and each position rounded down, so
+        // the totals sit a little above the sum they stand for. The gap is bounded by a couple
+        // of wei per position per change and is claimable by nobody -- it leaves as surplus.
+        assertLe(sumLocked, vault.totalLocked0G(), "A: the total covers every position");
+        assertApproxEqAbs(
+            sumLocked, vault.totalLocked0G(), ACTORS * 8 * (nShareChanges + 1), "A: and by no more than dust"
+        );
+        assertEq(vault.totalClaim0G(), mTotalClaim0G, "A: the 0G half matches the model");
+        assertEq(vault.totalClaimA0G(), mTotalClaimA0G, "A: the a0G half matches the model");
+
+        // The split itself is compared state, so a change that did not land is caught on the
+        // next step rather than showing up later as a mispriced redemption.
+        assertEq(vault.harvestShare(), mEpochShare[mEpochShare.length - 1], "the split matches the model");
+        assertEq(vault.currentEpoch(), mEpochRate.length - 1, "the epoch matches the model");
 
         // D: the vault's counter, the token's supply and the sum of positions all agree,
         // and the cap holds.
@@ -682,8 +843,13 @@ contract RandomSimTest is BaseTest {
 
         // C: solvency. Independent of the curve by construction -- it is measured against
         // `totalLocked0G`, which accumulates what was actually collected.
-        uint256 owed = _shadowCeilDiv(vault.totalLocked0G() * WAD, vault.exchangeRate());
-        assertGe(a0g.balanceOf(address(vault)), owed, "C: vault covers its obligations");
+        // C: solvency. The promise is that every position can be paid, so that is what is
+        // asserted, strictly. `_shadowOwed` is the vault's own figure and is a deliberate
+        // ceiling -- the totals round up where positions round down -- so it is allowed to
+        // sit a few wei above the balance, per change of split, without anyone being short.
+        uint256 held = a0g.balanceOf(address(vault));
+        assertGe(held, sumPayable, "C: vault can pay every position");
+        assertLe(_shadowOwed(), held + 4 * (nShareChanges + 1), "C: the obligation is a ceiling");
 
         // I: the registry holds exactly what it accounts for.
         assertEq(sumRegistry, registry.totalStaked(), "I: buckets sum to totalStaked");
@@ -716,5 +882,12 @@ contract RandomSimTest is BaseTest {
         // sweep both kept working throughout.
         assertGt(nBurnsInBurnOnlyMode, 100, "coverage: redemption while the cap is below supply");
         assertGt(nHarvestsInBurnOnlyMode, 25, "coverage: harvest while the cap is below supply");
+        // The split is retuned throughout, to both extremes as well as between them, and
+        // positions are redeemed that have sat through one or more of those changes -- which
+        // is the case the running product exists to make cheap.
+        assertGt(nShareChanges, 100, "coverage: changes of the harvest share");
+        assertGt(nExtremeShares, 10, "coverage: shares of zero or one");
+        assertGt(nShareChangesWitnessed, 50, "coverage: changes measured against a settled position");
+        assertGt(nBurnsAcrossAShareChange, 200, "coverage: redemption after a change of share");
     }
 }

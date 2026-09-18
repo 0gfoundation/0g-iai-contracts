@@ -54,7 +54,8 @@ grep -nE "^\s*function .*(whenNotPaused|whenIssuanceOpen)" src/IAIVault.sol
 The right answer is exactly two, `mint` and `harvest`. `burn` must never appear.
 
 **5. Roles, not owners.** `AccessControlUpgradeable` with one role per responsibility:
-`DEFAULT_ADMIN_ROLE` (grant/revoke, `setFoundation`, `setCurve`, `setCap`), `PAUSER_ROLE` (pause/unpause only),
+`DEFAULT_ADMIN_ROLE` (grant/revoke, `setFoundation`, `setCurve`, `setCap`, `setHarvestShare`),
+`PAUSER_ROLE` (pause/unpause only),
 `PAUSE_EXEMPT_MINTER_ROLE` (`mint` while paused, and nothing else), `MINTER_BURNER_ROLE` (held
 solely by the vault), and beacon ownership (upgrades). Deployment puts admin, pauser and the beacons
 on the deploying account and `PAUSE_EXEMPT_MINTER_ROLE` on nobody, so the paused-mint path opens as
@@ -79,9 +80,10 @@ checks that the *deployer* is not left holding it. Its cost to `pause()` is R10.
 
 **`DEFAULT_ADMIN_ROLE` on the vault is an upgrade-grade key and must go to the same multisig as
 beacon ownership.** It was not always: before the curve moved out of the vault, admin could not touch
-pricing at all, and separating it from the upgrade key was a real boundary. `setCurve` and `setCap`
-erase that boundary — between them they can reprice all future issuance and lift the supply ceiling
-without limit, which is the same economic power an upgrade has. Treating admin as a lesser key
+pricing at all, and separating it from the upgrade key was a real boundary. `setCurve`, `setCap` and
+`setHarvestShare` erase that boundary — between them they can reprice all future issuance, lift the
+supply ceiling without limit, and redirect every future wei of collateral yield, which is the same
+economic power an upgrade has. Treating admin as a lesser key
 because it once was is the mistake this paragraph exists to prevent.
 
 `./handover.sh grant` then `./handover.sh renounce` moves them, in two transactions on purpose:
@@ -113,6 +115,13 @@ handled. The vault reads `iAI.totalSupply()` directly for exactly this reason; a
 counter with a fail-closed check was removed because the check was also read by `burn`, so any
 divergence would have bricked the one path that must always work.
 
+`Position.claimA0G` is not an exception either. It records which part of a position's claim keeps
+its own appreciation, and that cannot be derived from anything else -- not from `claim0G`, not from
+the balance, not from the curve. The thing rule 8 forbids in this area is the *other* design:
+storing the foundation's accrued yield as a `pendingHarvest` counter. That mirrors what
+`balance - owed` already says, drifts the moment anyone sends a0G to the vault directly, and turns
+the sweep into an accrual whose result depends on how often someone advances it.
+
 `LinearMintCurve.anchorCap` and `.target` are not an exception to this, and neither are
 `ExponentialMintCurve.base`, `.exponent` and `.target`. They are `immutable`, so they cannot drift
 from anything — nothing reads them to make a decision, and they enforce nothing. They record how the
@@ -126,6 +135,19 @@ give an array. The property to preserve is "no write path exists", and it is che
 ABI. Do not add one, however administrative it looks; a different table is a different curve and
 goes in by `deployCurve` + `setCurve`, where the history list records it.
 
+**9. The obligation is a function of recorded claims, never of the balance.** `harvest` moves the
+balance down to what the vault owes; it does not accrue. Write `owed` in terms of `held` -- for
+instance the natural-looking `surplus = share * (held - claim0G/rate)` for "only sweep half" -- and
+each call takes a cut of what the last one left, so repeated calls drain a surplus that is only
+partly the foundation's. `test_Harvest_StaysIdempotentAcrossAChange` pins it: two calls in a row,
+and two more across a change of share, all return zero after the first.
+
+**10. A position is reachable only through `_settled`.** It may be several harvest-share changes
+behind, and its stored numbers are then stale. A read that skipped the accessor would price a
+redemption against a split no longer in force -- silently, with nothing reverting. The mapping is
+documented as off limits for that reason; if you add a function that touches a position, go through
+the accessor, and if you add a new accessor make it settle too.
+
 ## Storage and upgrades
 
 Every contract uses **ERC-7201 namespaced storage** and sits behind its **own `UpgradeableBeacon`**,
@@ -136,7 +158,17 @@ transaction (split in two, anyone could initialize the proxy first and own the c
 **Adding storage:** append to the end of the namespaced struct. Never reorder, never remove, never
 change a type.
 
-**`IAIVault`'s struct was rewritten once, deliberately, and that licence has expired.** The curve
+**`IAIVault`'s struct has now been rewritten twice, and the licence is spent again.** The
+adjustable harvest share reshaped both `Position` (a second claim and an epoch marker, and
+`iaiOutstanding` narrowed to `uint128`) and `VaultStorage` (two fields and an array, inserted
+before `positions` rather than appended). It was safe only because Galileo was rebuilt from
+scratch and mainnet did not exist — the same circumstances, and the same one-time licence, as the
+curve and cap refactor below. **The `IAIVaultBeacon` recorded in `deployments/iai-16602.json`
+before that rebuild must never be pointed at this implementation.** `epochs` lands on a slot that
+reads zero, so `_settled` underflows on `$.epochs.length - 1` and every `burn` reverts with a bare
+panic; `positions` moves two slots, so every position reads zero as well. Append from here.
+
+**The original statement of this rule, from the curve and cap refactor, still applies verbatim:** The curve
 and cap refactor reordered and retyped every field. It was safe only because mainnet did not exist
 yet and Galileo was redeployed from scratch rather than upgraded — the append-only rule applies from
 that deployment onward. The reason it must: pointing a new implementation at an *old* proxy after a
@@ -203,6 +235,40 @@ Three layers, all required to stay green:
 - **`test/unit/`** — per-function behaviour, golden vectors for the curve, full revert and
   permission matrices, and the scripts' chain work via the abstract halves above.
 
+  **`test/unit/EpochMath.t.sol` holds the split's arithmetic against a replay.** The library
+  reaches the present in one step, by a ratio of running products; the test replays every change
+  one at a time, from an implementation that exists only in the test file. They agree to within a
+  stated bound -- the replay floors two buckets per step while the shortcut floors once at the end
+  -- and exactly, to the wei, when only one change separates the position from the present. Do not
+  make the test import the shortcut's algorithm.
+
+  **Be precise about what that buys.** The replay is independent of the *compression* and not of
+  the *single step*: it applies the same `V = c + a*r; c' = s*V; a' = (1-s)*V/r`. What holds that
+  step honest is elsewhere -- the golden vectors, computed by hand before any of this was written;
+  `testFuzz_AChangePreservesValue`, which constrains it without assuming the formula; and
+  `testFuzz_SplitKeepsOneMinusShareOfTheDeposit` and
+  `testFuzz_SettlementRestoresTheCanonicalCapture`, which pin the economics the formula exists to
+  deliver. The last of those replaced an assertion that constructed `claimA0G` from
+  `value * (1 - share) / rate` and then checked it equalled `backing * (1 - share)` -- an identity
+  of its own arithmetic, which could not have failed. **A capture test has to be applied to
+  something a function returned, not to something the test built.**
+
+  **`test/sim/EpochSim.t.sol` is the seeded long run over that arithmetic.** The property suite
+  above is Foundry fuzz: a thousand runs per property on a seed that changes each time, good for
+  discovery and useless for reproduction. This one is the repository's usual instrument -- a fixed
+  seed consumed in order, 10k steps by default and 100k under `SIM_LONG=1` -- over eight positions
+  and a growing history of the split. It reaches the state fuzzing cannot: a position opened at one
+  epoch, settled several changes later, replaced, and settled again, for as long as the run lasts.
+  Its dominance assertion caught a real modelling error while it was being written -- subtracting a
+  position's *stale* claims from totals restated at every change removes too little, and the totals
+  stop covering the positions within a few dozen steps. That is rule 10's reason, made executable.
+
+  **`test/unit/HarvestShare.t.sol` holds what the arithmetic cannot state on its own**: that a
+  change moves nothing between minter and foundation, that the sweep stays idempotent across one,
+  that settling late lands where settling at every step does, that catching up costs the same
+  however many changes were missed, and that redemption works from every state a change can leave
+  behind -- paused, cap at zero, and several epochs behind at once.
+
   **`test/unit/curves/CurveConformance.t.sol` is the gate on `IMintCurve`.** It is an abstract
   suite stating the behaviours a signature cannot: `cost` rounds up and is never zero, it is
   monotonic in supply, splitting a mint is never cheaper, a quote is affordable, and the curve is
@@ -225,13 +291,31 @@ Three layers, all required to stay green:
   step so a mismatch names the operation that caused it. Coverage counters are asserted at the end,
   so a run that degenerates into no-ops fails instead of passing vacuously.
 
-  Pausing, cap changes, curve swaps and rejected operations are all part of the operation mix. That
+  Pausing, cap changes, curve swaps, changes of the harvest share and rejected operations are all
+  part of the operation mix. That
   makes "redemption is never gated" a property held across the whole run rather than one assertion,
   against both switches: a 10k-operation run redeems ~860 times while paused and ~730 times with the
   cap below the live supply. It also checks **which** error each guard raises from whatever state the
   run has reached — `_opMint` draws its amount without reference to the cap and lets the shadow
   decide whether the mint should be refused, which is a stronger statement than a `supply <= cap`
   assertion and, unlike one, survives burn-only mode.
+
+  The harvest share is retuned throughout, to zero and one as well as between them, and the shadow
+  tracks both halves of every claim in plain checked arithmetic rather than through `EpochMath` --
+  same formulas, same flooring, different code, so a rounding regression shows up as a
+  disagreement. That is all it is, though: the shadow restates the production algorithm, so its
+  per-step equality cannot catch a *wrong* formula, only a changed one. The epoch arithmetic is
+  held to an independent standard in `EpochMath.t.sol` and `EpochSim.t.sol`, not here; what this
+  simulation adds on top of them is the two inequalities -- every position can be paid, and the
+  obligation stays within its stated ceiling of the balance -- which are model-independent. Positions are deliberately left unsettled in the shadow exactly as the vault leaves
+  them, so the per-step comparison is a check on the lazy settlement itself; a run redeems hundreds
+  of positions that have sat through one or more changes.
+
+  Two assertions there are weaker than they look and are that way on purpose. Positions no longer
+  sum exactly to the totals -- the totals are restated rounded up where a position is rounded down,
+  so they sit a few wei above, and the gap is bounded rather than zero. And solvency is asserted as
+  "every position can be paid" rather than "the balance covers `owed`", because `owed` is
+  deliberately a ceiling and may exceed the balance by a wei without anyone being short.
 
   Curve swaps go in both directions and alternate between the two shapes: every odd swap installs a
   random, monotone step table (coarse — 38 buckets of 500 iAI, so its top clears twice the cap and
@@ -275,6 +359,18 @@ Two Foundry behaviours worth knowing before writing tests here:
   call. `vault.grantRole(vault.PAUSER_ROLE(), x)` pranks `PAUSER_ROLE()`; `beacon.upgradeTo(address(
   new Impl()))` pranks the deployment. This has cost time three times in this repo. Hoist role
   constants and freshly deployed addresses into locals first.
+- **`vm.warp(block.timestamp + x)` cannot be repeated inside one function.** Under `via_ir` the
+  compiler reads `TIMESTAMP` once per function and reuses the value across the cheatcode calls in
+  between, so the second and later warps target the *same moment as the first* and the clock
+  silently stops advancing -- no revert, no warning, just a test that no longer exercises the
+  elapsed time it claims to. Three tests in this suite were doing exactly that and were found only
+  when a fourth one's assertion happened to depend on it. Use `_warp(by)` from `test/Base.t.sol`,
+  which reads the timestamp back through `vm.getBlockTimestamp()` and so cannot be folded away.
+  Check with:
+
+  ```bash
+  grep -rn "vm\.warp(block\.timestamp" test && echo "use _warp() instead"
+  ```
 - **`vm.getRecordedLogs()` drains the buffer.** A second call after the same `vm.recordLogs()`
   returns an empty array, so a helper that fetches internally can only be used once per
   transaction. A test needing two events out of one call must fetch the logs itself and search the
@@ -374,7 +470,13 @@ be constructed sits under `CurveParams.<Kind>` — for the linear curve, `R0`, `
 `Prices` array. This is the one nested object in an otherwise flat file, and it earns the exception:
 those keys are meaningless to any other curve, and each kind has its own block rather than
 piling more top-level keys into a shared namespace. `Cap` stays at the top level because it is the
-*vault's* ceiling, not a curve's.
+*vault's* ceiling, not a curve's, and `HarvestShare` for the same reason -- it governs how the
+collateral's yield is divided, which has nothing to do with what any curve charges to issue.
+
+`HarvestShare` records only the value in force, not the history. The vault keeps its own epochs, so
+a position settled under an older split is restated on chain rather than reconstructed from a file;
+`checkDeployment` holds the record against the chain, and `./run.sh setHarvestShare` moves both and
+then reads the chain back.
 
 **`Prices` is derived, never edited.** `./run.sh genCurve` runs `script/curve/gen_exponential_table.py`,
 which derives the table from `Base`, `Exponent`, `Target` and `BucketWidth` alone -- `ceil(Target /
@@ -489,12 +591,16 @@ follow-up to it. `pause()` stops minting but not redemption, so the window betwe
 response is the exposure. Note the cap is not a
 bound on this: it is adjustable upward, so "mint to the cap" is not a fixed quantity of damage.
 
-**R2 — a mint and an immediate full burn costs 1 wei.** Round-trips are effectively free, so a large
+**R2 — a mint and an immediate full burn costs at most 1 wei, and at a harvest share of zero
+costs nothing at all** (the share-denominated half comes back exactly as deposited). Round-trips are effectively free, so a large
 mint can be front-run for position. Accepted; slippage protection is the only defence, and the
 contracts are upgradeable if a holding period ever becomes necessary.
 
-**R3 — if the a0G oracle stops updating for 21 days, `mint`, `burn`, `harvest` and every quote
-revert.** An external dependency. Note that setting the upstream `maxAge` to zero freezes the system
+**R3 — if the a0G oracle stops updating for 21 days, `mint`, `burn`, `harvest`, `setHarvestShare`,
+`initialize` and every quote revert.** Settling a position across past changes of the harvest share
+does *not* need the oracle — `EpochMath.sync` uses only rates already recorded — so a stall adds no
+new way for redemption to fail, but it does mean a deployment cannot be made and the share cannot
+be retuned while the feed is down. An external dependency. Note that setting the upstream `maxAge` to zero freezes the system
 permanently rather than temporarily.
 
 **R4 — `totalLocked0G` can exceed the curve's `target`, and has no computable upper bound.** A
@@ -507,7 +613,21 @@ and do not reintroduce a numeric ceiling in its place.
 **R5 — a falling exchange rate leaves late redeemers short.** The harvest sweep goes quiet and
 redemption becomes first come, first served. Accepted on the premise that a0G does not depreciate;
 `test_RateFall_SweepGoesQuietButLateRedeemersAreLeftShort` pins the actual behaviour so it is a known
-quantity rather than a surprise. Lowering the cap to wind the system down makes this worse rather
+quantity rather than a surprise.
+
+The exposure now scales with `harvestShare`: only the 0G-denominated half of a claim grows in a0G
+terms as the rate falls, and the share-denominated half tracks the asset down of its own accord. A
+position opened at `er_m` is short by `harvestShare * (er_m / er - 1)` of its backing, so at a 50%
+share a 10% fall leaves a 5.6% shortfall where it used to leave 11.1%, and a halving leaves 50%
+rather than 100%.
+
+**Redemption is still not gated when this happens, and must not become so.** Closing the exit
+during a shortfall does not share the loss out, it strands everyone; and the only way to share it —
+a pro-rata haircut — requires the payout to read the vault's balance, which is exactly what rule 9
+forbids and what makes repeated harvesting safe. What to close is the entrance: `pause()`, and
+revoke `PAUSE_EXEMPT_MINTER_ROLE` with it, so nobody opens a new position against a vault that is
+already short. Note too that `setHarvestShare` refuses a fallen rate, so the split cannot be
+retuned until the collateral recovers — a governance action only, never a user's. Lowering the cap to wind the system down makes this worse rather
 than better — the sweep is gated by `pause`, not by the cap, so it keeps running. Use `pause()`,
 and revoke `PAUSE_EXEMPT_MINTER_ROLE` with it if anyone holds it (R10).
 
@@ -575,3 +695,79 @@ that closes issuance to everyone, so it is what to reach for when the answer has
   implementations use `@inheritdoc` plus any implementation-specific `@dev`.
 - Solidity NatSpec allows only `@custom:*` tags on struct fields — use plain `///` for those.
 - Commits and PR bodies carry no AI or tooling attribution, and no personal information.
+
+**R11 — governance can redirect every future wei of collateral yield.** `setHarvestShare` accepts
+anything from zero to one, so admin can take the whole appreciation or none of it, repeatedly and
+without notice. What it cannot do is reach backwards: the change restates every position by value
+at the current rate, so yield already earned keeps the split it was earned under and the obligation
+comes out unchanged to within the rounding. `test_Change_MovesNothingBetweenMinterAndFoundation`
+pins that, and the simulation re-checks it at every change from whatever state the run has reached.
+
+The power is therefore prospective and total rather than retroactive and partial, which is the
+right shape but is still an upgrade-grade lever — it is why the admin key belongs with beacon
+ownership. Accepted deliberately, with no timelock and no bound on the direction or size of a
+change, in exchange for being able to retune the product's economics without an upgrade.
+
+**A change is value-neutral at the instant it is made, and it is not forward-neutral. Do not
+write that there is "no advantage in choosing when".** Within an epoch a minter captures
+`1 - share` of the appreciation of the a0G they originally deposited. A change re-bases that onto
+the position's *current* value, which is smaller — the foundation has already taken its part — and
+at the same time turns the foundation's accrued part from a non-compounding 0G amount into shares
+that compound for it. So re-issuing the **same** share still moves future yield toward the
+foundation. Measured on the fixture, 100 iAI held for two years leaves the minter 509,574 0G with
+no change at all, 507,407 with one same-share change, and 505,396 with twenty-four.
+
+This is the compounding asymmetry a per-block accrual would have had, and avoiding it is why that
+design was rejected — restating at a change does not remove it. What it does is take it out of the
+hands of anyone who can call a permissionless function and put it in the hands of the one role that
+can call this one. It is bounded by how often governance acts, always runs in the foundation's
+favour, and is unreachable by a user. Removing it would mean keeping each position's original
+deposit basis as a third field and letting the 0G half go negative, which the two-bucket
+representation cannot express; that trade was not taken.
+
+**R12 — a change of the harvest share anchors on the live rate, permanently.**
+`setHarvestShare` reads the oracle, restates every position at that reading, and stores it in the
+epoch it opens, where it stays a divisor for every later settlement of a position that predates it.
+
+It is tempting to reason that a restatement which preserves value cannot transfer anything. That
+reasoning is wrong, and it is the trap this entry exists to close: the restatement preserves value
+*at the rate it uses*, and at any other rate it is a transfer of
+`(R - r) * [share * claimA0G - (1 - share) * claim0G / R]`, where `R` is what was read and `r` the
+truth.
+
+**Be careful with the scaling, which is not what it first looks like.** Writing `R = r(1 + e)`, that
+expression is about `e * share * (1 - share) * (the appreciation the position has accrued since it
+was last restated)` — not `e` times the whole claim. A position restated a moment ago has accrued
+nothing, and the transfer collapses to second order in `e`. Measured on the fixture (100 iAI, a 50%
+share, one year after the mint, surplus already swept, so the balance is exactly what is owed):
+
+| reading | shortfall against the balance |
+| --- | --- |
+| 2.00x | 15.1% |
+| 1.05x | 0.22% |
+| 1.01x | 0.03% |
+
+At twice the true rate the vault owes one holder 430,302 a0G against a balance of 373,798: **15%
+short with no rate fall having occurred**, the sweep silent, late redeemers stranded as in R5.
+(Before a sweep the balance is 399,877 and the same glitch leaves it 7.6% short — quote which.)
+
+Nor can it be undone: a rate below the previous epoch's is refused, so the corrective call is
+blocked until the true rate climbs past the bad reading. The only exit is an upgrade.
+
+Accepted, on the same premise the rest of the system rests on: the a0G oracle is assumed sound. R1
+already concedes that its write key can drain the vault outright without going near this path, so
+hardening one governance call against that key while the direct route stays open buys nothing.
+**That, and only that, is the reason there is no rate band here.** It is not that a band would be
+impractical: the scaling above says a deviation check at a couple of per cent would be both
+tolerable in ordinary operation and enough to keep the damage under a tenth of a per cent, so the
+mitigation is available and cheap if the premise underneath R1 ever changes. What a band must not
+be derived from is the oracle itself — an operator reading the same feed a block earlier gets a
+window centred on the manipulated value, which is no window at all.
+
+What *is* enforced is the direction. A reading below the previous epoch's is refused outright, so a
+depressed reading can never be anchored; only an inflated one can, and that is the case the
+operational rule covers.
+
+**Operational requirement: do not move the harvest share while the oracle is behaving unusually.**
+It is the same rule R1 already imposes, with a worse failure mode attached — R1's damage leaves the
+accounting intact, this writes a permanent divisor into it.

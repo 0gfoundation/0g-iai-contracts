@@ -164,12 +164,12 @@ contract CapChangeTest is BaseTest, UpgradeChecker {
         registry.stake(10e18);
         vm.prank(alice);
         registry.initiateUnstake(15e18);
-        vm.warp(block.timestamp + COOLDOWN + 1);
+        _warp(COOLDOWN + 1);
         vm.prank(alice);
         registry.unstake();
 
         // And the sweep, which is gated by `pause`, not by the cap.
-        vm.warp(block.timestamp + 30 days);
+        _warp(30 days);
         assertGt(vault.harvest(), 0, "the sweep still runs with issuance closed");
         _assertSolvent();
     }
@@ -179,11 +179,11 @@ contract CapChangeTest is BaseTest, UpgradeChecker {
     ///      redemption still works through it, which is the whole point of the pause design.
     function test_BurnOnly_IsNotAWindDownSwitchOnItsOwn() public {
         vault.setCap(0);
-        vm.warp(block.timestamp + 30 days);
+        _warp(30 days);
         assertGt(vault.harvest(), 0, "the cap does not reach the sweep");
 
         vault.pause();
-        vm.warp(block.timestamp + 30 days);
+        _warp(30 days);
         vm.expectRevert(abi.encodeWithSignature("EnforcedPause()"));
         vault.harvest();
 

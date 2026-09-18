@@ -68,7 +68,8 @@ contract IAIVaultTest is BaseTest {
             a0G: a0G_,
             foundation: foundation_,
             curve: address(mintCurve),
-            cap: CAP
+            cap: CAP,
+            harvestShare: 0.5e18
         });
     }
 
@@ -92,18 +93,20 @@ contract IAIVaultTest is BaseTest {
         assertEq(iai.balanceOf(alice), d, "iAI issued");
         assertEq(vault.supply(), d, "vault supply counter");
         assertEq(iai.totalSupply(), d, "token supply agrees");
-        assertEq(vault.totalLocked0G(), delta0G, "collateral recorded in 0G value");
+        assertApproxEqAbs(vault.totalLocked0G(), delta0G, _mintDust(1), "collateral recorded in 0G value");
         assertEq(a0g.balanceOf(address(vault)), a0GIn, "collateral escrowed");
 
         (uint256 locked, uint256 outstanding, uint256 avgRate) = vault.positionOf(alice);
-        assertEq(locked, delta0G);
+        assertApproxEqAbs(locked, delta0G, _mintDust(1));
         assertEq(outstanding, d);
-        assertEq(avgRate, delta0G, "average entry rate for a single 1-iAI mint");
+        assertApproxEqAbs(avgRate, delta0G, _mintDust(1), "average entry rate for a single 1-iAI mint");
     }
 
+    /// @dev The 0G-denominated half of a claim comes from the curve, never from the a0G that
+    ///      happened to buy it. (Its other half *is* denominated in a0G -- deliberately, that
+    ///      is what leaves the minter their share of the appreciation -- but that half is
+    ///      `a0GIn` scaled by the split, not a substitute for the curve's price.)
     function test_Mint_RecordsCurveValueNotA0GAmount() public {
-        // The position must be denominated in 0G value. Recording the a0G amount instead
-        // would make a position's worth depend on the rate at the moment it was opened.
         uint256 d = 10e18;
         (uint256 delta0G, uint256 a0GIn) = vault.quoteMint(d);
         _mintFor(alice, d);
@@ -301,7 +304,7 @@ contract IAIVaultTest is BaseTest {
         vm.prank(carol);
         vault.mint(d, a0GIn - 1, block.timestamp);
 
-        vm.warp(block.timestamp + 1);
+        _warp(1);
         uint256 past = block.timestamp - 1;
         vm.expectRevert(abi.encodeWithSelector(IIAIVault.Expired.selector, past, block.timestamp));
         vm.prank(carol);
@@ -379,15 +382,18 @@ contract IAIVaultTest is BaseTest {
      *      appreciates. There is no adverse surprise for a bound to catch -- delay is the
      *      only thing that costs the redeemer, and `deadline` already limits that.
      */
-    function test_Burn_PaysAFixed0GValueThatBuysLessA0GOverTime() public {
+    /// @dev Both halves of a claim at once. The 0G owed rises, because the a0G-denominated
+    ///      half of the position appreciates with the collateral; the a0G paid out still
+    ///      falls, because the 0G-denominated half buys fewer shares as they get dearer.
+    function test_Burn_OwesMore0GOverTimeWhileStillReturningFewerTokens() public {
         _mintFor(alice, 10e18);
         (uint256 unlockedNow, uint256 a0GNow) = vault.quoteBurn(alice, 10e18);
 
-        vm.warp(block.timestamp + 180 days);
+        _warp(180 days);
 
         (uint256 unlockedLater, uint256 a0GLater) = vault.quoteBurn(alice, 10e18);
-        assertEq(unlockedLater, unlockedNow, "the 0G owed does not move");
-        assertLt(a0GLater, a0GNow, "the same 0G buys less a0G once a0G has appreciated");
+        assertGt(unlockedLater, unlockedNow, "the minter's half of the appreciation is theirs");
+        assertLt(a0GLater, a0GNow, "the vault's half still buys less a0G once a0G has appreciated");
 
         vm.prank(alice);
         vault.burn(10e18, block.timestamp);
@@ -441,12 +447,15 @@ contract IAIVaultTest is BaseTest {
     // Harvest
     // -------------------------------------------------------------------------
 
-    function test_Harvest_MovesOnlyAppreciationAndLeavesPositionsUntouched() public {
+    /// @dev The sweep takes the foundation's share of the appreciation and nothing else. The
+    ///      position is not left untouched, as it once was: half of a position is denominated
+    ///      in a0G and rises with it, and that half is exactly what the sweep must not reach.
+    function test_Harvest_TakesItsShareOfAppreciationAndLeavesTheMintersShareInThePosition() public {
         uint256 d = 1e18;
         _mintFor(alice, d);
         (uint256 lockedBefore,,) = vault.positionOf(alice);
 
-        vm.warp(block.timestamp + 365 days);
+        _warp(365 days);
 
         uint256 pending = vault.pendingSurplus();
         assertGt(pending, 0, "a year of accrual must show up");
@@ -456,19 +465,28 @@ contract IAIVaultTest is BaseTest {
         assertEq(a0g.balanceOf(foundation), pending, "surplus goes to the foundation");
 
         (uint256 lockedAfter,,) = vault.positionOf(alice);
-        assertEq(lockedAfter, lockedBefore, "principal is denominated in 0G and does not move");
+        assertGt(lockedAfter, lockedBefore, "the minter keeps their share of the appreciation");
+
+        // The two shares of the same appreciation, measured against the same position.
+        uint256 er = vault.exchangeRate();
+        uint256 minterGain = lockedAfter - lockedBefore;
+        uint256 foundationGain = (pending * er) / WAD;
+        assertApproxEqRel(minterGain, foundationGain, 1e12, "a 50/50 share splits it evenly");
+
         _assertSolvent();
     }
 
-    function test_Harvest_IsNoOpWhenNothingAccrued() public {
+    /// @dev Not quite a no-op: splitting a claim into two denominations floors both, and the
+    ///      few wei that leaves behind belong to nobody, so they show up as surplus at once.
+    function test_Harvest_SweepsNothingButRoundingResidueRightAfterAMint() public {
         _mintFor(alice, 1e18);
-        assertEq(vault.harvest(), 0, "nothing to sweep immediately after minting");
+        assertLe(vault.harvest(), _mintDust(1), "nothing to sweep immediately after minting");
     }
 
     function test_Harvest_LeavesEnoughToCoverEveryRedemption() public {
         _mintFor(alice, 100e18);
         _mintFor(bob, 100e18);
-        vm.warp(block.timestamp + 200 days);
+        _warp(200 days);
         vault.harvest();
         _assertSolvent();
 
@@ -481,19 +499,31 @@ contract IAIVaultTest is BaseTest {
     /// @dev A user who redeems after appreciation receives fewer a0G than they deposited,
     ///      while their 0G value is untouched. This is the single hardest thing to
     ///      communicate, so it is pinned here as an executable statement of the property.
-    function test_Redemption_ReturnsFewerTokensButTheSame0GValue() public {
+    /// @dev Fewer tokens, more value. The minter's share of a year of appreciation stays in
+    ///      the position, so what comes back is worth more in 0G than what went in even though
+    ///      it is fewer a0G.
+    function test_Redemption_ReturnsFewerTokensButMore0GValue() public {
         uint256 d = 1e18;
         uint256 a0GIn = _mintFor(alice, d);
         (uint256 locked0G,,) = vault.positionOf(alice);
+        uint256 valueIn = (a0GIn * vault.exchangeRate()) / WAD;
 
-        vm.warp(block.timestamp + 365 days);
+        _warp(365 days);
         vault.harvest();
 
         (, uint256 a0GOut) = vault.quoteBurn(alice, d);
         assertLt(a0GOut, a0GIn, "fewer tokens come back");
 
-        uint256 valueOut = (a0GOut * vault.exchangeRate()) / WAD;
-        assertApproxEqAbs(valueOut, locked0G, 1e6, "but the same 0G value, to rounding dust");
+        uint256 er = vault.exchangeRate();
+        uint256 valueOut = (a0GOut * er) / WAD;
+        assertGt(valueOut, valueIn, "but worth more than was put in");
+
+        (uint256 lockedNow,,) = vault.positionOf(alice);
+        assertApproxEqAbs(valueOut, lockedNow, 1e6, "and worth what the position says it is");
+
+        // Half of the appreciation on the collateral, which is what a 50/50 share means.
+        uint256 appreciation = (a0GIn * er) / WAD - valueIn;
+        assertApproxEqRel(valueOut - locked0G, appreciation / 2, 1e12, "the minter's half");
     }
 
     /**
@@ -512,7 +542,7 @@ contract IAIVaultTest is BaseTest {
     function test_RateFall_SweepGoesQuietButLateRedeemersAreLeftShort() public {
         _mintFor(alice, 100e18);
         _mintFor(bob, 100e18);
-        vm.warp(block.timestamp + 100 days);
+        _warp(100 days);
         vault.harvest(); // sweeps the vault down to exactly what it owes
 
         oracle.setValue((vault.exchangeRate() * 90) / 100);
@@ -604,7 +634,7 @@ contract IAIVaultTest is BaseTest {
         bytes32 exemption = vault.PAUSE_EXEMPT_MINTER_ROLE();
         vault.grantRole(exemption, carol);
         _mintFor(alice, 100e18);
-        vm.warp(block.timestamp + 30 days);
+        _warp(30 days);
         vm.prank(guardian);
         vault.pause();
 
@@ -636,15 +666,19 @@ contract IAIVaultTest is BaseTest {
     function test_Invariants_HoldAcrossMixedActivity() public {
         _mintFor(alice, 500e18);
         _mintFor(bob, 1_200e18);
-        vm.warp(block.timestamp + 30 days);
+        _warp(30 days);
         vault.harvest();
         _burn(alice, 200e18);
         _mintFor(carol, 300e18);
-        vm.warp(block.timestamp + 100 days);
+        _warp(100 days);
         _burn(bob, 1_200e18);
         vault.harvest();
 
-        assertEq(_sumLocked(_actors()), vault.totalLocked0G(), "A: positions sum to the total");
+        // The totals round up where a position rounds down, so they sit at or a few wei
+        // above the sum of the positions they stand for. That gap is claimable by nobody.
+        uint256 summed = _sumLocked(_actors());
+        assertLe(summed, vault.totalLocked0G(), "A: the total covers every position");
+        assertApproxEqAbs(summed, vault.totalLocked0G(), _mintDust(8), "A: and by no more than dust");
         assertEq(vault.supply(), iai.totalSupply(), "D: supply counters agree");
         assertLe(vault.supply(), vault.cap(), "D: cap respected");
         _assertSolvent(); // C

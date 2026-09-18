@@ -92,7 +92,9 @@ contract EventsTest is BaseTest {
         assertEq(supplyAfter, iai.totalSupply(), "supplyAfter equals the live supply");
         assertEq(totalLocked0GAfter, vault.totalLocked0G(), "totalLocked0GAfter equals storage");
         (uint256 locked,,) = vault.positionOf(alice);
-        assertEq(locked, locked0G, "the position grew by exactly what was reported");
+        // `locked0G` is the curve's price; the position records it split across two
+        // denominations, each floored, so it lands a few wei under rather than exactly on it.
+        assertApproxEqAbs(locked, locked0G, _mintDust(1), "the position grew by what was reported");
     }
 
     function test_Burned_CarriesTheStateItLeft() public {
@@ -128,7 +130,7 @@ contract EventsTest is BaseTest {
 
     function test_Harvested_CarriesTheStateItLeft() public {
         _mintFor(alice, 5e18);
-        vm.warp(block.timestamp + 30 days);
+        _warp(30 days);
         uint256 expected = vault.pendingSurplus();
         assertGt(expected, 0, "there must be something to sweep");
 
@@ -202,7 +204,7 @@ contract EventsTest is BaseTest {
         vm.prank(alice);
         registry.initiateUnstake(1e18);
 
-        vm.warp(block.timestamp + 12 hours);
+        _warp(12 hours);
         vm.recordLogs();
         vm.prank(alice);
         registry.initiateUnstake(1e18);
@@ -226,7 +228,7 @@ contract EventsTest is BaseTest {
         registry.stake(4e18);
         vm.prank(alice);
         registry.initiateUnstake(4e18);
-        vm.warp(block.timestamp + COOLDOWN);
+        _warp(COOLDOWN);
 
         vm.recordLogs();
         vm.prank(alice);
@@ -301,7 +303,8 @@ contract EventsTest is BaseTest {
             a0G: address(a0g),
             foundation: foundation,
             curve: address(mintCurve),
-            cap: CAP
+            cap: CAP,
+            harvestShare: 0.5e18
         });
 
         vm.recordLogs();

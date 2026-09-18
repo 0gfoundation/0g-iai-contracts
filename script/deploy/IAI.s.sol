@@ -35,6 +35,7 @@ contract IAIScript is Script, JsonUtils, Constants, IAIDeployer {
             foundation: vm.parseJsonAddress(json, ".Foundation"),
             curveKind: vm.parseJsonString(json, ".MintCurveKind"),
             cap: vm.parseJsonUint(json, ".Cap"),
+            harvestShare: vm.parseJsonUint(json, ".HarvestShare"),
             cooldownDuration: vm.parseJsonUint(json, ".CooldownDuration"),
             name: vm.parseJsonString(json, ".Name"),
             symbol: vm.parseJsonString(json, ".Symbol")
@@ -67,6 +68,7 @@ contract IAIScript is Script, JsonUtils, Constants, IAIDeployer {
         // `CurveParams` are never written by any script, and seeding the object from the file
         // above already carries them through untouched.
         vm.serializeString(obj, "Cap", vm.toString(c.cap));
+        vm.serializeString(obj, "HarvestShare", vm.toString(c.harvestShare));
         vm.serializeString(obj, "CooldownDuration", vm.toString(c.cooldownDuration));
         vm.serializeString(obj, "Name", c.name);
         vm.serializeString(obj, "Symbol", c.symbol);
@@ -330,6 +332,40 @@ contract IAIScript is Script, JsonUtils, Constants, IAIDeployer {
         console.log("cap            ", newCap);
     }
 
+    /**
+     * @notice Moves the foundation's cut of collateral appreciation. `DEFAULT_ADMIN_ROLE`.
+     * @param newShare New cut, WAD. `1e18` sends every wei of appreciation to the foundation,
+     *                 zero sends all of it to minters.
+     *
+     * @dev Writes the record after the chain, like `setCap`. Nothing about a past cut needs
+     *      recording: the vault keeps its own history, and a position settled under an older
+     *      one is restated on chain rather than reconstructed from a file.
+     */
+    function setHarvestShare(uint256 newShare) public {
+        (string memory json, string memory path) = loadOrInitJson("iai");
+        IAIVault vault = IAIVault(vm.parseJsonAddress(json, ".IAIVault"));
+
+        console.log("share, before  ", vault.harvestShare());
+        vm.startBroadcast(vm.envUint("PRIVATE_KEY"));
+        vault.setHarvestShare(newShare);
+        vm.stopBroadcast();
+
+        string memory o = "iai";
+        vm.serializeJson(o, json);
+        vm.writeJson(vm.serializeString(o, "HarvestShare", vm.toString(newShare)), path);
+        console.log("share, after   ", newShare);
+        console.log("epoch          ", vault.currentEpoch());
+    }
+
+    /// @notice Reads the cut in force, and the epoch it was set in, back off the chain.
+    function harvestShare() public view {
+        (string memory json,) = loadOrInitJsonView("iai");
+        IAIVault vault = IAIVault(vm.parseJsonAddress(json, ".IAIVault"));
+        console.log("harvestShare   ", vault.harvestShare());
+        console.log("epoch          ", vault.currentEpoch());
+        console.log("anchored rate  ", vault.epochAt(vault.currentEpoch()).rate);
+    }
+
     function setFoundation(address newFoundation) public {
         (string memory json,) = loadOrInitJson("iai");
         vm.startBroadcast(vm.envUint("PRIVATE_KEY"));
@@ -458,6 +494,7 @@ contract IAIScript is Script, JsonUtils, Constants, IAIDeployer {
             foundation: vm.parseJsonAddress(json, ".Foundation"),
             curveKind: vm.parseJsonString(json, ".MintCurveKind"),
             cap: vm.parseJsonUint(json, ".Cap"),
+            harvestShare: vm.parseJsonUint(json, ".HarvestShare"),
             cooldownDuration: vm.parseJsonUint(json, ".CooldownDuration"),
             name: vm.parseJsonString(json, ".Name"),
             symbol: vm.parseJsonString(json, ".Symbol")
@@ -530,6 +567,8 @@ contract IAIScript is Script, JsonUtils, Constants, IAIDeployer {
         console.log("cap            ", vault.cap());
         console.log("remainingCap   ", vault.remainingCap());
         console.log("curve          ", address(vault.curve()));
+        console.log("harvestShare   ", vault.harvestShare());
+        console.log("epoch          ", vault.currentEpoch());
         console.log("totalLocked0G  ", vault.totalLocked0G());
         console.log("exchangeRate   ", vault.exchangeRate());
         console.log("pendingSurplus ", vault.pendingSurplus());
