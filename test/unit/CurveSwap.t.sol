@@ -303,7 +303,7 @@ contract CurveSwapTest is BaseTest {
     /// @dev The harvest sweep works off collateral actually held against `totalLocked0G`,
     ///      neither of which a swap touches, so the surplus is the same on both sides of one.
     function test_Swap_DoesNotDisturbTheHarvestSweep() public {
-        vm.warp(block.timestamp + 30 days);
+        _warp(30 days);
 
         // Read from the vault rather than recomputed here: the obligation is now the sum of
         // two differently denominated halves, and a local restatement of it would only be a

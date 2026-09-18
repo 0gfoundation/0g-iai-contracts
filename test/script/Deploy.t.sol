@@ -652,7 +652,7 @@ contract DeployScriptTest is Test {
         assertEq(registry.stakedOf(user), 1e18, "staking works end to end");
 
         // Harvest entrypoint, after the mock oracle has accrued.
-        vm.warp(block.timestamp + 2 days);
+        vm.warp(vm.getBlockTimestamp() + 2 days);
         assertGt(vault.pendingSurplus(), 0, "mock oracle accrues fast enough to be observable");
         ops.harvest();
         assertEq(vault.pendingSurplus(), 0, "harvest entrypoint swept it");

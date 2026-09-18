@@ -626,7 +626,7 @@ contract RandomSimTest is BaseTest {
     /// @dev Advancing time is what makes the collateral appreciate, so it is an operation
     ///      in its own right rather than something done between phases.
     function _opWarp() internal {
-        vm.warp(block.timestamp + rng.range(1 hours, 20 days));
+        _warp(rng.range(1 hours, 20 days));
     }
 
     /// @dev Transfers must not touch positions at all: the compute right moves, the

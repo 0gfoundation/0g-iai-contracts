@@ -302,7 +302,7 @@ contract IAIVaultTest is BaseTest {
         vm.prank(carol);
         vault.mint(d, a0GIn - 1, block.timestamp);
 
-        vm.warp(block.timestamp + 1);
+        _warp(1);
         uint256 past = block.timestamp - 1;
         vm.expectRevert(abi.encodeWithSelector(IIAIVault.Expired.selector, past, block.timestamp));
         vm.prank(carol);
@@ -387,7 +387,7 @@ contract IAIVaultTest is BaseTest {
         _mintFor(alice, 10e18);
         (uint256 unlockedNow, uint256 a0GNow) = vault.quoteBurn(alice, 10e18);
 
-        vm.warp(block.timestamp + 180 days);
+        _warp(180 days);
 
         (uint256 unlockedLater, uint256 a0GLater) = vault.quoteBurn(alice, 10e18);
         assertGt(unlockedLater, unlockedNow, "the minter's half of the appreciation is theirs");
@@ -453,7 +453,7 @@ contract IAIVaultTest is BaseTest {
         _mintFor(alice, d);
         (uint256 lockedBefore,,) = vault.positionOf(alice);
 
-        vm.warp(block.timestamp + 365 days);
+        _warp(365 days);
 
         uint256 pending = vault.pendingSurplus();
         assertGt(pending, 0, "a year of accrual must show up");
@@ -484,7 +484,7 @@ contract IAIVaultTest is BaseTest {
     function test_Harvest_LeavesEnoughToCoverEveryRedemption() public {
         _mintFor(alice, 100e18);
         _mintFor(bob, 100e18);
-        vm.warp(block.timestamp + 200 days);
+        _warp(200 days);
         vault.harvest();
         _assertSolvent();
 
@@ -506,7 +506,7 @@ contract IAIVaultTest is BaseTest {
         (uint256 locked0G,,) = vault.positionOf(alice);
         uint256 valueIn = (a0GIn * vault.exchangeRate()) / WAD;
 
-        vm.warp(block.timestamp + 365 days);
+        _warp(365 days);
         vault.harvest();
 
         (, uint256 a0GOut) = vault.quoteBurn(alice, d);
@@ -540,7 +540,7 @@ contract IAIVaultTest is BaseTest {
     function test_RateFall_SweepGoesQuietButLateRedeemersAreLeftShort() public {
         _mintFor(alice, 100e18);
         _mintFor(bob, 100e18);
-        vm.warp(block.timestamp + 100 days);
+        _warp(100 days);
         vault.harvest(); // sweeps the vault down to exactly what it owes
 
         oracle.setValue((vault.exchangeRate() * 90) / 100);
@@ -632,7 +632,7 @@ contract IAIVaultTest is BaseTest {
         bytes32 exemption = vault.PAUSE_EXEMPT_MINTER_ROLE();
         vault.grantRole(exemption, carol);
         _mintFor(alice, 100e18);
-        vm.warp(block.timestamp + 30 days);
+        _warp(30 days);
         vm.prank(guardian);
         vault.pause();
 
@@ -664,11 +664,11 @@ contract IAIVaultTest is BaseTest {
     function test_Invariants_HoldAcrossMixedActivity() public {
         _mintFor(alice, 500e18);
         _mintFor(bob, 1_200e18);
-        vm.warp(block.timestamp + 30 days);
+        _warp(30 days);
         vault.harvest();
         _burn(alice, 200e18);
         _mintFor(carol, 300e18);
-        vm.warp(block.timestamp + 100 days);
+        _warp(100 days);
         _burn(bob, 1_200e18);
         vault.harvest();
 

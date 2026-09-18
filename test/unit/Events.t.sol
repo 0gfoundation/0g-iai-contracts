@@ -130,7 +130,7 @@ contract EventsTest is BaseTest {
 
     function test_Harvested_CarriesTheStateItLeft() public {
         _mintFor(alice, 5e18);
-        vm.warp(block.timestamp + 30 days);
+        _warp(30 days);
         uint256 expected = vault.pendingSurplus();
         assertGt(expected, 0, "there must be something to sweep");
 
@@ -204,7 +204,7 @@ contract EventsTest is BaseTest {
         vm.prank(alice);
         registry.initiateUnstake(1e18);
 
-        vm.warp(block.timestamp + 12 hours);
+        _warp(12 hours);
         vm.recordLogs();
         vm.prank(alice);
         registry.initiateUnstake(1e18);
@@ -228,7 +228,7 @@ contract EventsTest is BaseTest {
         registry.stake(4e18);
         vm.prank(alice);
         registry.initiateUnstake(4e18);
-        vm.warp(block.timestamp + COOLDOWN);
+        _warp(COOLDOWN);
 
         vm.recordLogs();
         vm.prank(alice);

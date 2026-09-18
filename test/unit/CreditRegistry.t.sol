@@ -112,7 +112,7 @@ contract CreditRegistryTest is BaseTest {
         registry.initiateUnstake(10e18);
         uint256 firstEnd = registry.stakedInfoOf(alice).coolDownEnd;
 
-        vm.warp(block.timestamp + COOLDOWN - 1);
+        _warp(COOLDOWN - 1);
         vm.prank(alice);
         registry.initiateUnstake(10e18);
 
@@ -154,7 +154,7 @@ contract CreditRegistryTest is BaseTest {
         vm.prank(alice);
         registry.initiateUnstake(STAKE);
 
-        vm.warp(block.timestamp + COOLDOWN);
+        _warp(COOLDOWN);
         vm.prank(alice);
         registry.unstake();
 
@@ -171,7 +171,7 @@ contract CreditRegistryTest is BaseTest {
         registry.stake(STAKE);
         vm.prank(alice);
         registry.initiateUnstake(STAKE);
-        vm.warp(block.timestamp + COOLDOWN);
+        _warp(COOLDOWN);
         vm.prank(alice);
         registry.unstake();
 
@@ -204,7 +204,7 @@ contract CreditRegistryTest is BaseTest {
 
         vm.prank(alice);
         registry.initiateUnstake(STAKE);
-        vm.warp(block.timestamp + COOLDOWN);
+        _warp(COOLDOWN);
         vm.prank(alice);
         registry.unstake();
 
@@ -263,7 +263,7 @@ contract CreditRegistryTest is BaseTest {
 
         vm.prank(alice);
         registry.initiateUnstake(100e18);
-        vm.warp(block.timestamp + COOLDOWN);
+        _warp(COOLDOWN);
         vm.prank(alice);
         registry.unstake();
 
@@ -281,14 +281,14 @@ contract CreditRegistryTest is BaseTest {
         registry.initiateUnstake(20e18);
         _assertRegistryAccounting([alice, bob]);
 
-        vm.warp(block.timestamp + COOLDOWN);
+        _warp(COOLDOWN);
         vm.prank(alice);
         registry.unstake();
         vm.prank(bob);
         registry.initiateUnstake(25e18);
         _assertRegistryAccounting([alice, bob]);
 
-        vm.warp(block.timestamp + COOLDOWN);
+        _warp(COOLDOWN);
         vm.prank(bob);
         registry.unstake();
         _assertRegistryAccounting([alice, bob]);

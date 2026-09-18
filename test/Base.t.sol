@@ -197,4 +197,20 @@ abstract contract BaseTest is Test, IAIDeployer {
         return mints * (2 + 2 * (oracle.getValue() / WAD));
     }
 
+
+    /**
+     * @notice Advances the clock by `by` seconds.
+     *
+     * @dev Use this rather than `_warp(by)`. Under `via_ir` the compiler
+     *      reads `TIMESTAMP` once per function and reuses the value across the cheatcode
+     *      calls between, so a second warp written that way targets the same moment as the
+     *      first and the clock silently stops advancing -- no revert, no warning, just a test
+     *      that no longer exercises the passage of time it claims to. Three tests in this
+     *      suite were doing exactly that. Reading the timestamp back through a cheatcode
+     *      cannot be folded away.
+     */
+    function _warp(uint256 by) internal {
+        vm.warp(vm.getBlockTimestamp() + by);
+    }
+
 }
