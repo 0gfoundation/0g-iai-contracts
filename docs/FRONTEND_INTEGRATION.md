@@ -20,21 +20,26 @@ const display  = formatUnits(onChain, 18);    // 1500000000000000000n -> "1.5"
 Never build these by hand and never use JavaScript `number` for them — they exceed `Number.MAX_SAFE_INTEGER`.
 Use `bigint` end to end.
 
-**② Redeeming returns fewer a0G tokens than were deposited — the contract is working correctly.**
-a0G is yield-bearing: a holder's balance never grows, the **exchange rate** does. Positions are
-recorded in **0G value**, not in a0G tokens, so redemption returns the same 0G value that was locked,
-which by then is a smaller number of a0G. Measured on a test deployment:
+**② Redeeming returns fewer a0G tokens than were deposited, and more 0G value — the contract is
+working correctly.** a0G is yield-bearing: a holder's balance never grows, the **exchange rate**
+does. A position's appreciation is split between the minter and the foundation at the vault's
+`harvestShare()` (50% at launch): the minter's part stays in the position and is paid out at
+redemption, the foundation's part is swept by `harvest`. So the 0G value of a position rises over
+time, by the minter's share of the appreciation, while the a0G it converts to falls — but by less
+than the rate rose. Worked example at a 50% share, 100 a0G deposited at a rate of 1.0 (100 0G) and
+redeemed when the rate is 1.2:
 
 | | a0G tokens | 0G value |
 | --- | --- | --- |
-| Locked | 4,330.885 | 4,331.0108 |
-| Redeemed later | 3,922.223 | 4,331.0108 |
-| Difference | −408.66 | 0 |
+| Locked | 100 | 100 |
+| Redeemed later | 91.67 | 110 |
+| Difference | −8.33 | +10 (half of the 20 0G the collateral gained) |
 
 Both numbers are available from the contracts: every quote returns the 0G value *and* the a0G amount
-(§3.1, §5.1), and `exchangeRate()` converts between them at any time. Which one a screen leads with is
-a product decision — the point here is that the two units diverge over time and are not
-interchangeable, so a value cached in one unit cannot be re-displayed in the other later.
+(§3.1, §5.1), `positionOf` reports the position's current 0G value, and `exchangeRate()` converts
+between the units at any time. Which one a screen leads with is a product decision — the point here
+is that the two units diverge over time and are not interchangeable, so a value cached in one unit
+cannot be re-displayed in the other later, and neither of them stays constant.
 
 ---
 
@@ -260,9 +265,9 @@ IAIVault.positionOf(address account)
 
 | Return | Meaning | Display |
 | --- | --- | --- |
-| `locked0G` | 0G value this user has locked. | `formatUnits(locked0G, 18)` + " 0G" |
+| `locked0G` | The position's 0G value **now**: what was locked, plus the minter's share of the collateral's appreciation since (§0 ②). Rises over time. | `formatUnits(locked0G, 18)` + " 0G" |
 | `iaiOutstanding` | iAI they minted and have not yet redeemed. This is the maximum they can burn. | `formatUnits(..., 18)` + " iAI" |
-| `avgRate` | Their average price, in 0G per iAI. Zero when the position is empty. | `formatUnits(avgRate, 18)` + " 0G/iAI" |
+| `avgRate` | `locked0G / iaiOutstanding`: the position's current 0G value per iAI. Zero when the position is empty. | `formatUnits(avgRate, 18)` + " 0G/iAI" |
 
 **`iaiOutstanding` is not the same as `iAI.balanceOf(user)`.** iAI is freely transferable, so an
 address can hold tokens it did not mint (those are not redeemable by it) or have sent away tokens it
@@ -278,6 +283,7 @@ IAI.totalSupply()       view returns (uint256)   // current supply; drives the p
 IAIVault.cap()          view returns (uint256)   // the supply ceiling: the curve's maxSafeSupply()
 IAIVault.remainingCap() view returns (uint256)   // headroom left to mint; 0 when minting is closed
 IAIVault.curve()        view returns (address)   // the pricing contract currently in force
+IAIVault.harvestShare() view returns (uint256)   // the foundation's cut of appreciation, 1e18 = 100%
 ```
 
 **The ceiling belongs to the curve.** The vault stores no cap of its own: `cap()` is whatever the
@@ -350,8 +356,8 @@ IAIVault.quoteBurn(address minter, uint256 b) view returns (uint256 unlocked0G, 
 
 | Return | Meaning |
 | --- | --- |
-| `unlocked0G` | The 0G value released. Equals what was locked for that slice. |
-| `a0GOut` | The a0G tokens actually sent. Lower than what they deposited, by design. |
+| `unlocked0G` | The 0G value released: that slice's share of `positionOf().locked0G`, which is what was locked plus the minter's part of the appreciation since. |
+| `a0GOut` | The a0G tokens actually sent. Fewer than were deposited for that slice, by design, but more than `unlocked0G / exchangeRate` would give if the whole position had stayed in 0G (§0 ②). |
 
 ### 5.2 Send the transaction
 
@@ -365,8 +371,12 @@ IAIVault.burn(uint256 b, uint256 deadline)
 | `deadline` | Now + wait tolerance. | Unix **seconds**. Same as mint. |
 
 **No approval, and no slippage parameter.** Both omissions are deliberate: the vault can burn
-directly, and the released amount is fixed in 0G — the a0G it converts to only ever shrinks as a0G
-appreciates, so there is no adverse move for a bound to catch. `deadline` alone limits the drift.
+directly, and the payout cannot move against the caller between quote and execution — as the rate
+rises, the 0G-denominated half of the claim converts to slightly fewer a0G and the a0G-denominated
+half is unchanged, so the a0G paid can only drift down by the rate's own movement, and the 0G value
+only up. There is no adverse jump for a bound to catch; `deadline` alone limits the drift. On the
+testnet, where the mock rate climbs about 1.2e-6 per second, expect a burn a few seconds after its
+quote to pay a correspondingly smaller a0G amount than the quote said.
 
 ---
 
@@ -464,6 +474,14 @@ event Burned(address indexed minter, uint256 iaiIn, uint256 unlocked0G, uint256 
 
 event Harvested(address indexed to, uint256 a0GSurplus, uint256 exchangeRate, uint256 totalLocked0G);
 
+// IAIVault, governance. CurveUpdated is also the record of every time the supply ceiling moved
+// (§4): re-read cap() and remainingCap() on it. HarvestShareUpdated opens a new epoch; positions
+// are restated on chain, so nothing cached from positionOf needs recomputing, just re-reading.
+event CurveUpdated(address indexed previous, address indexed current);
+event HarvestShareUpdated(uint256 indexed epoch, uint256 previousShare, uint256 newShare,
+                          uint256 exchangeRate, uint256 cumulativeGrowth);
+event FoundationUpdated(address indexed previous, address indexed current);
+
 // CreditRegistry
 event Staked(address indexed user, uint256 amount, uint256 amountStakedAfter, uint256 totalStakedAfter);
 
@@ -471,6 +489,7 @@ event UnstakeInitiated(address indexed user, uint256 amount, uint256 amountStake
                        uint256 coolDownAmountAfter, uint256 coolDownEnd);
 
 event Unstaked(address indexed user, uint256 amount, uint256 totalStakedAfter);
+event CooldownDurationUpdated(uint256 previous, uint256 current);
 ```
 
 Filter a user's history on the `indexed` fields: `minter` for `Minted` and for `Burned`, `user` for
@@ -543,8 +562,11 @@ this for you.
 The testnet uses a **mock a0G** with an open faucet — anyone can mint themselves collateral:
 
 ```solidity
-MockA0G.mint(address to, uint256 amount)    // no permissions, any caller
+MockA0G.faucetMint(address to, uint256 amount)    // no permissions, any caller
 ```
+
+(`mint` exists too, but it is ERC-4626's `mint(shares, receiver)` and pulls W0G from the caller;
+the faucet is `faucetMint`.)
 
 | Parameter | Where it comes from | Conversion |
 | --- | --- | --- |
@@ -575,6 +597,7 @@ IAIVault.exchangeRate()                          -> uint256          // 0G per a
 IAIVault.cap()                                   -> uint256          // the curve's ceiling; moves with curve(), do not hard-code
 IAIVault.remainingCap()                          -> uint256          // headroom; 0 = minting closed
 IAIVault.curve()                                 -> address          // the pricing contract in force
+IAIVault.harvestShare()                          -> uint256          // foundation's cut of appreciation, 1e18-scaled
 ExponentialMintCurve.priceAt(uint256 i)          -> uint256          // on curve(): bucket i's price, optional
 ExponentialMintCurve.rateAt(uint256 s)           -> uint256          // on curve(): marginal price at supply s, optional
 IAI.balanceOf(address) / totalSupply()           -> uint256
