@@ -35,6 +35,7 @@ contract IAIScript is Script, JsonUtils, Constants, IAIDeployer {
             foundation: vm.parseJsonAddress(json, ".Foundation"),
             curveKind: vm.parseJsonString(json, ".MintCurveKind"),
             cap: vm.parseJsonUint(json, ".Cap"),
+            harvestShare: vm.parseJsonUint(json, ".HarvestShare"),
             cooldownDuration: vm.parseJsonUint(json, ".CooldownDuration"),
             name: vm.parseJsonString(json, ".Name"),
             symbol: vm.parseJsonString(json, ".Symbol")
@@ -67,6 +68,7 @@ contract IAIScript is Script, JsonUtils, Constants, IAIDeployer {
         // `CurveParams` are never written by any script, and seeding the object from the file
         // above already carries them through untouched.
         vm.serializeString(obj, "Cap", vm.toString(c.cap));
+        vm.serializeString(obj, "HarvestShare", vm.toString(c.harvestShare));
         vm.serializeString(obj, "CooldownDuration", vm.toString(c.cooldownDuration));
         vm.serializeString(obj, "Name", c.name);
         vm.serializeString(obj, "Symbol", c.symbol);
@@ -458,6 +460,7 @@ contract IAIScript is Script, JsonUtils, Constants, IAIDeployer {
             foundation: vm.parseJsonAddress(json, ".Foundation"),
             curveKind: vm.parseJsonString(json, ".MintCurveKind"),
             cap: vm.parseJsonUint(json, ".Cap"),
+            harvestShare: vm.parseJsonUint(json, ".HarvestShare"),
             cooldownDuration: vm.parseJsonUint(json, ".CooldownDuration"),
             name: vm.parseJsonString(json, ".Name"),
             symbol: vm.parseJsonString(json, ".Symbol")

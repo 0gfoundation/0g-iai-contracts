@@ -28,6 +28,8 @@ abstract contract BaseTest is Test, IAIDeployer {
 
     uint256 internal constant R0 = 4_330e18;
     uint256 internal constant CAP = 9_270e18;
+    /// The foundation's cut of collateral appreciation the fixture deploys with.
+    uint256 internal constant HARVEST_SHARE = 0.5e18;
     uint256 internal constant TARGET = 127_000_000e18;
     uint256 internal constant SLOPE = 2_021_598_247_004_348_741;
 
@@ -69,6 +71,7 @@ abstract contract BaseTest is Test, IAIDeployer {
                 foundation: foundation,
                 curveKind: "LinearMintCurve",
                 cap: CAP,
+                harvestShare: HARVEST_SHARE,
                 cooldownDuration: COOLDOWN,
                 name: "Infinite AI",
                 symbol: "iAI"
@@ -145,12 +148,53 @@ abstract contract BaseTest is Test, IAIDeployer {
     }
 
     /// @dev Solvency: the vault must always hold at least what it owes at the current rate.
+    /**
+     * @dev Two statements, and the difference between them matters.
+     *
+     *      The promise is that every holder can be paid, so that is asserted directly and
+     *      strictly: the sum of what each position would actually receive never exceeds what
+     *      the vault holds.
+     *
+     *      `owed` is the vault's own accounting figure and is deliberately a ceiling -- the
+     *      totals round up where a position rounds down, so that the sweep can never take a
+     *      wei a redeemer is still entitled to. That makes it an upper bound on the promise
+     *      rather than the promise itself, and after a change of split it can sit a few wei
+     *      above the balance while every position remains fully covered. `harvest` already
+     *      treats that case as nothing to sweep. The slack allowed here is per change, which
+     *      is where it comes from.
+     */
     function _assertSolvent() internal view {
-        uint256 owed = Math_ceilDiv(vault.totalLocked0G() * WAD, vault.exchangeRate());
-        assertGe(a0g.balanceOf(address(vault)), owed, "vault must cover its obligations");
+        uint256 held = a0g.balanceOf(address(vault));
+        uint256 er = vault.exchangeRate();
+
+        address[] memory who = _actors();
+        uint256 payable_;
+        for (uint256 i = 0; i < who.length; i++) {
+            (uint256 claim0G, uint256 claimA0G,) = vault.positionClaims(who[i]);
+            payable_ += (claim0G * WAD) / er + claimA0G;
+        }
+        assertGe(held, payable_, "vault must be able to pay every position");
+
+        uint256 owed = Math_ceilDiv(vault.totalClaim0G() * WAD, er) + vault.totalClaimA0G();
+        assertLe(owed, held + 4 * (vault.currentEpoch() + 1), "the obligation is a ceiling, not a gap");
     }
 
     function Math_ceilDiv(uint256 a, uint256 b) internal pure returns (uint256) {
         return a == 0 ? 0 : (a - 1) / b + 1;
     }
+
+    /**
+     * @notice How far a position's recorded value may sit from the curve price that created it.
+     * @param mints Number of mints the figure has to cover.
+     *
+     * @dev A mint splits its claim into a 0G half and an a0G half and floors both, while the
+     *      a0G it collected was itself rounded up. The position therefore lands within a few
+     *      wei of the curve's price rather than exactly on it -- a wei from each floor, and a
+     *      share's worth from each conversion, a share being `rate / WAD` in 0G. The residue
+     *      belongs to nobody and leaves as surplus.
+     */
+    function _mintDust(uint256 mints) internal view returns (uint256) {
+        return mints * (2 + 2 * (oracle.getValue() / WAD));
+    }
+
 }

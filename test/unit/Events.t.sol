@@ -92,7 +92,9 @@ contract EventsTest is BaseTest {
         assertEq(supplyAfter, iai.totalSupply(), "supplyAfter equals the live supply");
         assertEq(totalLocked0GAfter, vault.totalLocked0G(), "totalLocked0GAfter equals storage");
         (uint256 locked,,) = vault.positionOf(alice);
-        assertEq(locked, locked0G, "the position grew by exactly what was reported");
+        // `locked0G` is the curve's price; the position records it split across two
+        // denominations, each floored, so it lands a few wei under rather than exactly on it.
+        assertApproxEqAbs(locked, locked0G, _mintDust(1), "the position grew by what was reported");
     }
 
     function test_Burned_CarriesTheStateItLeft() public {
@@ -301,7 +303,8 @@ contract EventsTest is BaseTest {
             a0G: address(a0g),
             foundation: foundation,
             curve: address(mintCurve),
-            cap: CAP
+            cap: CAP,
+            harvestShare: 0.5e18
         });
 
         vm.recordLogs();

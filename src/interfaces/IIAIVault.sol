@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MIT
 pragma solidity 0.8.25;
 
+import {EpochMath} from "../EpochMath.sol";
 import {IA0G} from "./external/IA0G.sol";
 import {IA0GOracle} from "./external/IA0GOracle.sol";
 import {IMintCurve} from "./IMintCurve.sol";
@@ -12,18 +13,28 @@ import {IIAI} from "./IIAI.sol";
  */
 interface IIAIVault {
     /**
-     * @notice A minter's whole relationship with the vault, in two numbers.
-     * @dev The weighted-average entry rate is `locked0G / iaiOutstanding`, computed on
-     *      demand rather than stored. Per-mint records are not kept: redemption settles
-     *      at the wallet's average, so the individual tranches carry no information.
-     * @param locked0G       Principal in 0G value. Set from the curve, never from the
-     *                       a0G amount actually received, so the sum across positions
-     *                       reconciles exactly against the curve.
-     * @param iaiOutstanding iAI minted by this address and not yet redeemed.
+     * @notice A minter's whole relationship with the vault.
+     *
+     * @dev The claim is held in two denominations, and which one a wei sits in decides who
+     *      receives its appreciation: `claim0G` redeems for fewer a0G as a0G appreciates, so
+     *      that appreciation is left behind for the foundation, while `claimA0G` is returned
+     *      as deposited and keeps its own. The proportion between them is set at mint from the
+     *      harvest share then in force, and restated whenever governance changes that share --
+     *      see `EpochMath` for why restating every position costs a constant.
+     *
+     *      Per-mint records are not kept: redemption settles at the wallet's blend, so the
+     *      individual tranches carry no information.
      */
     struct Position {
-        uint256 locked0G;
-        uint256 iaiOutstanding;
+        /// 0G-denominated claim, in wei-0G. Its appreciation accrues to the foundation.
+        uint256 claim0G;
+        /// Share-denominated claim, in wei-a0G. Its appreciation stays with the minter.
+        uint256 claimA0G;
+        /// iAI minted by this address and not yet redeemed, in wei-iAI. Bounded by the vault's
+        /// own absolute supply bound of 2**127, so it cannot overflow this width.
+        uint128 iaiOutstanding;
+        /// Index of the epoch these claims were last restated under.
+        uint64 epoch;
     }
 
     /**
@@ -31,7 +42,9 @@ interface IIAIVault {
      * @param a0G        Collateral token.
      * @param foundation Recipient of harvested yield.
      * @param curve      Pricing curve to start with. Swappable afterwards via `setCurve`.
-     * @param cap         Starting supply ceiling, wei-iAI. Adjustable afterwards via `setCap`.
+     * @param cap          Starting supply ceiling, wei-iAI. Adjustable afterwards via `setCap`.
+     * @param harvestShare Foundation's starting cut of collateral appreciation, WAD.
+     *                     Adjustable afterwards via `setHarvestShare`.
      */
     struct InitParams {
         address iai;
@@ -39,6 +52,7 @@ interface IIAIVault {
         address foundation;
         address curve;
         uint256 cap;
+        uint256 harvestShare;
     }
 
     error ZeroAddress();
@@ -65,8 +79,14 @@ interface IIAIVault {
     error CapAboveCurveDomain(uint256 requested, uint256 bound);
 
     /// @dev Every event carries the resulting state so an indexer can rebuild the full
-    ///      picture from the log stream alone, with no follow-up RPC calls, and can spot
-    ///      a gap by checking continuity of the running totals.
+    ///      picture from the log stream alone, with no follow-up RPC calls.
+    ///
+    ///      `totalLocked0GAfter` is the 0G value of every outstanding position, so it moves
+    ///      with the exchange rate as well as with mints and burns. It is therefore no longer
+    ///      the running sum it once was, and continuity across two events is not a plain
+    ///      delta. An indexer wanting exact reconstruction tracks the harvest share from
+    ///      `HarvestShareUpdated` and splits each mint the way the vault does; the fields
+    ///      needed for that -- the curve's price and the a0G collected -- are already here.
     event Minted(
         address indexed minter,
         uint256 iaiOut,
@@ -90,6 +110,16 @@ interface IIAIVault {
     );
 
     event Harvested(address indexed to, uint256 a0GSurplus, uint256 exchangeRate, uint256 totalLocked0G);
+
+    /**
+     * @notice The split of collateral appreciation changed.
+     * @dev Carries the rate and running product the new epoch opened with, which is everything
+     *      an indexer needs to restate the positions it tracks. The change itself transfers
+     *      nothing: every position is worth exactly what it was worth a moment earlier.
+     */
+    event HarvestShareUpdated(
+        uint256 indexed epoch, uint256 previousShare, uint256 newShare, uint256 exchangeRate, uint256 cumulativeGrowth
+    );
 
     event FoundationUpdated(address indexed previous, address indexed current);
 
@@ -160,6 +190,22 @@ interface IIAIVault {
      */
     function setCap(uint256 newCap) external;
 
+    /**
+     * @notice Sets the foundation's cut of collateral appreciation from here on.
+     * @param newShare Foundation's cut, WAD. `1e18` sends all appreciation to the foundation,
+     *                 which is how the vault behaved before the share was adjustable; zero
+     *                 sends all of it to minters.
+     *
+     * @dev Prospective in time, not in cohort: every outstanding position is restated by value
+     *      at the current rate, so appreciation already earned keeps the split it was earned
+     *      under and everything after this point uses the new one. Nothing moves between
+     *      minter and foundation at the moment of the change, so there is no advantage in
+     *      choosing when to make it.
+     *
+     *      Refused if the rate has fallen since the last change. See `EpochMath`.
+     */
+    function setHarvestShare(uint256 newShare) external;
+
     // --- views ---
 
     /**
@@ -198,10 +244,14 @@ interface IIAIVault {
     /**
      * @notice The redeemable position of one address.
      * @param account Address to read.
-     * @return locked0G       0G value backing the position, in wei-0G.
+     * @return locked0G       What the position is worth right now, in wei-0G. Dividing it by
+     *                        `exchangeRate()` gives the a0G a full redemption would pay. It
+     *                        rises as the collateral appreciates, by the minter's share of
+     *                        that appreciation.
      * @return iaiOutstanding iAI minted by this address and not yet redeemed, in wei-iAI.
      * @return avgRate        `locked0G / iaiOutstanding`, in wei-0G per iAI; zero when the
-     *                        position is empty.
+     *                        position is empty. The 0G currently behind each iAI, which is
+     *                        the entry rate only while the rate has not moved.
      */
     function positionOf(address account)
         external
@@ -249,17 +299,64 @@ interface IIAIVault {
     function cap() external view returns (uint256);
 
     /**
-     * @notice Sum of every position's locked 0G.
-     * @dev **This is the collateral the vault actually holds claims against** -- the sum of
-     *      what was really collected, not what any curve says it should have been. After a
-     *      curve swap those two diverge, and only this figure is a fact about the system.
+     * @notice What every outstanding position is worth, in 0G, right now.
+     * @dev **This is the collateral the vault actually holds claims against** -- derived from
+     *      what was really collected, not from what any curve says it should have been. After
+     *      a curve swap those two diverge, and only this figure is a fact about the system.
      *
      *      It ratchets upward under churn: a redeemer releases 0G at their own average while
-     *      the freed supply is resold at the marginal rate. Never bound it by a curve's
-     *      target.
+     *      the freed supply is resold at the marginal rate. It also rises with the exchange
+     *      rate, by the minters' share of the appreciation. Never bound it by a curve's target.
      * @return 0G value, in wei-0G.
      */
     function totalLocked0G() external view returns (uint256);
+
+    /// @return Foundation's current cut of collateral appreciation, WAD.
+    function harvestShare() external view returns (uint256);
+
+    /// @return Index of the epoch now in force. Rises by one on each `setHarvestShare`.
+    function currentEpoch() external view returns (uint256);
+
+    /**
+     * @notice One entry in the history of the harvest share.
+     * @param index Epoch index, `0 <= index <= currentEpoch()`.
+     * @return The rate and running product it opened with, and the share it put in force.
+     */
+    function epochAt(uint256 index) external view returns (EpochMath.Epoch memory);
+
+    /**
+     * @notice Sum of the 0G-denominated half of every claim.
+     * @dev Internal accounting, exposed so tests and monitoring can watch the two halves move
+     *      independently -- a fault that shifted value between them while preserving the total
+     *      would be invisible in `totalLocked0G()` alone. **Integrators should use
+     *      `totalLocked0G()`**, which is the figure with a meaning outside this contract.
+     * @return 0G, in wei-0G.
+     */
+    function totalClaim0G() external view returns (uint256);
+
+    /**
+     * @notice Sum of the share-denominated half of every claim.
+     * @dev Internal accounting, as `totalClaim0G()`. **Integrators should use
+     *      `totalLocked0G()`.**
+     * @return a0G, in wei-a0G.
+     */
+    function totalClaimA0G() external view returns (uint256);
+
+    /**
+     * @notice The two halves of one position, brought up to date, and the epoch they now sit in.
+     * @param account Address to read.
+     * @return claim0G  0G-denominated half, in wei-0G.
+     * @return claimA0G Share-denominated half, in wei-a0G.
+     * @return epoch    Epoch the halves are stated under, always the current one.
+     * @dev Internal accounting, exposed for the same reason as `totalClaim0G()`: value moved
+     *      between the two halves leaves `positionOf` unchanged, so a fault there would be
+     *      invisible to anything watching only the total. **Integrators should use
+     *      `positionOf`**, and unlike this pair it needs no explanation of the split.
+     */
+    function positionClaims(address account)
+        external
+        view
+        returns (uint256 claim0G, uint256 claimA0G, uint256 epoch);
 
     /// @return Current iAI supply, in wei-iAI. Identical to `iai().totalSupply()`.
     function supply() external view returns (uint256);

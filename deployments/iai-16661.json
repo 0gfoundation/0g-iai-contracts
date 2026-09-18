@@ -392,6 +392,7 @@
   },
   "Foundation": "0x383452DC859f87D5197C03d8E11Fc9D38e714fF2",
   "Guardian": "0x0000000000000000000000000000000000000000",
+  "HarvestShare": "500000000000000000",
   "MintCurveKind": "ExponentialMintCurve",
   "Name": "Infinite AI",
   "Symbol": "iAI"
