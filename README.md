@@ -127,8 +127,9 @@ same whether one change was missed or a hundred.
 keeps `1 - harvestShare` of the appreciation of the a0G they deposited. A change re-bases that onto
 the position's current value, which is smaller because the foundation has already taken its part,
 and turns the foundation's accrued part into shares that compound for it. So re-issuing the *same*
-share still moves a little future yield to the foundation — measurably: a position held two years
-is worth about 0.4% less after twenty-four same-share changes than after none. It is admin-only,
+share still moves a little future yield to the foundation — measurably: on the test fixture a
+position held two years is worth 509,574 0G with no change at all, 507,407 after one, and 505,396
+after twenty-four, so about **0.8%** of the position over that span. It is admin-only,
 always in the foundation's direction, and bounded by how often governance acts; it is pinned by
 `test_Change_ReissuingTheSameShareRatchetsTowardTheFoundation` rather than left to be discovered.
 

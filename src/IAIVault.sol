@@ -573,6 +573,8 @@ contract IAIVault is IIAIVault, AccessControlUpgradeable, PausableUpgradeable, R
         // a number no `burn` can produce, handed to a caller with no way to tell it is
         // impossible. Clamping instead would answer a question that was not asked.
         if (b > outstanding) revert BurnExceedsPosition(b, outstanding);
+        // The one place this does *not* mirror `burn`: a zero amount is answered rather than
+        // refused, so a caller polling an empty position gets zeroes instead of a revert.
         if (outstanding == 0) return (0, 0);
 
         uint256 released0G = Math.mulDiv(pos.claim0G, b, outstanding, Math.Rounding.Floor);

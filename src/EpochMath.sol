@@ -85,11 +85,16 @@ import {Math} from "@openzeppelin/contracts/utils/math/Math.sol";
  *      the governance call that caused it without touching any user path.
  *
  *      **Precision.** `cumG` is a running product and every step floors, so its error is
- *      systematic and one-directional. Held at 1e18 a thousand changes would accumulate a
- *      relative error near 1e-15; at 1e27 it stays near 1e-24. It is also confined to
- *      positions: the vault recomputes its totals from the same transform at the moment of
- *      each change and never routes them through `cumG`, so the drift can understate one
- *      payout by a fraction of a wei and can never reach solvency or the sweep.
+ *      systematic and one-directional: a position is understated, never overstated. The
+ *      worst case is about 6e-28 of relative value per change. On a position the size of the
+ *      whole vault at its cap -- around 1e26 wei-0G -- that is 6 wei after a hundred changes
+ *      and 63 after a thousand, so the phrase to avoid is "a fraction of a wei"; the right
+ *      one is 6e-17 0G, which is nothing, but is not nothing wei. Held at 1e18 instead the
+ *      same thousand changes would cost 6e10 wei, still immaterial in 0G -- what 1e27 buys is
+ *      that a single missed change settles bit-for-bit identically either way, which is a
+ *      property a test can assert. The drift is also confined to positions: the vault
+ *      restates its totals from the same transform at each change and never routes them
+ *      through `cumG`, so it can never reach solvency or the sweep.
  *
  *      **Rounding.** Everything a position claims rounds down and everything the vault owes
  *      rounds up, so the residue always lands in the vault. Applied to the totals the
@@ -141,9 +146,12 @@ library EpochMath {
      * @return The new epoch, carrying the running product forward.
      *
      * @dev `g` is computed as one `mulDiv` over `share * prev.rate + (1 - share) * rate`
-     *      rather than as a sum of two rounded terms. Both forms are the same number in exact
-     *      arithmetic, but only this one floors to at least `RAY` whenever `rate >= prev.rate`
-     *      -- and it is that inequality, not a runtime check, that keeps `cumG` away from zero.
+     *      rather than as a sum of two rounded terms: one flooring instead of two, so the
+     *      running product drifts half as fast. Both forms floor to at least `RAY` when
+     *      `rate >= prev.rate` -- `RAY / WAD` is a whole number, so the two-term form loses
+     *      nothing at the bound either -- and it is that inequality, not any runtime check,
+     *      that keeps `cumG` away from zero.
+     *
      *      The products stay far inside `uint256`: the rate would have to exceed 1e59 before
      *      `WAD * prev.rate` came close, and checked arithmetic would revert the governance
      *      call rather than wrap if it ever did.
@@ -201,6 +209,13 @@ library EpochMath {
      *      totals move the moment the split changes while positions catch up whenever they are
      *      next touched. Rounding up here and down there keeps the totals on the safe side of
      *      that identity.
+     *
+     *      Of the three ceilings, the two on the results are what dominance rests on. The one
+     *      on `v` is not: `sum of floor <= floor of sum` already covers it, so flooring there
+     *      would keep the totals above the positions too. It rounds up for consistency with
+     *      the other two and because a larger `v` can only make the obligation more
+     *      conservative -- not because anything depends on it. No test distinguishes it, and
+     *      inventing one that did would be pinning a choice rather than a property.
      */
     function resplitTotals(uint256 total0G, uint256 totalA0G, uint256 rate, uint256 share)
         internal

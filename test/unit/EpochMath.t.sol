@@ -390,6 +390,29 @@ contract EpochMathTest is Test {
     // Obligation and payout must stay mirror images
     // -------------------------------------------------------------------------
 
+    /**
+     * @dev `owed` must be the ceiling of the obligation, not the floor. `OwedCoversPayout`
+     *      below cannot see the difference -- it asserts `>=`, which a floor satisfies with
+     *      equality -- so the direction needs a statement of its own.
+     *
+     *      The share-denominated half passes through untouched, so subtracting it leaves the
+     *      vault's answer for the 0G half. Converted back at the same rate that has to cover
+     *      the 0G it stands for; a floor comes up short whenever the division leaves a
+     *      remainder, and the sweep would then be free to take a wei a redeemer is owed.
+     */
+    function testFuzz_OwedRoundsUpNotDown(uint256 total0G, uint256 totalA0G, uint256 rateSeed) public pure {
+        total0G = bound(total0G, 0, 1e26);
+        totalA0G = bound(totalA0G, 0, 1e26);
+        uint256 rate = bound(rateSeed, 0.5e18, 1e21);
+
+        uint256 obligation = EpochMath.owed(total0G, totalA0G, rate);
+        assertGe(
+            Math.mulDiv(obligation - totalA0G, rate, WAD),
+            total0G,
+            "the obligation must not understate the 0G half"
+        );
+    }
+
     function testFuzz_OwedCoversPayout(uint256 claim0G, uint256 claimA0G, uint256 rateSeed) public pure {
         claim0G = bound(claim0G, 0, 1e26);
         claimA0G = bound(claimA0G, 0, 1e26);

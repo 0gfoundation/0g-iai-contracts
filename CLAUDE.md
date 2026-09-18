@@ -591,7 +591,8 @@ follow-up to it. `pause()` stops minting but not redemption, so the window betwe
 response is the exposure. Note the cap is not a
 bound on this: it is adjustable upward, so "mint to the cap" is not a fixed quantity of damage.
 
-**R2 — a mint and an immediate full burn costs 1 wei.** Round-trips are effectively free, so a large
+**R2 — a mint and an immediate full burn costs at most 1 wei, and at a harvest share of zero
+costs nothing at all** (the share-denominated half comes back exactly as deposited). Round-trips are effectively free, so a large
 mint can be front-run for position. Accepted; slippage protection is the only defence, and the
 contracts are upgradeable if a holding period ever becomes necessary.
 
@@ -732,11 +733,23 @@ It is tempting to reason that a restatement which preserves value cannot transfe
 reasoning is wrong, and it is the trap this entry exists to close: the restatement preserves value
 *at the rate it uses*, and at any other rate it is a transfer of
 `(R - r) * [share * claimA0G - (1 - share) * claim0G / R]`, where `R` is what was read and `r` the
-truth. Measured on the fixture — 100 iAI, a 50% share, one year after the mint, anchored at twice
-the true rate — what the vault owes one holder rises from 373,798 to 430,302 a0G against a balance
-of 373,798. **The vault is 15% short with no rate fall having occurred**, the sweep goes silent,
-and late redeemers are stranded exactly as in R5. Roughly, the reading's percentage error maps onto
-that fraction of the *whole outstanding claim*, not of one period's yield.
+truth.
+
+**Be careful with the scaling, which is not what it first looks like.** Writing `R = r(1 + e)`, that
+expression is about `e * share * (1 - share) * (the appreciation the position has accrued since it
+was last restated)` — not `e` times the whole claim. A position restated a moment ago has accrued
+nothing, and the transfer collapses to second order in `e`. Measured on the fixture (100 iAI, a 50%
+share, one year after the mint, surplus already swept, so the balance is exactly what is owed):
+
+| reading | shortfall against the balance |
+| --- | --- |
+| 2.00x | 15.1% |
+| 1.05x | 0.22% |
+| 1.01x | 0.03% |
+
+At twice the true rate the vault owes one holder 430,302 a0G against a balance of 373,798: **15%
+short with no rate fall having occurred**, the sweep silent, late redeemers stranded as in R5.
+(Before a sweep the balance is 399,877 and the same glitch leaves it 7.6% short — quote which.)
 
 Nor can it be undone: a rate below the previous epoch's is refused, so the corrective call is
 blocked until the true rate climbs past the bad reading. The only exit is an upgrade.
@@ -744,10 +757,12 @@ blocked until the true rate climbs past the bad reading. The only exit is an upg
 Accepted, on the same premise the rest of the system rests on: the a0G oracle is assumed sound. R1
 already concedes that its write key can drain the vault outright without going near this path, so
 hardening one governance call against that key while the direct route stays open buys nothing.
-There is deliberately **no caller-supplied rate band and no on-chain deviation check**. A band the
-operator derives by reading the same oracle is not a band at all — a manipulated value sits neatly
-inside it — and a deviation constant tight enough to catch the damaging case, which is a few per
-cent, is far too tight to let ordinary operation through.
+**That, and only that, is the reason there is no rate band here.** It is not that a band would be
+impractical: the scaling above says a deviation check at a couple of per cent would be both
+tolerable in ordinary operation and enough to keep the damage under a tenth of a per cent, so the
+mitigation is available and cheap if the premise underneath R1 ever changes. What a band must not
+be derived from is the oracle itself — an operator reading the same feed a block earlier gets a
+window centred on the manipulated value, which is no window at all.
 
 What *is* enforced is the direction. A reading below the previous epoch's is refused outright, so a
 depressed reading can never be anchored; only an inflated one can, and that is the case the

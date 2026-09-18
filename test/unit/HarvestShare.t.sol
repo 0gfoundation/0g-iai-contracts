@@ -134,9 +134,10 @@ contract HarvestShareTest is BaseTest {
         assertLt(once, none, "one same-share change costs the minter");
         assertLt(often, once, "and more changes cost more");
 
-        // Small, and not a rounding artefact: tenths of a percent over two years.
-        assertGt(none - often, none / 1_000, "the effect is real");
-        assertLt(none - often, none / 50, "and stays small");
+        // Bounded tightly enough to pin the figure the README publishes, not merely to show
+        // the effect exists. A looser bound let a wrong percentage go to print once already.
+        assertApproxEqRel(none - often, (none * 82) / 10_000, 0.05e18, "~0.82% of the position");
+        assertApproxEqRel(none - once, (none * 42) / 10_000, 0.05e18, "~0.42% for a single change");
     }
 
     /// @dev Mints, spreads `changes` same-share changes across two years, and reports what the
