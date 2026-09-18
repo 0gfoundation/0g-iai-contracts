@@ -39,7 +39,6 @@ contract EventsTest is BaseTest {
     bytes32 internal constant UNSTAKED = keccak256("Unstaked(address,uint256,uint256)");
     bytes32 internal constant COOLDOWN_UPDATED = keccak256("CooldownDurationUpdated(uint256,uint256)");
     bytes32 internal constant CURVE_UPDATED = keccak256("CurveUpdated(address,address)");
-    bytes32 internal constant CAP_UPDATED = keccak256("CapUpdated(uint256,uint256)");
 
     /// @param topic0 Signature hash of the event to find.
     /// @return log The single matching entry. Reverts the test if there is not exactly one.
@@ -277,50 +276,32 @@ contract EventsTest is BaseTest {
         assertEq(next, address(vault.curve()), "and matches storage");
     }
 
-    function test_CapUpdated_ReportsBothSides() public {
-        uint256 previousValue = vault.cap();
-
-        vm.recordLogs();
-        vault.setCap(previousValue / 2);
-        Vm.Log memory log = _only(CAP_UPDATED);
-
-        (uint256 previous, uint256 current) = abi.decode(log.data, (uint256, uint256));
-        assertEq(previous, previousValue, "previous");
-        assertEq(current, previousValue / 2, "current");
-        assertEq(current, vault.cap(), "and matches storage");
-    }
-
     /**
-     * @dev The starting curve and ceiling are logged too, from the zero value. Without them
-     *      the later `CurveUpdated` / `CapUpdated` deltas would have no origin, and an indexer
-     *      claiming to rebuild pricing from the log stream alone would have to go and read the
-     *      chain for the one value it cannot derive.
+     * @dev The starting curve is logged too, from the zero address. Without it the later
+     *      `CurveUpdated` deltas would have no origin, and an indexer claiming to rebuild
+     *      pricing from the log stream alone would have to go and read the chain for the one
+     *      value it cannot derive. The ceiling needs no event of its own: it is the curve's,
+     *      so `CurveUpdated` is also the record of every time it moved.
      */
-    function test_Initialize_LogsTheStartingCurveAndCap() public {
+    function test_Initialize_LogsTheStartingCurve() public {
         UpgradeableBeacon beacon = new UpgradeableBeacon(address(new IAIVault()), admin);
         IIAIVault.InitParams memory p = IIAIVault.InitParams({
             iai: address(iai),
             a0G: address(a0g),
             foundation: foundation,
             curve: address(mintCurve),
-            cap: CAP,
             harvestShare: 0.5e18
         });
 
         vm.recordLogs();
         new BeaconProxy(address(beacon), abi.encodeCall(IAIVault.initialize, (p)));
-        // Fetched once: `vm.getRecordedLogs()` drains the buffer, so calling `_only` twice
-        // here would search an empty array the second time.
+        // Fetched once: `vm.getRecordedLogs()` drains the buffer, so a second fetch would
+        // search an empty array.
         Vm.Log[] memory logs = vm.getRecordedLogs();
 
         Vm.Log memory curveLog = _onlyIn(logs, CURVE_UPDATED);
         assertEq(address(uint160(uint256(curveLog.topics[1]))), address(0), "no previous curve");
         assertEq(address(uint160(uint256(curveLog.topics[2]))), address(mintCurve));
-
-        (uint256 previous, uint256 current) =
-            abi.decode(_onlyIn(logs, CAP_UPDATED).data, (uint256, uint256));
-        assertEq(previous, 0, "no previous cap");
-        assertEq(current, CAP);
     }
 
     /// @dev The running totals have to stay continuous across a sequence, or an indexer cannot

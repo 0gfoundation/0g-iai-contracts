@@ -78,13 +78,18 @@ contract UpgradeScript is Script, JsonUtils, Constants, UpgradeChecker {
 
         string memory o = "snap";
         vm.serializeAddress(o, "curve", s.curve);
+        vm.serializeBool(o, "ceilingAvailable", s.ceilingAvailable);
         vm.serializeString(o, "cap", vm.toString(s.cap));
+        vm.serializeString(o, "harvestShare", vm.toString(s.harvestShare));
+        vm.serializeString(o, "epoch", vm.toString(s.epoch));
         vm.serializeAddress(o, "iai", s.iai);
         vm.serializeAddress(o, "a0G", s.a0G);
         vm.serializeAddress(o, "oracle", s.oracle);
         vm.serializeAddress(o, "foundation", s.foundation);
         vm.serializeAddress(o, "registryIai", s.registryIai);
         vm.serializeString(o, "totalLocked0G", vm.toString(s.totalLocked0G));
+        vm.serializeString(o, "totalClaim0G", vm.toString(s.totalClaim0G));
+        vm.serializeString(o, "totalClaimA0G", vm.toString(s.totalClaimA0G));
         vm.serializeString(o, "supply", vm.toString(s.supply));
         vm.serializeString(o, "tokenSupply", vm.toString(s.tokenSupply));
         vm.serializeBool(o, "paused", s.paused);
@@ -97,6 +102,9 @@ contract UpgradeScript is Script, JsonUtils, Constants, UpgradeChecker {
         // Amounts go out as strings rather than JSON numbers: a uint256 balance does not
         // survive a round trip through a double.
         vm.serializeString(o, "locked", _toStrings(s.locked));
+        vm.serializeString(o, "claim0G", _toStrings(s.claim0G));
+        vm.serializeString(o, "claimA0G", _toStrings(s.claimA0G));
+        // Only the last `serialize` call returns the completed document.
         string memory finalJson = vm.serializeString(o, "outstanding", _toStrings(s.outstanding));
 
         vm.writeJson(finalJson, snapPath);
@@ -130,13 +138,18 @@ contract UpgradeScript is Script, JsonUtils, Constants, UpgradeChecker {
      */
     function _readSnapshot(string memory snap) private pure returns (Snapshot memory s) {
         s.curve = vm.parseJsonAddress(snap, ".curve");
+        s.ceilingAvailable = vm.parseJsonBool(snap, ".ceilingAvailable");
         s.cap = _uint(snap, ".cap");
+        s.harvestShare = _uint(snap, ".harvestShare");
+        s.epoch = _uint(snap, ".epoch");
         s.iai = vm.parseJsonAddress(snap, ".iai");
         s.a0G = vm.parseJsonAddress(snap, ".a0G");
         s.oracle = vm.parseJsonAddress(snap, ".oracle");
         s.foundation = vm.parseJsonAddress(snap, ".foundation");
         s.registryIai = vm.parseJsonAddress(snap, ".registryIai");
         s.totalLocked0G = _uint(snap, ".totalLocked0G");
+        s.totalClaim0G = _uint(snap, ".totalClaim0G");
+        s.totalClaimA0G = _uint(snap, ".totalClaimA0G");
         s.supply = _uint(snap, ".supply");
         s.tokenSupply = _uint(snap, ".tokenSupply");
         s.paused = vm.parseJsonBool(snap, ".paused");
@@ -148,10 +161,24 @@ contract UpgradeScript is Script, JsonUtils, Constants, UpgradeChecker {
         s.accounts = vm.parseJsonAddressArray(snap, ".accounts");
         s.locked = _uints(snap, ".locked");
         s.outstanding = _uints(snap, ".outstanding");
+        s.claim0G = _uints(snap, ".claim0G");
+        s.claimA0G = _uints(snap, ".claimA0G");
     }
 
-    /// @return The addresses named by `CHECK_ACCOUNTS`, or an empty list.
+    /// @dev Per-instance stand-in for `CHECK_ACCOUNTS`, for tests: `vm.setEnv` writes the
+    ///      process environment, which parallel test contracts share.
+    address[] private checkAccountsOverride;
+
+    /// @param accounts The positions the rehearsal must watch, in place of `CHECK_ACCOUNTS`.
+    function setCheckAccounts(
+        address[] memory accounts
+    ) public {
+        checkAccountsOverride = accounts;
+    }
+
+    /// @return The addresses named by `setCheckAccounts`, else by `CHECK_ACCOUNTS`, else none.
     function _checkAccounts() private view returns (address[] memory) {
+        if (checkAccountsOverride.length != 0) return checkAccountsOverride;
         return vm.envOr("CHECK_ACCOUNTS", ",", new address[](0));
     }
 

@@ -37,14 +37,13 @@ abstract contract IAIDeployer {
     /// @param a0G              Collateral token. The live a0G on mainnet, a mock elsewhere.
     /// @param foundation       Recipient of harvested yield.
     /// @param curveKind        Which curve to deploy: `"ExponentialMintCurve"` (the default) or
-    ///                         `"LinearMintCurve"`.
-    /// @param cap              Starting supply ceiling, wei-iAI. Adjustable after launch.
+    ///                         `"LinearMintCurve"`. The curve also fixes the supply ceiling --
+    ///                         the vault has no cap of its own.
     /// @param cooldownDuration Withdrawal delay in the credit registry.
     struct Config {
         address a0G;
         address foundation;
         string curveKind;
-        uint256 cap;
         /// Foundation's starting cut of collateral appreciation, WAD. A deployment parameter
         /// rather than a curve one: it governs how the collateral's yield is divided, which
         /// has nothing to do with what the curve charges to issue.
@@ -193,7 +192,6 @@ abstract contract IAIDeployer {
                             a0G: c.a0G,
                             foundation: c.foundation,
                             curve: d.curve,
-                            cap: c.cap,
                             harvestShare: c.harvestShare
                         })
                     )
@@ -287,7 +285,12 @@ abstract contract IAIDeployer {
         require(address(registry_.iai()) == d.iai, "registry points at the wrong token");
 
         require(address(vault_.curve()) == d.curve, "vault points at the wrong curve");
-        require(vault_.cap() == c.cap, "cap mismatch");
+        // The ceiling is the curve's, clamped to the vault's hard bound. A curve reporting zero
+        // would deploy a system that can never issue -- legal for a swap, never intended here.
+        uint256 ceiling = IMintCurve(d.curve).maxSafeSupply();
+        if (ceiling > 2 ** 127) ceiling = 2 ** 127;
+        require(vault_.cap() == ceiling, "vault does not read its ceiling from the curve");
+        require(ceiling != 0, "curve permits no issuance");
         require(vault_.harvestShare() == c.harvestShare, "harvest share mismatch");
 
         // The vault must actually route to the curve it names. This is not a tautology: it
@@ -295,9 +298,9 @@ abstract contract IAIDeployer {
         // curve's own maths is right is settled by the conformance suite and golden vectors,
         // not here.
         //
-        // Skipped once the cap is reached or has been lowered below the supply -- `quoteMint`
-        // reverts there by design, and this check must not make `run.sh check` unusable in
-        // exactly the state an operator most needs to inspect.
+        // Skipped once the ceiling is reached or a swap has put it below the supply --
+        // `quoteMint` reverts there by design, and this check must not make `run.sh check`
+        // unusable in exactly the state an operator most needs to inspect.
         uint256 headroom = vault_.remainingCap();
         if (headroom != 0) {
             uint256 probe = headroom < 1e18 ? headroom : 1e18;

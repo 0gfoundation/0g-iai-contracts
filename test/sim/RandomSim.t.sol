@@ -74,8 +74,9 @@ contract RandomSimTest is BaseTest {
     uint256 internal mHarvested;
     bool internal mPaused;
 
-    // The pricing surface and the ceiling, both adjustable by governance mid-run. Two shapes
-    // of curve alternate; `mKind` says which set of shadow parameters is live.
+    // The pricing surface, adjustable by governance mid-run, and the ceiling, which is the
+    // curve's and moves with it. Two shapes of curve alternate; `mKind` says which set of
+    // shadow parameters is live.
     enum CurveKind {
         Linear,
         Step
@@ -89,9 +90,9 @@ contract RandomSimTest is BaseTest {
     uint256 internal mCap;
     address internal mCurve;
 
-    /// @dev The simulation's step tables are coarse and cover twice the production cap, so
-    ///      `_opSetCap`'s range never meets the table's top and the two operations stay
-    ///      independent. 38 buckets of 500 iAI reach 19,000 iAI.
+    /// @dev The simulation's step tables are coarse: 500 iAI per bucket, and a full-size table
+    ///      of 38 buckets reaches 19,000 iAI, just over twice the fixture's anchor. A swap that
+    ///      is meant to close issuance draws fewer buckets, so the top lands below the supply.
     uint256 internal constant SIM_WIDTH = 500e18;
     uint256 internal constant SIM_BUCKETS = 38;
 
@@ -104,8 +105,8 @@ contract RandomSimTest is BaseTest {
     uint256 internal nPauseToggles;
     uint256 internal nBurnsWhilePaused;
     uint256 internal nRejections;
-    uint256 internal nCapChanges;
     uint256 internal nCurveSwaps;
+    uint256 internal nNarrowingSwaps;
     uint256 internal nShareChanges;
     uint256 internal nExtremeShares;
     uint256 internal nShareChangesWitnessed;
@@ -283,8 +284,6 @@ contract RandomSimTest is BaseTest {
             _opTransfer();
         } else if (roll < 90) {
             _opTogglePause();
-        } else if (roll < 93) {
-            _opSetCap();
         } else if (roll < 95) {
             _opSetCurve();
         } else if (roll < 97) {
@@ -301,12 +300,12 @@ contract RandomSimTest is BaseTest {
     // --- operations ---
 
     /**
-     * @dev The amount is drawn without reference to the cap, so whether this mint is allowed
-     *      is a question the shadow answers rather than one the sampler avoids. Both outcomes
-     *      are asserted: a rejection has to come back as `CapExceeded` with the exact pair of
-     *      numbers, from whatever state the run has reached. That is a stronger statement than
-     *      the `supply <= cap` assertion it replaces, which could not survive a cap lowered
-     *      below the live supply -- the very mode this simulation now spends time in.
+     * @dev The amount is drawn without reference to the ceiling, so whether this mint is
+     *      allowed is a question the shadow answers rather than one the sampler avoids. Both
+     *      outcomes are asserted: a rejection has to come back as `CapExceeded` with the exact
+     *      pair of numbers, from whatever state the run has reached. That is a stronger
+     *      statement than a `supply <= cap` assertion, which could not survive a curve swapped
+     *      in below the live supply -- the very mode this simulation spends time in.
      */
     function _opMint() internal {
         address a = _actor();
@@ -392,8 +391,8 @@ contract RandomSimTest is BaseTest {
         // The promise that redemption is never gated, held as a running property rather than
         // a single test: this line executes with the vault paused many times per run.
         if (mPaused) nBurnsWhilePaused++;
-        // The same promise against the other issuance switch: a cap below the live supply
-        // closes minting, and redemption has to stay open through it.
+        // The same promise against the other issuance switch: a curve whose top is below the
+        // live supply closes minting, and redemption has to stay open through it.
         if (mSupply > mCap) nBurnsInBurnOnlyMode++;
 
         mClaim0G[a] -= unlocked0G;
@@ -406,32 +405,8 @@ contract RandomSimTest is BaseTest {
     }
 
     /**
-     * @notice Governance moves the ceiling, deliberately across the live supply.
-     *
-     * @dev Roughly two in five draws land below the current supply, which is the burn-only
-     *      mode: `mint` refuses, everything else carries on. Sampling it this often is the
-     *      point -- it is a state the system is expected to sit in during an emergency, so
-     *      thousands of operations run from inside it rather than one test poking at it.
-     *
-     *      `setCap` deliberately has no `newCap >= supply` guard. Adding one would make the
-     *      ceiling un-lowerable exactly when it needs lowering, so this operation exercises
-     *      the case that guard would have blocked, zero included.
-     */
-    function _opSetCap() internal {
-        uint256 newCap;
-        if (rng.chance(40) && mSupply != 0) {
-            newCap = rng.range(0, mSupply - 1); // below the live supply: burn-only
-        } else {
-            newCap = rng.range(mSupply, 2 * CAP);
-        }
-
-        vault.setCap(newCap);
-        mCap = newCap;
-        nCapChanges++;
-    }
-
-    /**
-     * @notice Governance swaps the pricing surface, in both directions.
+     * @notice Governance swaps the pricing surface, in both directions -- and with it the
+     *         ceiling, deliberately across the live supply.
      *
      * @dev The swap is free to make the curve cheaper or dearer, because the invariant that
      *      would have forbidden one direction -- "the running total covers what the current
@@ -450,45 +425,75 @@ contract RandomSimTest is BaseTest {
      *      table is random and monotone rather than the formula's -- the simulation checks the
      *      vault's and the curve's arithmetic, not the table's provenance -- and its prices
      *      sit in the production range so the amounts involved are realistic.
+     *
+     *      The ceiling is the curve's, so this is also the operation that moves it. Two in
+     *      five draws try to install a curve whose top is below the current supply -- about one
+     *      swap in five actually does, since the draw needs a supply to be below -- which is
+     *      the burn-only mode: `mint` refuses, everything else carries on. Sampling it this
+     *      often is the point -- it is a state the system is expected to sit in during an
+     *      emergency, so thousands of operations run from inside it rather than one test
+     *      poking at it. `setCurve` deliberately has no `maxSafeSupply() >= supply` guard;
+     *      adding one would make issuance un-closable exactly when it needs closing, so this
+     *      operation exercises the case that guard would have blocked.
+     *
+     *      The shadow does not read the ceiling back off the curve. For a table it is
+     *      `buckets * width` by construction; for the linear curve it is the anchor the
+     *      constructor was handed. Both are asserted against the deployed curve, so a curve
+     *      that reported something else would be caught here rather than mirrored.
      */
     function _opSetCurve() internal {
+        // A ceiling below the live supply, when there is a supply to be below. The floor of
+        // 100 iAI keeps the linear curve's slope in a range whose arithmetic is proven.
+        bool narrow = rng.chance(40) && mSupply > 100e18 + SIM_WIDTH;
+
         if (nCurveSwaps % 2 == 0) {
             uint256 r0 = rng.range(1e21, 20e21);
-            // Keep the anchor fixed and vary the curvature: `extra` is the 0G the sloped part
-            // accounts for on top of the flat part, and it is what fixes the slope.
-            uint256 flat = (r0 * CAP) / WAD;
+            // The anchor is the ceiling. Wide swaps take it anywhere from the supply up to
+            // twice the fixture's; narrow ones put it below the supply.
+            uint256 anchor = narrow ? rng.range(100e18, mSupply - 1) : rng.range(mSupply, 2 * CAP);
+            // Vary the curvature: `extra` is the 0G the sloped part accounts for on top of the
+            // flat part, and it is what fixes the slope.
+            uint256 flat = (r0 * anchor) / WAD;
             uint256 extra = rng.range(1e25, 3e26);
 
-            LinearMintCurve c = new LinearMintCurve(r0, CAP, flat + extra);
-            uint256 slope = _shadowSlope(r0, CAP, flat + extra);
+            LinearMintCurve c = new LinearMintCurve(r0, anchor, flat + extra);
+            uint256 slope = _shadowSlope(r0, anchor, flat + extra);
             assertEq(c.slope(), slope, "the shadow derives the same slope the library does");
+            assertEq(c.maxSafeSupply(), anchor, "the linear curve's ceiling is its anchor");
 
             vault.setCurve(IMintCurve(address(c)));
 
             mKind = CurveKind.Linear;
             mR0 = r0;
             mSlope = slope;
+            mCap = anchor;
             mCurve = address(c);
         } else {
-            uint128[] memory p = new uint128[](SIM_BUCKETS);
+            // A narrow table ends below the supply; a wide one reaches 19,000 iAI, past any
+            // ceiling a linear swap can set, so the supply can never outgrow the wide tables.
+            uint256 buckets = narrow ? rng.range(1, (mSupply - 1) / SIM_WIDTH) : SIM_BUCKETS;
+            uint128[] memory p = new uint128[](buckets);
             p[0] = uint128(rng.range(1e21, 20e21));
-            for (uint256 i = 1; i < SIM_BUCKETS; i++) {
+            for (uint256 i = 1; i < buckets; i++) {
                 // Zero is a legal increment: flat runs of equal buckets are part of the mix.
                 p[i] = p[i - 1] + uint128(rng.range(0, 3e21));
             }
 
-            ExponentialMintCurve c = new ExponentialMintCurve(SIM_WIDTH, p, p[0], 0, SIM_BUCKETS * SIM_WIDTH);
-            assertEq(c.maxSafeSupply(), SIM_BUCKETS * SIM_WIDTH, "the table reaches past twice the cap");
-            assertGe(c.maxSafeSupply(), 2 * CAP);
+            uint256 top = buckets * SIM_WIDTH;
+            ExponentialMintCurve c = new ExponentialMintCurve(SIM_WIDTH, p, p[0], 0, top);
+            assertEq(c.maxSafeSupply(), top, "the table's ceiling is its top");
+            if (!narrow) assertGe(top, 2 * CAP, "a wide table reaches past twice the anchor");
 
             vault.setCurve(IMintCurve(address(c)));
 
             mKind = CurveKind.Step;
             mWidth = SIM_WIDTH;
             mPrices = p;
+            mCap = top;
             mCurve = address(c);
             nStepSwaps++;
         }
+        if (mCap < mSupply) nNarrowingSwaps++;
         nCurveSwaps++;
     }
 
@@ -565,9 +570,9 @@ contract RandomSimTest is BaseTest {
         assertEq(got, expected, "harvest must sweep exactly the surplus");
         mHarvested += got;
         nHarvests++;
-        // `harvest` is gated by `pause`, not by the cap. Lowering the cap to zero therefore
-        // closes issuance while the sweep keeps running -- which is why the documented way
-        // to wind the system down is `pause()`, not `setCap(0)`.
+        // `harvest` is gated by `pause`, not by the ceiling. A curve whose top is below the
+        // supply therefore closes issuance while the sweep keeps running -- which is why the
+        // documented way to wind the system down is `pause()`, not a narrower curve.
         if (mSupply > mCap) nHarvestsInBurnOnlyMode++;
     }
 
@@ -684,9 +689,9 @@ contract RandomSimTest is BaseTest {
             vm.prank(a);
             vault.mint(0, type(uint256).max, block.timestamp);
         } else if (pick == 1) {
-            // One wei past the ceiling. With the cap below the live supply there is no
+            // One wei past the ceiling. With the ceiling below the live supply there is no
             // headroom to overshoot -- a single wei is already too much -- so the amount is
-            // relative to whichever side of the supply the cap currently sits on.
+            // relative to whichever side of the supply the ceiling currently sits on.
             uint256 tooMuch = mCap > mSupply ? mCap - mSupply + 1 : 1;
             vm.expectRevert(
                 abi.encodeWithSelector(IIAIVault.CapExceeded.selector, mSupply + tooMuch, mCap)
@@ -703,8 +708,8 @@ contract RandomSimTest is BaseTest {
             vault.mint(1e18, type(uint256).max, block.timestamp - 1);
         } else if (pick == 3) {
             // Offering one wei less than the curve asks for. The headroom guard has to cover
-            // the whole amount: with less than 1e18 left, `mint` hits its cap check -- which
-            // precedes the slippage check -- and the wrong error comes back.
+            // the whole amount: with less than 1e18 left, `mint` hits its ceiling check --
+            // which precedes the slippage check -- and the wrong error comes back.
             if (mSupply + 1e18 > mCap) return;
             uint256 needs = _shadowCeilDiv(_shadowCost(mSupply, 1e18) * WAD, vault.exchangeRate());
             if (needs == 0) return;
@@ -724,16 +729,16 @@ contract RandomSimTest is BaseTest {
             vault.burn(outstanding + 1, block.timestamp);
         } else if (pick == 5) {
             // A governance function from an ordinary wallet. Every other case here is a value
-            // or state guard; without this one the run asserts nothing about the role gates,
-            // and `setCap` is the cheapest of them to provoke from any reached state -- the
-            // modifier fires before the body, so the cap it is handed does not matter.
+            // or state guard; without this one the run asserts nothing about the role gates.
+            // `setCurve` is handed the curve already in force: the modifier fires before the
+            // body, so the argument does not matter, and nothing changes if it somehow did.
             vm.expectRevert(
                 abi.encodeWithSelector(
                     IAccessControl.AccessControlUnauthorizedAccount.selector, a, bytes32(0)
                 )
             );
             vm.prank(a);
-            vault.setCap(mCap);
+            vault.setCurve(IMintCurve(mCurve));
         } else if (pick == 6) {
             // Withdrawing more than is staked.
             uint256 staked = mStaked[a];
@@ -827,18 +832,17 @@ contract RandomSimTest is BaseTest {
         assertEq(vault.harvestShare(), mEpochShare[mEpochShare.length - 1], "the split matches the model");
         assertEq(vault.currentEpoch(), mEpochRate.length - 1, "the epoch matches the model");
 
-        // D: the vault's counter, the token's supply and the sum of positions all agree,
-        // and the cap holds.
+        // D: the vault's counter, the token's supply and the sum of positions all agree.
         assertEq(vault.supply(), mSupply, "D: supply matches the model");
         assertEq(vault.supply(), iai.totalSupply(), "D: vault and token supply agree");
         assertEq(sumOutstanding, mSupply, "D: outstanding sums to supply");
 
-        // The two governance-adjustable knobs are part of the compared state, so a swap or a
-        // resize that did not land is caught on the very next step. `supply <= cap` is
-        // deliberately *not* asserted: lowering the cap below the live supply is a supported
-        // operation, and `_opMint` pins the consequence -- which error comes back, with which
-        // numbers -- rather than the state.
-        assertEq(vault.cap(), mCap, "cap matches the model");
+        // The curve in force and the ceiling it carries are part of the compared state, so a
+        // swap that did not land is caught on the very next step. `supply <= cap` is
+        // deliberately *not* asserted: a curve whose top is below the live supply is a
+        // supported state, and `_opMint` pins the consequence -- which error comes back, with
+        // which numbers -- rather than the state.
+        assertEq(vault.cap(), mCap, "the ceiling matches the model");
         assertEq(address(vault.curve()), mCurve, "the curve in force matches the model");
 
         // C: solvency. Independent of the curve by construction -- it is measured against
@@ -871,17 +875,17 @@ contract RandomSimTest is BaseTest {
         assertGt(nPauseToggles, 20, "coverage: pausing");
         assertGt(nBurnsWhilePaused, 10, "coverage: redemption while issuance is closed");
         assertGt(nRejections, 100, "coverage: rejected operations");
-        assertGt(nCapChanges, 100, "coverage: cap changes");
-        assertGt(nCurveSwaps, 50, "coverage: curve swaps");
+        assertGt(nCurveSwaps, 100, "coverage: curve swaps");
+        assertGt(nNarrowingSwaps, 50, "coverage: swaps that put the ceiling below the supply");
         // Both shapes get real time in force: swaps to a table, and mints priced by one.
         assertGt(nStepSwaps, 25, "coverage: swaps to a step table");
         assertGt(nStepMints, 50, "coverage: mints priced by a step table");
-        assertGt(nMintsRejectedByCap, 100, "coverage: mints refused by the cap");
+        assertGt(nMintsRejectedByCap, 100, "coverage: mints refused by the ceiling");
         // These two are what make burn-only a run-time property rather than a claim: the
-        // system spent real time with issuance closed by the cap, and redemption and the
-        // sweep both kept working throughout.
-        assertGt(nBurnsInBurnOnlyMode, 100, "coverage: redemption while the cap is below supply");
-        assertGt(nHarvestsInBurnOnlyMode, 25, "coverage: harvest while the cap is below supply");
+        // system spent real time with issuance closed by the curve's top, and redemption and
+        // the sweep both kept working throughout.
+        assertGt(nBurnsInBurnOnlyMode, 100, "coverage: redemption while the ceiling is below supply");
+        assertGt(nHarvestsInBurnOnlyMode, 25, "coverage: harvest while the ceiling is below supply");
         // The split is retuned throughout, to both extremes as well as between them, and
         // positions are redeemed that have sat through one or more of those changes -- which
         // is the case the running product exists to make cheap.

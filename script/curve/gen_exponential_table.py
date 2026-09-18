@@ -5,23 +5,32 @@ The curve the vault charges is a step function: supply is cut into buckets of `B
 iAI, and every bucket is priced flat at the value the smooth formula takes at the bucket's
 **upper** bound:
 
-    price_i = ceil_to_wei( Base * exp( Exponent * ( ((i + 1) * BucketWidth) / Target )^3 ) )
+    price_i = ceil_to_wei( Base * exp( Exponent * ((i + 1) * BucketWidth) / Target ) )
 
-for i in 0 .. N-1, with N = ceil(Target / BucketWidth), so the table's top (N * BucketWidth)
-reaches the target and overshoots it by less than one bucket. Pricing at the upper bound means
-the table never sits below the formula anywhere in a bucket, and rounding each price up to the
-wei keeps that true after quantisation. Both roundings favour the vault.
+for i in 0 .. N-1. Pricing at the upper bound means the table never sits below the formula
+anywhere in a bucket, and rounding each price up to the wei keeps that true after quantisation.
+Both roundings favour the vault.
 
-The curve's parameters and the vault's are two separate sets. Nothing here reads the vault's
-`Cap`: the cap is a policy number that governance moves, the table is the curve. The vault alone
-checks, at `setCurve` and `setCap`, that the cap fits under the curve's `maxSafeSupply()`, which
-for this curve is the table's top -- so raising the target past the cap's reach is
-`genCurve --target ...`, `deployCurve`, `setCurve`, and only then `setCap`.
+The table's length is where the supply ceiling comes from. The vault has no cap of its own: it
+refuses any mint past the curve's `maxSafeSupply()`, and for this curve that is the table's top,
+`N * BucketWidth`. N is derived from `Budget`, the total 0G the curve is allowed to absorb: it is
+the smallest N for which the whole table -- the exact sum of `price_i * BucketWidth` over every
+bucket, divided by 1e18 once and rounded up, exactly as the contract's `cost(0, top)` computes
+it -- reaches `Budget`. So the top is the supply `Budget` 0G buys, rounded up to a whole bucket,
+and a budget that could never be spent (twice 0G's total supply, in the shipped parameters) makes
+the ceiling a real number that is never reached in practice.
+
+`Budget` is a parameter of the *table*, not of the contract. The constructor takes the width,
+the prices, `Base`, `Exponent` and `Target` and nothing else; it records the last three for
+provenance and enforces only what the vault relies on (a positive, monotone table inside its
+hard bound). The budget lives here and in the deployment record, where `--check` re-derives the
+table -- length included -- from the five recorded parameters. Raising the ceiling is therefore
+`genCurve --budget ...`, `deployCurve`, `setCurve`; there is no cap to move afterwards.
 
 Encodings, all 18-decimal fixed point ("WAD"): `Base` is wei-0G per iAI, `Exponent` is the
-dimensionless coefficient scaled by 1e18, `Target` and `BucketWidth` are wei-iAI. The cubic
-power is part of the formula, not a parameter. Prices are wei-0G per iAI, stored as decimal
-strings like every other integer in the record.
+dimensionless coefficient scaled by 1e18, `Target` (the supply the exponent is normalised
+against) and `BucketWidth` are wei-iAI, `Budget` is wei-0G. Prices are wei-0G per iAI, stored
+as decimal strings like every other integer in the record.
 
 The contract holds only the table. Nothing on chain evaluates `exp`, so this script is the
 single definition of how the table is derived. It is deliberately dependency-free (standard
@@ -34,7 +43,7 @@ library `decimal` at 60 significant digits) so anyone can rerun it and compare:
     python3 script/curve/gen_exponential_table.py deployments/iai-<chainId>.json --check
         regenerates from the parameters in the record and fails if the stored Prices differ
 
-    python3 script/curve/gen_exponential_table.py deployments/iai-<chainId>.json \
+    python3 script/curve/gen_exponential_table.py deployments/iai-<chainId>.json \\
         --solidity test/unit/curves/ExponentialTable.sol
         also emits the table as a Solidity library, for tests that may not read files
 """
@@ -46,32 +55,46 @@ from decimal import ROUND_CEILING, Decimal, getcontext
 
 WAD = 10**18
 BLOCK = "ExponentialMintCurve"
-KEYS = {"base": "Base", "exponent": "Exponent", "target": "Target", "width": "BucketWidth"}
+# Everything the table is derived from. The first four are also the constructor's arguments;
+# `Budget` fixes the table's length and goes no further than the record.
+KEYS = {"base": "Base", "exponent": "Exponent", "target": "Target", "width": "BucketWidth", "budget": "Budget"}
 
 # Every Decimal operation in this file, flag parsing included, runs at 60 significant digits.
 getcontext().prec = 60
 
-# The proposal's constants: 3,237.4 0G at zero supply, e^3.419 = 30.5x at the target of
-# 9,270 iAI, 25 iAI per bucket.
-DEFAULTS = {"base": "3237.4", "exponent": "3.419", "target": "9270", "width": "25"}
+# The shipped constants: 586 0G at zero supply, e^4.711 = 111x at the normalising supply of
+# 9,270 iAI, 25 iAI per bucket, and a table long enough to absorb 2,000,000,000 0G -- twice the
+# total supply of 0G, so the ceiling exists without ever being reachable.
+DEFAULTS = {"base": "586", "exponent": "4.711", "target": "9270", "width": "25", "budget": "2000000000"}
 
 
-def price_table(base_wei: int, exponent_wad: int, target_wei: int, width_wei: int) -> list[int]:
-    """The whole derivation. Everything else in this file is plumbing."""
+def price_table(base_wei: int, exponent_wad: int, target_wei: int, width_wei: int, budget_wei: int) -> list[int]:
+    """The whole derivation. Everything else in this file is plumbing.
+
+    Buckets are appended until the table's total -- computed the way the contract computes
+    `cost(0, top)`: the exact sum of `price * width`, divided by WAD once, rounded up -- reaches
+    the budget. The loop always terminates because every price is at least one wei."""
     base = Decimal(base_wei)
     k = Decimal(exponent_wad) / WAD
     target = Decimal(target_wei)
-    count = -(-target_wei // width_wei)  # ceil(target / width)
     prices = []
-    for i in range(count):
-        upper = Decimal((i + 1) * width_wei)
-        price = base * (k * (upper / target) ** 3).exp()
-        prices.append(int(price.to_integral_value(rounding=ROUND_CEILING)))
+    exact_sum = 0  # sum of price_i * width_i, in wei-0G times WAD; exact integer arithmetic
+    while -(-exact_sum // WAD) < budget_wei:  # ceil(exact_sum / WAD) < budget
+        upper = Decimal((len(prices) + 1) * width_wei)
+        price = int((base * (k * upper / target).exp()).to_integral_value(rounding=ROUND_CEILING))
+        prices.append(price)
+        exact_sum += price * width_wei
     return prices
 
 
+def table_total(prices: list[int], width_wei: int) -> int:
+    """`cost(0, top)` as the contract computes it: one ceiling over the exact sum."""
+    exact_sum = sum(p * width_wei for p in prices)
+    return -(-exact_sum // WAD)
+
+
 def to_wad(text: str) -> int:
-    """'3237.4' -> 3237400000000000000000, exactly."""
+    """'586.5' -> 586500000000000000000, exactly."""
     value = Decimal(text) * WAD
     if value != value.to_integral_value():
         sys.exit(f"{text} has more than 18 decimals")
@@ -92,7 +115,7 @@ def save(path: str, record: dict) -> None:
 
 
 def parameters(record: dict, args: argparse.Namespace) -> dict:
-    """Flags win; otherwise the block already in the record; otherwise the proposal's defaults."""
+    """Flags win; otherwise the block already in the record; otherwise the shipped defaults."""
     block = record.get("CurveParams", {}).get(BLOCK, {})
     out = {}
     for flag, key in KEYS.items():
@@ -134,13 +157,15 @@ pragma solidity 0.8.25;
  *
  *      Unit tests may not read files, so the table the deployment record carries is mirrored
  *      here; `test/script/Deploy.t.sol` asserts the two are identical, which is what keeps
- *      this copy honest. Each price is 16 bytes, big-endian, in bucket order.
+ *      this copy honest. Each price is 16 bytes, big-endian, in bucket order. `BUDGET` is the
+ *      0G the table was sized to absorb; it is not a constructor argument.
  */
 library ExponentialTable {{
     uint256 internal constant BUCKET_WIDTH = {params['BucketWidth']};
     uint256 internal constant BASE = {params['Base']};
     uint256 internal constant EXPONENT = {params['Exponent']};
     uint256 internal constant TARGET = {params['Target']};
+    uint256 internal constant BUDGET = {params['Budget']};
 
     bytes internal constant PACKED =
 {body};
@@ -164,10 +189,11 @@ library ExponentialTable {{
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("record", help="deployments/iai-<chainId>.json")
-    ap.add_argument("--base", help="0G per iAI at zero supply, e.g. 3237.4")
-    ap.add_argument("--exponent", help="exponent coefficient, e.g. 3.419")
+    ap.add_argument("--base", help="0G per iAI at zero supply, e.g. 586")
+    ap.add_argument("--exponent", help="exponent coefficient, e.g. 4.711")
     ap.add_argument("--target", help="supply the exponent is normalised against, in iAI, e.g. 9270")
     ap.add_argument("--width", help="bucket width in iAI, e.g. 25")
+    ap.add_argument("--budget", help="0G the table must absorb before it ends, e.g. 2000000000")
     ap.add_argument("--check", action="store_true", help="verify the stored table instead of writing it")
     ap.add_argument(
         "--require",
@@ -197,8 +223,15 @@ def main() -> None:
         if value <= 0:
             sys.exit(f"{key} must be positive")
 
-    prices = price_table(params["Base"], params["Exponent"], params["Target"], params["BucketWidth"])
+    prices = price_table(
+        params["Base"], params["Exponent"], params["Target"], params["BucketWidth"], params["Budget"]
+    )
     top = len(prices) * params["BucketWidth"]
+    total = table_total(prices, params["BucketWidth"])
+    if params["Target"] > top:
+        # The constructor rejects this (`TargetBeyondTable`): a table that ends below the
+        # supply its own exponent is normalised against cannot be the one derived for it.
+        sys.exit(f"{args.record}: the budget ends the table at {top} wei-iAI, below Target {params['Target']}")
 
     if args.check:
         stored = [int(p) for p in record["CurveParams"][BLOCK].get("Prices", [])]
@@ -209,11 +242,12 @@ def main() -> None:
                 f"(first difference at bucket {first}; stored {len(stored)} entries, derived {len(prices)}). "
                 f"Run without --check to regenerate."
             )
-        print(f"{args.record}: {len(prices)} prices match their parameters (top {top})")
+        print(f"{args.record}: {len(prices)} prices match their parameters (top {top}, total {total} wei-0G)")
     else:
         record.setdefault("CurveParams", {})[BLOCK] = {
             "Base": str(params["Base"]),
             "BucketWidth": str(params["BucketWidth"]),
+            "Budget": str(params["Budget"]),
             "Exponent": str(params["Exponent"]),
             "Prices": [str(p) for p in prices],
             "Target": str(params["Target"]),
@@ -221,7 +255,7 @@ def main() -> None:
         save(args.record, record)
         print(
             f"{args.record}: wrote {len(prices)} prices, width {params['BucketWidth']}, top {top}, "
-            f"first {prices[0]}, last {prices[-1]}"
+            f"total {total} wei-0G for a budget of {params['Budget']}, first {prices[0]}, last {prices[-1]}"
         )
 
     if args.solidity:

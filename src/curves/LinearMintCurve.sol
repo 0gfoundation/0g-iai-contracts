@@ -19,17 +19,19 @@ import {LinearCurveMath} from "./LinearCurveMath.sol";
  *      fast. This contract is then checked against those same vectors through the external
  *      interface, so both the maths and the wrapper are pinned.
  *
- *      `anchorCap` and `target` are recorded for provenance — they are how `slope` was
- *      derived, and they let "127,000,000 0G at full supply" stay readable on chain. They are
- *      immutable and enforce nothing, so they cannot drift out of agreement with anything;
- *      the vault's own cap is a separate, adjustable number and is deliberately unrelated.
+ *      `anchorCap` is where `slope` was pinned and it is also this curve's supply ceiling:
+ *      the vault has no cap of its own and refuses any mint past `maxSafeSupply()`, which
+ *      returns it. `target` is provenance -- the 0G the curve accounts for at that ceiling,
+ *      kept so "127,000,000 0G at full supply" stays readable on chain. Both are immutable;
+ *      neither can drift out of agreement with anything.
  */
 contract LinearMintCurve is IMintCurve {
     /// @notice Marginal price at supply zero, in wei-0G per iAI.
     uint256 public immutable r0;
     /// @notice Rise of the marginal price per unit of supply, scaled by 1e18. Derived, never supplied.
     uint256 public immutable slope;
-    /// @notice The cap `slope` was derived against. Provenance only — the vault's cap is its own.
+    /// @notice The supply `slope` was derived against, and the ceiling this curve permits
+    ///         issuance up to. Also `maxSafeSupply()`.
     uint256 public immutable anchorCap;
     /// @notice The 0G this curve locks at `anchorCap`. Provenance only.
     uint256 public immutable target;
@@ -102,12 +104,15 @@ contract LinearMintCurve is IMintCurve {
 
     /**
      * @inheritdoc IMintCurve
-     * @dev `cost` multiplies `d * (2s + d)` outside `mulDiv`; at `s = d = 2^127` that product
-     *      is `3 * 2^254`, still inside uint256. The bound is the curve's arithmetic domain and
-     *      is independent of `anchorCap`, which is only where `slope` was pinned.
+     * @dev The anchor. It is the one supply figure this curve carries, and it is where the
+     *      curve was designed to end: `target` is the 0G it accounts for exactly there. The
+     *      arithmetic reaches much further -- `cost` multiplies `d * (2s + d)` outside `mulDiv`
+     *      and stays inside uint256 up to `s = d = 2^127`, and `deriveSlope` caps the anchor at
+     *      2^127 for that reason -- so a supply past the anchor is refused by the vault rather
+     *      than by an overflow here.
      */
-    function maxSafeSupply() external pure returns (uint256) {
-        return 2 ** 127;
+    function maxSafeSupply() external view returns (uint256) {
+        return anchorCap;
     }
 
     /**

@@ -10,6 +10,8 @@ import {PausableUpgradeable} from "@openzeppelin/contracts-upgradeable/utils/Pau
 import {BeaconProxy} from "@openzeppelin/contracts/proxy/beacon/BeaconProxy.sol";
 import {UpgradeableBeacon} from "@openzeppelin/contracts/proxy/beacon/UpgradeableBeacon.sol";
 import {LinearMintCurve} from "../../src/curves/LinearMintCurve.sol";
+import {IMintCurve} from "../../src/interfaces/IMintCurve.sol";
+import {NarrowCurve} from "./mocks/StubCurves.sol";
 
 contract IAIVaultTest is BaseTest {
     // -------------------------------------------------------------------------
@@ -22,7 +24,8 @@ contract IAIVaultTest is BaseTest {
         assertEq(mintCurve.slope(), SLOPE, "slope must be derived, never supplied");
         assertEq(mintCurve.r0(), R0);
         assertEq(mintCurve.target(), TARGET);
-        assertEq(vault.cap(), CAP, "the cap is the vault's own, and adjustable");
+        assertEq(vault.cap(), mintCurve.maxSafeSupply(), "the ceiling is the curve's, not the vault's");
+        assertEq(vault.cap(), CAP, "and for the linear curve that is its anchor");
         assertEq(vault.remainingCap(), CAP, "nothing minted yet");
         assertEq(address(vault.oracle()), address(oracle), "oracle cached from a0G");
         assertEq(vault.foundation(), foundation);
@@ -68,7 +71,6 @@ contract IAIVaultTest is BaseTest {
             a0G: a0G_,
             foundation: foundation_,
             curve: address(mintCurve),
-            cap: CAP,
             harvestShare: 0.5e18
         });
     }
@@ -273,16 +275,16 @@ contract IAIVaultTest is BaseTest {
         _assertSolvent();
     }
 
-    /// @dev The exemption is not a cap bypass. The ceiling check sits inside `mint`'s body,
-    ///      below the gate, so `setCap(0)` is the one switch that closes issuance to everyone.
-    function test_Mint_ExemptHolderIsStillBoundByTheCapWhilePaused() public {
+    /// @dev The exemption is not a ceiling bypass. The check sits inside `mint`'s body, below
+    ///      the gate, so a curve whose top is under the supply binds an exempt holder too.
+    function test_Mint_ExemptHolderIsStillBoundByTheCeilingWhilePaused() public {
         bytes32 exemption = vault.PAUSE_EXEMPT_MINTER_ROLE();
         vault.grantRole(exemption, carol);
         uint256 d = 10e18;
-        // Funded before the cap moves: quoting past the ceiling reverts, and the point here is
-        // the mint's own guard.
+        // Funded before the ceiling moves: quoting past it reverts, and the point here is the
+        // mint's own guard.
         _fund(carol, d);
-        vault.setCap(0);
+        vault.setCurve(IMintCurve(address(new NarrowCurve(0))));
         vm.prank(guardian);
         vault.pause();
 
@@ -680,7 +682,7 @@ contract IAIVaultTest is BaseTest {
         assertLe(summed, vault.totalLocked0G(), "A: the total covers every position");
         assertApproxEqAbs(summed, vault.totalLocked0G(), _mintDust(8), "A: and by no more than dust");
         assertEq(vault.supply(), iai.totalSupply(), "D: supply counters agree");
-        assertLe(vault.supply(), vault.cap(), "D: cap respected");
+        assertLe(vault.supply(), vault.cap(), "D: the curve's ceiling respected");
         _assertSolvent(); // C
     }
 

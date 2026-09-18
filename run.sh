@@ -12,11 +12,13 @@
 #   ./run.sh redeployMock  replace the mock collateral -- ABANDONS every balance on the
 #                          old token; only for when the mock itself must change shape
 #   ./run.sh genCurve [flags]     (re)generate the ExponentialMintCurve price table into the
-#                                 record from its parameters (see script/curve/gen_exponential_table.py)
+#                                 record from its parameters (see script/curve/gen_exponential_table.py);
+#                                 --budget <0G> sizes the table and so the supply ceiling
 #   ./run.sh deployCurve <Kind>   deploy a curve and record it under its kind name
-#   ./run.sh setCurve <Kind>      point the vault at a previously deployed curve
-#   ./run.sh setCap <amount>      move the supply ceiling (wei-iAI; below the live supply
-#                                 closes issuance and leaves redemption open)
+#   ./run.sh setCurve <Kind>      point the vault at a previously deployed curve -- this is
+#                                 also how the supply ceiling moves; the vault has no cap of
+#                                 its own, and a curve whose top is below the live supply
+#                                 closes issuance while leaving redemption open
 #   ./run.sh setHarvestShare <share>  move the foundation's cut of collateral appreciation
 #                                     (WAD; 5e17 is 50%). Applies to future yield on every
 #                                     position, and moves nothing at the moment it is made
@@ -92,9 +94,8 @@ case "${1:-deploy}" in
   genCurve)
     python3 script/curve/gen_exponential_table.py "$CONFIG" "${@:2}"
     echo "Regenerated. The chain still has the old table: 'run.sh deployCurve ExponentialMintCurve'"
-    echo "then 'run.sh setCurve ExponentialMintCurve' puts the new one in service. The vault's cap"
-    echo "must fit under the table in force: a taller table is deployCurve, setCurve, then setCap;"
-    echo "a table whose top is below the current cap needs setCap (to at most the new top) first."
+    echo "then 'run.sh setCurve ExponentialMintCurve' puts the new one in service. Its top becomes"
+    echo "the supply ceiling the moment it is in force -- there is no separate cap to move."
     ;;
   unpause)  send script/deploy/IAI.s.sol --sig "unpause()" ;;
   pause)    send script/deploy/IAI.s.sol --sig "pause()" ;;
@@ -109,10 +110,6 @@ case "${1:-deploy}" in
     [ $# -eq 2 ] || { echo "usage: ./run.sh setCurve <Kind>   e.g. ExponentialMintCurve"; exit 1; }
     send script/deploy/IAI.s.sol --sig "setCurve(string)" "$2"
     read_only script/deploy/IAI.s.sol --sig "checkDeployment()"
-    ;;
-  setCap)
-    [ $# -eq 2 ] || { echo "usage: ./run.sh setCap <amount in wei-iAI>"; exit 1; }
-    send script/deploy/IAI.s.sol --sig "setCap(uint256)" "$2"
     ;;
   setHarvestShare)
     [ $# -eq 2 ] || { echo "usage: ./run.sh setHarvestShare <share in WAD>   e.g. 500000000000000000 for 50%"; exit 1; }
@@ -148,5 +145,5 @@ case "${1:-deploy}" in
     send script/deploy/IAI.s.sol --sig "revokePausedMintExemption(address)" "$2"
     read_only script/deploy/IAI.s.sol --sig "pausedMintExemption(address)" "$2"
     ;;
-  *) echo "unknown command: $1"; sed -n '2,26p' "$0"; exit 1 ;;
+  *) echo "unknown command: $1"; sed -n '2,31p' "$0"; exit 1 ;;
 esac

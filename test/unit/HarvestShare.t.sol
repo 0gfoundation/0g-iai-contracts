@@ -5,6 +5,8 @@ import {IAccessControl} from "@openzeppelin/contracts/access/IAccessControl.sol"
 
 import {BaseTest} from "../Base.t.sol";
 import {EpochMath} from "../../src/EpochMath.sol";
+import {IMintCurve} from "../../src/interfaces/IMintCurve.sol";
+import {NarrowCurve} from "./mocks/StubCurves.sol";
 
 /**
  * @title HarvestShareTest
@@ -321,8 +323,8 @@ contract HarvestShareTest is BaseTest {
         vm.prank(alice);
         vault.burn(20e18, block.timestamp);
 
-        // Cap below the live supply.
-        vault.setCap(0);
+        // Ceiling below the live supply: a curve whose top is zero.
+        vault.setCurve(IMintCurve(address(new NarrowCurve(0))));
         vm.prank(bob);
         vault.burn(20e18, block.timestamp);
 

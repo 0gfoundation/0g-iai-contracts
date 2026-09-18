@@ -54,7 +54,7 @@ grep -nE "^\s*function .*(whenNotPaused|whenIssuanceOpen)" src/IAIVault.sol
 The right answer is exactly two, `mint` and `harvest`. `burn` must never appear.
 
 **5. Roles, not owners.** `AccessControlUpgradeable` with one role per responsibility:
-`DEFAULT_ADMIN_ROLE` (grant/revoke, `setFoundation`, `setCurve`, `setCap`, `setHarvestShare`),
+`DEFAULT_ADMIN_ROLE` (grant/revoke, `setFoundation`, `setCurve`, `setHarvestShare`),
 `PAUSER_ROLE` (pause/unpause only),
 `PAUSE_EXEMPT_MINTER_ROLE` (`mint` while paused, and nothing else), `MINTER_BURNER_ROLE` (held
 solely by the vault), and beacon ownership (upgrades). Deployment puts admin, pauser and the beacons
@@ -80,10 +80,10 @@ checks that the *deployer* is not left holding it. Its cost to `pause()` is R10.
 
 **`DEFAULT_ADMIN_ROLE` on the vault is an upgrade-grade key and must go to the same multisig as
 beacon ownership.** It was not always: before the curve moved out of the vault, admin could not touch
-pricing at all, and separating it from the upgrade key was a real boundary. `setCurve`, `setCap` and
-`setHarvestShare` erase that boundary — between them they can reprice all future issuance, lift the
-supply ceiling without limit, and redirect every future wei of collateral yield, which is the same
-economic power an upgrade has. Treating admin as a lesser key
+pricing at all, and separating it from the upgrade key was a real boundary. `setCurve` and
+`setHarvestShare` erase that boundary — between them they can reprice all future issuance, move the
+supply ceiling without limit (it is the curve's, so a swap moves it), and redirect every future wei
+of collateral yield, which is the same economic power an upgrade has. Treating admin as a lesser key
 because it once was is the mistake this paragraph exists to prevent.
 
 `./handover.sh grant` then `./handover.sh renounce` moves them, in two transactions on purpose:
@@ -94,20 +94,37 @@ net. Never collapse the two steps.
 
 **6. `SafeERC20` for every external token.**
 
-**7. Never write `require(newCap >= supply)` in `setCap`, and never forbid `setCap(0)`.** Lowering
-the cap below the live supply is the supported way to close issuance — burn-only mode — and it is
-wanted precisely in an emergency, which is when a guard like that would block it. It reads as a
-safety check and is the most natural wrong instinct here, so it is called out by name. Burn-only
-needs no mode flag: `mint`'s `supplyAfter > cap` check is simply always true once `cap < supply`,
-and nothing else consults the cap. `test_SetCap_MayGoBelowTheLiveSupply` and `test_SetCap_MayBeZero`
-fail if anyone adds one.
+**7. The supply ceiling is the curve's. Never give the vault a cap of its own again, and never
+write `require(newCurve.maxSafeSupply() >= supply)` in `setCurve`.** The vault stores no ceiling:
+`mint` and every quote read `curve.maxSafeSupply()` (clamped to the vault's hard bound of 2^127) at
+the point of use, so the ceiling moves when, and only when, the curve is swapped. A curve whose top
+is below the live supply is the supported way to close issuance — burn-only mode — and it is wanted
+precisely in an emergency, which is when a guard like that would block it. It reads as a safety
+check and is the most natural wrong instinct here, so it is called out by name. Burn-only needs no
+mode flag: `mint`'s `supplyAfter > cap` check is simply always true once the ceiling is under the
+supply, and nothing else consults it. `test_BurnOnly_ACurveBelowTheLiveSupplyClosesIssuance` and
+`test_SetCurve_AcceptsACurveNarrowerThanTheSupply_AndTheCeilingFollows` fail if anyone adds one.
 
-Note what burn-only does **not** stop: `harvest` is gated by `pause`, not by the cap, so
-`setCap(0)` closes issuance while the sweep keeps running. Neither switch is a wind-down on its own,
-and they fail in opposite directions: `setCap(0)` leaves the sweep running, and `pause()` leaves a
-`PAUSE_EXEMPT_MINTER_ROLE` holder able to mint. A full stop is `pause()` plus revoking that role, or
-`setCap(0)` plus `pause()` — and `setCap(0)` is the only single switch that closes issuance to
-everyone, because the ceiling check sits inside `mint`'s body rather than in a modifier.
+The vault used to carry an adjustable `cap` beside the curve, with `setCap`; it was removed because
+it was a second number able to disagree with the first, and because every reason to move it was a
+reason to move the curve. What `setCurve` does check of the incoming curve is only that it answers
+`maxSafeSupply()` at all, so a contract that cannot is refused now rather than discovered on the
+first mint. Its value is not judged.
+
+What was given up with it: a curve that starts reverting *after* installation now takes `cap()`,
+`remainingCap()`, every quote, `run.sh status` and `run.sh check` down with it, where `setCap(0)`
+used to keep them readable. `burn` never touches the curve and `setCurve` never reads the outgoing
+one, so redemption and the exit are unaffected; the upgrade rehearsal records the ceiling as
+unavailable rather than failing (`test_SnapshotsABrokenCurveAsAnUnavailableCeiling`). An operator
+seeing `status` revert should read it as "the curve is broken, swap it", not as a vault failure.
+
+Note what burn-only does **not** stop: `harvest` is gated by `pause`, not by the ceiling, so a
+narrower curve closes issuance while the sweep keeps running. Neither switch is a wind-down on its
+own, and they fail in opposite directions: a narrower curve leaves the sweep running, and `pause()`
+leaves a `PAUSE_EXEMPT_MINTER_ROLE` holder able to mint. A full stop is `pause()` plus revoking that
+role. A curve whose top is zero does close issuance to everyone in one transaction, because the
+ceiling check sits inside `mint`'s body rather than in a modifier — but it needs a curve contract
+deployed for the purpose, so it is not the switch to reach for first.
 
 **8. Do not add redundant state.** A field that mirrors something another contract already knows is a
 liability, not a safety net — it costs gas on every write and creates a divergence that has to be
@@ -122,11 +139,15 @@ storing the foundation's accrued yield as a `pendingHarvest` counter. That mirro
 `balance - owed` already says, drifts the moment anyone sends a0G to the vault directly, and turns
 the sweep into an accrual whose result depends on how often someone advances it.
 
-`LinearMintCurve.anchorCap` and `.target` are not an exception to this, and neither are
-`ExponentialMintCurve.base`, `.exponent` and `.target`. They are `immutable`, so they cannot drift
-from anything — nothing reads them to make a decision, and they enforce nothing. They record how the
-slope, or the table, was derived, which is the only way the published parameters stay readable on
-chain now that the vault's own cap is a separate, adjustable number.
+`LinearMintCurve.target` is not an exception to this, and neither are `ExponentialMintCurve.base`,
+`.exponent` and `.target`. They are `immutable`, so they cannot drift from anything — nothing reads
+them to make a decision, and they enforce nothing. They record how the slope, or the table, was
+derived, which is the only way the published parameters stay readable on chain. (`anchorCap` is
+different: it is the linear curve's `maxSafeSupply()`, and so the vault's ceiling while that curve
+is in force. The exponential curve's ceiling is `top`, which is `bucketCount * bucketWidth` and
+holds no information the table does not.) The 0G budget the table was sized to is recorded only in
+the deployment record, never on chain — the contract is configured by the table it is given, and a
+`budget` immutable would be a number nothing reads.
 
 `ExponentialMintCurve`'s table is storage, and that is not redundant state either: it *is* the
 curve. It is written once by the constructor and there is no function that writes it again — no
@@ -158,15 +179,23 @@ transaction (split in two, anyone could initialize the proxy first and own the c
 **Adding storage:** append to the end of the namespaced struct. Never reorder, never remove, never
 change a type.
 
-**`IAIVault`'s struct has now been rewritten twice, and the licence is spent again.** The
-adjustable harvest share reshaped both `Position` (a second claim and an epoch marker, and
-`iaiOutstanding` narrowed to `uint128`) and `VaultStorage` (two fields and an array, inserted
-before `positions` rather than appended). It was safe only because Galileo was rebuilt from
-scratch and mainnet did not exist — the same circumstances, and the same one-time licence, as the
-curve and cap refactor below. **The `IAIVaultBeacon` recorded in `deployments/iai-16602.json`
-before that rebuild must never be pointed at this implementation.** `epochs` lands on a slot that
-reads zero, so `_settled` underflows on `$.epochs.length - 1` and every `burn` reverts with a bare
-panic; `positions` moves two slots, so every position reads zero as well. Append from here.
+**`IAIVault`'s struct has now been rewritten three times, and the licence is spent again.**
+Removing the vault's own `cap` took the second field out of `VaultStorage`, so every field after
+`curve` moved up one slot. It was safe only because Galileo was rebuilt from scratch once more and
+mainnet still did not exist — the same circumstances, and the same one-time licence, as the two
+rewrites below. **The `IAIVaultBeacon` that `deployments/iai-16602.json` named before this rebuild
+(`0xD86E78459687f7f58Da6d1CEA20809BD0c7281a0`) must never be pointed at this implementation.**
+`foundation` would read the old `cap` (an address of `9270e18`, no code), `iai` the old
+`foundation`, and every field from there on is one slot off, so every position reads zero.
+Append from here.
+
+**The second rewrite's statement still applies:** The adjustable harvest share reshaped both
+`Position` (a second claim and an epoch marker, and `iaiOutstanding` narrowed to `uint128`) and
+`VaultStorage` (two fields and an array, inserted before `positions` rather than appended). It was
+safe only because Galileo was rebuilt from scratch and mainnet did not exist. Pointing the beacon
+from before *that* rebuild at a later implementation fails the same way: `epochs` lands on a slot
+that reads zero, so `_settled` underflows on `$.epochs.length - 1` and every `burn` reverts with a
+bare panic; `positions` moves two slots, so every position reads zero as well.
 
 **The original statement of this rule, from the curve and cap refactor, still applies verbatim:** The curve
 and cap refactor reordered and retyped every field. It was safe only because mainnet did not exist
@@ -191,8 +220,9 @@ not replaced by a unit test:
 ./upgrade.sh vault               # only after the rehearsal passes
 ```
 
-The rehearsal snapshots the curve address and cap, the accounting totals, live pricing and the
-positions named in `CHECK_ACCOUNTS`, upgrades, and reverts on any drift. On a live upgrade, set
+The rehearsal snapshots the curve address (which carries the ceiling with it), the accounting
+totals, live pricing and the positions named in `CHECK_ACCOUNTS`, upgrades, and reverts on any
+drift. On a live upgrade, set
 `CHECK_ACCOUNTS` to the largest holders.
 
 **The `forge inspect <Contract> storageLayout` diff printed beside it is decoration, and must not
@@ -267,7 +297,7 @@ Three layers, all required to stay green:
   change moves nothing between minter and foundation, that the sweep stays idempotent across one,
   that settling late lands where settling at every step does, that catching up costs the same
   however many changes were missed, and that redemption works from every state a change can leave
-  behind -- paused, cap at zero, and several epochs behind at once.
+  behind -- paused, the ceiling at zero, and several epochs behind at once.
 
   **`test/unit/curves/CurveConformance.t.sol` is the gate on `IMintCurve`.** It is an abstract
   suite stating the behaviours a signature cannot: `cost` rounds up and is never zero, it is
@@ -291,14 +321,15 @@ Three layers, all required to stay green:
   step so a mismatch names the operation that caused it. Coverage counters are asserted at the end,
   so a run that degenerates into no-ops fails instead of passing vacuously.
 
-  Pausing, cap changes, curve swaps, changes of the harvest share and rejected operations are all
-  part of the operation mix. That
-  makes "redemption is never gated" a property held across the whole run rather than one assertion,
-  against both switches: a 10k-operation run redeems ~860 times while paused and ~730 times with the
-  cap below the live supply. It also checks **which** error each guard raises from whatever state the
-  run has reached — `_opMint` draws its amount without reference to the cap and lets the shadow
-  decide whether the mint should be refused, which is a stronger statement than a `supply <= cap`
-  assertion and, unlike one, survives burn-only mode.
+  Pausing, curve swaps (which are also how the ceiling moves; two in five draws try to put it
+  below the live supply, and about one in five swaps actually does, since a draw needs a supply
+  to be below), changes of the harvest share and rejected operations are all part of the
+  operation mix. That makes "redemption is never gated" a property held across the whole run rather
+  than one assertion, against both switches: a 10k-operation run redeems ~975 times while paused and
+  ~390 times with the ceiling below the live supply. It also checks **which** error each guard
+  raises from whatever state the run has reached — `_opMint` draws its amount without reference to
+  the ceiling and lets the shadow decide whether the mint should be refused, which is a stronger
+  statement than a `supply <= cap` assertion and, unlike one, survives burn-only mode.
 
   The harvest share is retuned throughout, to zero and one as well as between them, and the shadow
   tracks both halves of every claim in plain checked arithmetic rather than through `EpochMath` --
@@ -318,8 +349,11 @@ Three layers, all required to stay green:
   deliberately a ceiling and may exceed the balance by a wei without anyone being short.
 
   Curve swaps go in both directions and alternate between the two shapes: every odd swap installs a
-  random, monotone step table (coarse — 38 buckets of 500 iAI, so its top clears twice the cap and
-  `_opSetCap` never meets it) and every even one a linear curve. The shadow tracks the kind in force
+  random, monotone step table (coarse — 500 iAI per bucket; a full table of 38 buckets reaches
+  19,000 iAI, past any ceiling a linear swap can set, and a narrowing swap draws fewer buckets so
+  the top lands under the supply) and every even one a linear curve, whose anchor is its ceiling.
+  The shadow does not read the ceiling back: it is `buckets * width` or the anchor by construction,
+  and both are asserted against the deployed curve. The shadow tracks the kind in force
   and prices each mint accordingly, so a mint after a swap is priced at the new curve while a burn of
   a pre-swap position is still settled at that position's own average — requirement 1, checked wei
   for wei thousands of times from states no hand-written test reaches, across a change of shape. The
@@ -466,12 +500,13 @@ only one definition of `WAD`.
 
 **A curve's parameters belong to the curve, and the record says so.** Everything a curve needs to
 be constructed sits under `CurveParams.<Kind>` — for the linear curve, `R0`, `AnchorCap` and
-`Target`; for the exponential curve, `Base`, `Exponent`, `Target`, `BucketWidth` and the 371-entry
-`Prices` array. This is the one nested object in an otherwise flat file, and it earns the exception:
-those keys are meaningless to any other curve, and each kind has its own block rather than
-piling more top-level keys into a shared namespace. `Cap` stays at the top level because it is the
-*vault's* ceiling, not a curve's, and `HarvestShare` for the same reason -- it governs how the
-collateral's yield is divided, which has nothing to do with what any curve charges to issue.
+`Target`; for the exponential curve, `Base`, `Exponent`, `Target`, `BucketWidth`, `Budget` and the
+587-entry `Prices` array. This is the one nested object in an otherwise flat file, and it earns the
+exception: those keys are meaningless to any other curve, and each kind has its own block rather
+than piling more top-level keys into a shared namespace. There is no `Cap` key anywhere: the vault
+has no ceiling of its own, and the curve's is a function of its block. `HarvestShare` stays at the
+top level because it governs how the collateral's yield is divided, which has nothing to do with
+what any curve charges to issue.
 
 `HarvestShare` records only the value in force, not the history. The vault keeps its own epochs, so
 a position settled under an older split is restated on chain rather than reconstructed from a file;
@@ -479,13 +514,16 @@ a position settled under an older split is restated on chain rather than reconst
 then reads the chain back.
 
 **`Prices` is derived, never edited.** `./run.sh genCurve` runs `script/curve/gen_exponential_table.py`,
-which derives the table from `Base`, `Exponent`, `Target` and `BucketWidth` alone -- `ceil(Target /
-BucketWidth)` buckets, 60-digit `decimal`, each price rounded up to the wei, each bucket priced at
-its upper bound -- and writes the block. **The generator never reads the vault's `Cap`.** The
-curve's parameters and the vault's are two separate sets: the cap is a policy number governance
-moves with `setCap`, the table is the curve, and tying one to the other once made `check` fail the
-moment the cap was lowered. The only place the two meet is the vault's own domain check. `./run.sh check` and `./run.sh deployCurve` run the same script in `--check` mode
-first, so a table that disagrees with the parameters beside it cannot be deployed or pass a check;
+which derives the table from `Base`, `Exponent`, `Target`, `BucketWidth` and `Budget` alone --
+60-digit `decimal`, each price rounded up to the wei, each bucket priced at its upper bound, and as
+many buckets as it takes for the whole table's cost (the exact sum of price times width, one ceiling
+over it, exactly as `cost(0, top)` computes it) to reach `Budget` -- and writes the block. **The
+table's length is the supply ceiling, and `Budget` is what fixes it.** `Budget` goes no further than
+the record: the constructor takes the width, the prices, `Base`, `Exponent` and `Target`, and the
+contract is configured by the table it is given. Do not add a `budget` argument to it -- nothing on
+chain would read it, and the record already says what the table was sized to. `./run.sh check` and
+`./run.sh deployCurve` run the same script in `--check` mode first, so a table that disagrees with
+the parameters beside it -- in any entry, or in its length -- cannot be deployed or pass a check;
 `checkDeployment` then compares the deployed curve under the kind key against the record's table
 entry by entry.
 
@@ -496,36 +534,35 @@ that runs ahead is the documented procedure, not a fault. When some other curve 
 exponential curve *is* pricing, the record no longer describes the table every mint is charged
 against and the check fails, as do a missing parameter block and a missing address. `setCurve`
 refuses either way: it is about to make that curve price things. Every integer in the block is WAD-scaled and stored as a decimal string like the
-rest of the file — `Exponent` is `3419000000000000000` for 3.419; the cubic power is part of the
-formula, not a parameter. The unit tests cannot read the record, so `--solidity` also emits
-`test/unit/curves/ExponentialTable.sol` as a mirror of **`iai-example.json`** -- the proposal's
+rest of the file — `Exponent` is `4711000000000000000` for 4.711, `Budget` is 2,000,000,000 0G in
+wei. The unit tests cannot read the record, so `--solidity` also emits
+`test/unit/curves/ExponentialTable.sol` as a mirror of **`iai-example.json`** -- the shipped
 parameters, which is what the unit tests pin -- and `test/script/Deploy.t.sol` asserts the two
 agree. Regenerate the mirror only when the *example's* parameters change. A network record's
 parameters (`iai-16661.json`, `iai-16602.json`) may move without touching any test: their tables
-are guarded by `run.sh check`, not by `forge test`, exactly as their `Cap` and addresses are. The golden vectors in
+are guarded by `run.sh check`, not by `forge test`, exactly as their addresses are. The golden vectors in
 `test/unit/curves/ExponentialMintCurve.t.sol` were computed with `mpmath`, independently of the
 generator, and may not be edited to follow it.
 
-**The exponential curve's domain is its table, and the cap must fit inside it.** `maxSafeSupply()`
-is the table's top (9,275 iAI for the shipped parameters), so `setCap` above it is refused while
-that curve is in force, and `setCurve` to it is refused while the cap is above it. Raising the
-target is therefore always `genCurve --target ...` → `deployCurve` → `setCurve` → `setCap`, in that
-order. A table whose top is *below* the current cap is the mirror image: `setCap` to at most the
-new top first, then `deployCurve` → `setCurve`, or the swap is refused. Lowering the cap on its own
-needs nothing from the curve and never disturbs it. All three paths are exercised in
-`test/script/Deploy.t.sol`. `run.sh setCurve ExponentialMintCurve` pre-flights the kind key against
-the record's table before broadcasting, so a `genCurve` without `deployCurve` is caught before a
-governance transaction is spent. The
-test fixture stays on the linear curve for exactly this reason: `CapChange.t.sol` raises the cap to
-twice `CAP`, which the table cannot price. Exponential coverage lives in its own suite, in
-`CurveSwap.t.sol`, in `Deploy.t.sol` and in the simulation's alternating swaps.
+**The exponential curve's domain is its table, and its top is the supply ceiling.**
+`maxSafeSupply()` is `bucketCount * bucketWidth` (14,675 iAI for the shipped parameters: 587
+buckets, the smallest number whose total reaches two billion 0G), and the vault issues nothing past
+it. Raising the ceiling is therefore always `genCurve --budget ...` → `deployCurve` → `setCurve`, in
+that order, and the ceiling moves at the last step; a shorter table is put in force the same way and
+brings the ceiling down with it, into burn-only mode if its top is below the live supply. Both paths
+are exercised in `test/script/Deploy.t.sol`. `run.sh setCurve ExponentialMintCurve` pre-flights the
+kind key against the record's table before broadcasting, so a `genCurve` without `deployCurve` is
+caught before a governance transaction is spent. The test fixture stays on the linear curve: its
+closed form keeps the fuzz and split tests fast, and its anchor gives the fixture a ceiling of 9,270
+iAI that tests can mint up to. Exponential coverage lives in its own suite, in `CurveSwap.t.sol`, in
+`Deploy.t.sol` and in the simulation's alternating swaps.
 
-`AnchorCap` and `Cap` start life as the same number and then part company. `Cap` moves with
-`setCap`; `AnchorCap` is the supply a curve's slope was derived against, burned into the curve at
-construction. They shared a key once, so deploying a curve after any cap change silently derived a
-*different* curve from the same published `R0` and `Target` — double the cap and the slope came out
-271850478687441015 instead of 2021598247004348741, with every number involved still looking
-plausible. **Never feed the vault's cap to a curve constructor.**
+`AnchorCap` is the supply a linear curve's slope was derived against, burned into the curve at
+construction, and it is that curve's ceiling. It once shared a record key with the vault's cap, so
+deploying a curve after any cap change silently derived a *different* curve from the same published
+`R0` and `Target` — double the anchor and the slope came out 271850478687441015 instead of
+2021598247004348741, with every number involved still looking plausible. The vault's cap is gone;
+the lesson stays: **a curve is built from its own block and nothing else.**
 
 The same split runs through the code: `Config` carries only what every deployment needs, each curve
 kind gets its own parameter struct (`LinearCurveParams`, `ExponentialCurveParams`), and `IAIDeployer`
@@ -581,15 +618,15 @@ Decisions, not oversights. They are recorded here so nobody has to rediscover th
 change that quietly "fixes" one gets discussed rather than merged.
 
 **R1 — the a0G oracle's write key can drain the vault.** Upstream `setValue` has no bounds, no
-monotonicity requirement, no rate limit and no timelock. Set the rate absurdly high, mint to the cap
-for dust, restore it, redeem: the collateral is gone. iAI does not defend against this, because the
+monotonicity requirement, no rate limit and no timelock. Set the rate absurdly high, mint to the
+ceiling for dust, restore it, redeem: the collateral is gone. iAI does not defend against this, because the
 root cause is the combination of yield-bearing collateral and recording curve value rather than
 deposited tokens — both deliberate. **Operational requirement:** monitor the oracle's `ValueSet`
 events and, on any move outside the expected daily band, `pause()` **and** revoke
 `PAUSE_EXEMPT_MINTER_ROLE` if anyone holds it (R10) — the second is part of the response, not a
 follow-up to it. `pause()` stops minting but not redemption, so the window between alert and human
-response is the exposure. Note the cap is not a
-bound on this: it is adjustable upward, so "mint to the cap" is not a fixed quantity of damage.
+response is the exposure. Note the ceiling is not a bound on this: it is the curve's, and a swap
+raises it, so "mint to the ceiling" is not a fixed quantity of damage.
 
 **R2 — a mint and an immediate full burn costs at most 1 wei, and at a harvest share of zero
 costs nothing at all** (the share-denominated half comes back exactly as deposited). Round-trips are effectively free, so a large
@@ -603,11 +640,12 @@ new way for redemption to fail, but it does mean a deployment cannot be made and
 be retuned while the feed is down. An external dependency. Note that setting the upstream `maxAge` to zero freezes the system
 permanently rather than temporarily.
 
-**R4 — `totalLocked0G` can exceed the curve's `target`, and has no computable upper bound.** A
-redeemer releases 0G at their own average rate while the freed supply is resold at the marginal
-rate, so churn ratchets the total upward. The old figure of "roughly 213.9M 0G" was derived from a
-fixed `(r0, cap, target)` and is no longer a bound of any kind: the cap can be raised and the curve
-replaced with a dearer one, both without limit. **Never write `require(totalLocked0G <= target)`**,
+**R4 — `totalLocked0G` can exceed what the curve accounts for, and has no computable upper
+bound.** A redeemer releases 0G at their own average rate while the freed supply is resold at the
+marginal rate, so churn ratchets the total upward. The old figure of "roughly 213.9M 0G" was
+derived from a fixed `(r0, cap, target)` and is no longer a bound of any kind: the curve can be
+replaced with a longer or dearer one without limit, and the table's two-billion-0G budget is a
+sizing choice, not a bound on custody. **Never write `require(totalLocked0G <= target)`**,
 and do not reintroduce a numeric ceiling in its place.
 
 **R5 — a falling exchange rate leaves late redeemers short.** The harvest sweep goes quiet and
@@ -627,8 +665,8 @@ a pro-rata haircut — requires the payout to read the vault's balance, which is
 forbids and what makes repeated harvesting safe. What to close is the entrance: `pause()`, and
 revoke `PAUSE_EXEMPT_MINTER_ROLE` with it, so nobody opens a new position against a vault that is
 already short. Note too that `setHarvestShare` refuses a fallen rate, so the split cannot be
-retuned until the collateral recovers — a governance action only, never a user's. Lowering the cap to wind the system down makes this worse rather
-than better — the sweep is gated by `pause`, not by the cap, so it keeps running. Use `pause()`,
+retuned until the collateral recovers — a governance action only, never a user's. Swapping in a narrower curve to wind the system down makes this worse rather
+than better — the sweep is gated by `pause`, not by the ceiling, so it keeps running. Use `pause()`,
 and revoke `PAUSE_EXEMPT_MINTER_ROLE` with it if anyone holds it (R10).
 
 **R6 — governance can reprice all future issuance, and lower the curve at existing holders' profit.**
@@ -640,9 +678,12 @@ then sits on less collateral and the foundation's future harvest shrinks. Accept
 no on-chain restriction on the direction of a swap, and no record of the price difference.
 `test_Swap_DownwardsIsArbitrageableByExistingHolders` pins it.
 
-**R7 — the supply ceiling is adjustable without limit.** `setCap` accepts anything up to the curve's
-declared arithmetic domain. Raising it dilutes nothing directly, but it removes the ceiling every
-other figure here was quoted against, R1 and R4 included.
+**R7 — the supply ceiling moves with the curve, without limit.** The ceiling is the curve's
+`maxSafeSupply()`, and `setCurve` accepts any curve, so governance can raise it as far as a table
+can be made long (the vault clamps at 2^127) or drop it to zero in one swap. The shipped table's
+top is the supply two billion 0G buys, which nobody can reach; but that is a property of one
+deployed table, not of the system, and a swap removes the ceiling every other figure here was
+quoted against, R1 and R4 included.
 
 **R8 — a curve can be discriminatory or mutable; the vault cannot tell.** `IMintCurve`'s functions
 are `view`, so a curve reaches the vault by `STATICCALL` and cannot write state or reenter — that
@@ -664,7 +705,7 @@ token used to carry a hard cap as a second, independent line of defence; the cap
 vault to become adjustable, and the token's was removed rather than left to contradict it. What is
 given up is real, and it is more than "extra tokens": `iai.totalSupply()` is the vault's pricing
 input, so iAI minted outside the vault raises the curve for everyone, can push the supply past the
-cap and force burn-only from the token side, and leaves supply the vault has no position behind —
+curve's top and force burn-only from the token side, and leaves supply the vault has no position behind —
 which is the premise `_settle`'s arithmetic rests on.
 
 The mitigation got cheap in the same change, though, and should be taken: **`IAI` now has no
@@ -680,12 +721,14 @@ what the role does *not* do: it removes a mitigation, it does not add a capabili
 runs the same code as any other, so the damage bound is the one an unpaused vault already has, which
 R1 already says the cap does not fix.
 
-Accepted deliberately, with the power kept as narrow as the code can make it — same curve, same cap
-check, same slippage bound, same recipient, `mint` only — and with two operational consequences.
-First, a grant is for one operation and should be revoked when that operation is done; a holder left
-in place is a standing hole in the pause switch, which is why nothing records the holder on disk and
-why `./run.sh grantPausedMinter` reads the chain back. Second, `setCap(0)` is the only single switch
-that closes issuance to everyone, so it is what to reach for when the answer has to be total.
+Accepted deliberately, with the power kept as narrow as the code can make it — same curve, same
+ceiling check, same slippage bound, same recipient, `mint` only — and with two operational
+consequences. First, a grant is for one operation and should be revoked when that operation is
+done; a holder left in place is a standing hole in the pause switch, which is why nothing records
+the holder on disk and why `./run.sh grantPausedMinter` reads the chain back. Second, there is no
+single switch that closes issuance to everyone: the total stop is `pause()` plus revoking this role,
+two transactions. (A curve whose top is zero would do it in one, but needs a contract deployed for
+the purpose; it is a fallback, not the procedure.)
 
 ## Conventions
 
