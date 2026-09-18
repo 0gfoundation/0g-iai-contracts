@@ -72,12 +72,14 @@ contract CreditRegistry is
      * @notice Wires the registry to its token and sets the unstaking delay.
      * @param iai_              The iAI token accepted for staking. Must be non-zero.
      * @param cooldownDuration_ Delay between `initiateUnstake` and `unstake`, in seconds.
+     *                          Must be non-zero; see `setCooldownDuration`.
      *
      * @dev Starts open. There is nothing to gate: staking cannot begin before the vault is
      *      unpaused and iAI exists, and `PAUSER_ROLE` can close it at any time.
      */
     function initialize(address iai_, uint256 cooldownDuration_) external initializer {
         if (iai_ == address(0)) revert ZeroAddress();
+        if (cooldownDuration_ == 0) revert ZeroCooldown();
 
         __AccessControl_init();
         __Pausable_init();
@@ -149,8 +151,23 @@ contract CreditRegistry is
         emit Unstaked(_msgSender(), amount, totalAfter);
     }
 
-    /// @inheritdoc ICreditRegistry
+    /**
+     * @inheritdoc ICreditRegistry
+     * @dev Zero is refused because it collapses the two steps into one: `stake`,
+     *      `initiateUnstake` and `unstake` would all succeed in a single transaction, so the
+     *      same tokens could be staked across an off-chain snapshot and liquid either side of
+     *      it, which is the whole reason the delay exists.
+     *
+     *      That is the only bound the contract holds. A duration shorter than the off-chain
+     *      metering period is a weaker version of the same trade, and a very long one puts
+     *      withdrawal out of reach -- neither is refused here, because the metering period is
+     *      an off-chain figure that would then have a second, drifting definition on chain.
+     *      What keeps those in hand is that this role is held by a timelock, so the value is
+     *      visible before it takes effect.
+     */
     function setCooldownDuration(uint256 newDuration) external onlyRole(DEFAULT_ADMIN_ROLE) {
+        if (newDuration == 0) revert ZeroCooldown();
+
         RegistryStorage storage $ = _s();
         emit CooldownDurationUpdated($.cooldownDuration, newDuration);
         $.cooldownDuration = newDuration;

@@ -124,11 +124,16 @@ contract IAIScript is Script, JsonUtils, Constants, IAIDeployer {
 
     /**
      * @notice Changes the unstaking delay on a live deployment. `DEFAULT_ADMIN_ROLE`.
-     * @param newDuration New delay in seconds.
+     * @param newDuration New delay in seconds. Must be non-zero; the registry refuses zero,
+     *                    which would let a holder stake, initiate and unstake in one
+     *                    transaction and so defeat the delay entirely.
      *
      * @dev Also rewrites `CooldownDuration` in the deployment record, so the file keeps
-     *      describing the chain. Applies to withdrawals started after this call; anything
-     *      already cooling down keeps the end time it was given.
+     *      describing the chain. It applies to every withdrawal started after this call, and
+     *      to one already in flight the moment its owner calls `initiateUnstake` again --
+     *      that restarts the clock on their whole pending balance at the duration in force
+     *      then. Shortening the delay therefore reaches holders who touch their withdrawal,
+     *      and lengthening it cannot reach anyone who leaves theirs alone.
      */
     function setCooldownDuration(uint256 newDuration) public {
         (string memory json, string memory path) = loadOrInitJson("iai");

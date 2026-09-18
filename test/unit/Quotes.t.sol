@@ -3,6 +3,8 @@ pragma solidity 0.8.25;
 
 import {BaseTest} from "../Base.t.sol";
 import {IIAIVault} from "../../src/interfaces/IIAIVault.sol";
+import {IMintCurve} from "../../src/interfaces/IMintCurve.sol";
+import {FreeCurve} from "./mocks/StubCurves.sol";
 
 /**
  * @title QuotesTest
@@ -16,6 +18,26 @@ import {IIAIVault} from "../../src/interfaces/IIAIVault.sol";
  *      reverting on slippage.
  */
 contract QuotesTest is BaseTest {
+    /// @dev The quoting rule is that a quote fails exactly where the action it prices fails,
+    ///      with the same error, so a client is never shown a number the next transaction
+    ///      refuses. `mint` rejects a zero amount and a curve that charges nothing; both have
+    ///      to reach `quoteMint` as well. The second is unreachable with a curve that honours
+    ///      the interface and is checked anyway, because a curve is an external contract.
+    function test_QuoteMint_FailsWhereMintFails() public {
+        vm.expectRevert(IIAIVault.ZeroAmount.selector);
+        vault.quoteMint(0);
+
+        vm.expectRevert(IIAIVault.ZeroAmount.selector);
+        vm.prank(alice);
+        vault.mint(0, type(uint256).max, block.timestamp);
+
+        IMintCurve free = IMintCurve(address(new FreeCurve()));
+        vault.setCurve(free);
+
+        vm.expectRevert(IIAIVault.ZeroAmount.selector);
+        vault.quoteMint(1e18);
+    }
+
     function test_QuoteMintForA0G_RoundTripsIntoAMintThatSucceeds() public {
         uint256 x = 10_000e18;
 
@@ -77,7 +99,10 @@ contract QuotesTest is BaseTest {
         assertEq(iai.totalSupply(), CAP, "the cap is reachable, exactly");
     }
 
-    /// @dev Below the price of one wei of iAI there is nothing to sell.
+    /// @dev Below the price of one wei of iAI there is nothing to sell -- and zero is answered
+    ///      rather than refused, where `quoteMint(0)` reverts like the `mint(0)` it prices. The
+    ///      caller asked what a budget buys, and "nothing" is a true answer to that question
+    ///      where "mint nothing" is not an action. A client must not pass the zero straight on.
     function test_QuoteMintForA0G_ReturnsZeroForDust() public view {
         assertEq(vault.quoteMintForA0G(0), 0);
         assertEq(vault.quoteMintForA0G(1), 0, "one wei of a0G buys no iAI at 4,330 0G each");

@@ -199,8 +199,9 @@ interface IIAIVault {
 
     /**
      * @notice Prices minting `d` iAI at the current supply and exchange rate.
-     * @param d Amount of iAI to price, in wei-iAI. Beyond the remaining headroom this reverts
-     *          with `CapExceeded` -- the same error `mint` gives.
+     * @param d Amount of iAI to price, in wei-iAI. Zero reverts with `ZeroAmount` and anything
+     *          beyond the remaining headroom with `CapExceeded` -- the same errors `mint`
+     *          gives, so a client never displays a price the next transaction refuses.
      * @return delta0G 0G value the curve charges, in wei-0G. Rounded up.
      * @return a0GIn   a0G that would be taken, in wei-a0G. Rounded up. Use it, widened by
      *                 a tolerance, as `maxA0GIn`.
@@ -212,7 +213,10 @@ interface IIAIVault {
      * @param minter Position owner whose average rate applies.
      * @param b      Amount of iAI to burn, in wei-iAI. Above the position, this reverts with
      *               `BurnExceedsPosition` -- the same error `burn` gives, so a caller sees the
-     *               same failure whether it quotes or executes.
+     *               same failure whether it quotes or executes. Zero is the exception: it is
+     *               answered with zero rather than refused, where `burn` refuses it. A quote
+     *               of nothing is a true answer to a question about nothing, and unlike a
+     *               free mint it cannot mislead; but a client must not pass that zero on.
      * @return unlocked0G 0G value released from the position, in wei-0G. Rounded down.
      * @return a0GOut     a0G that would be sent, in wei-a0G. Rounded down.
      */
@@ -226,7 +230,9 @@ interface IIAIVault {
      *
      * @dev Unlike `quoteMint`, more a0G than the curve has room for is **not** an error here:
      *      the caller asked what a given spend buys, and the remaining headroom is a true and
-     *      mintable answer to that. It is returned clamped.
+     *      mintable answer to that. It is returned clamped. A spend too small to buy a single
+     *      wei answers zero for the same reason -- but `mint` refuses a zero amount, so a
+     *      client must not pass that answer straight on.
      */
     function quoteMintForA0G(uint256 a0GAmount) external view returns (uint256 d);
 
