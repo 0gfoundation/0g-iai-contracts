@@ -390,7 +390,7 @@ contract CurveSwapTest is BaseTest {
             9_257e18,
             ExponentialTable.BASE,
             ExponentialTable.EXPONENT,
-            9_257e18
+            ExponentialTable.TARGET
         );
         vault.setCurve(IMintCurve(address(lower)));
         assertEq(vault.cap(), 9_257e18, "the ceiling moved to the new curve's top");

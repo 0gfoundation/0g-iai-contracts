@@ -390,7 +390,7 @@ contract DeployScriptTest is Test {
         vm.serializeUint(o, "BucketWidth", 25e18);
         vm.serializeUint(o, "Exponent", vm.parseJsonUint(json, string.concat(at, "Exponent")));
         vm.serializeUint(o, "Prices", prices);
-        vm.serializeUint(o, "Target", TOP - 7e18);
+        vm.serializeUint(o, "Target", vm.parseJsonUint(json, string.concat(at, "Target")));
         string memory block_ = vm.serializeUint(o, "Top", TOP - 7e18);
         vm.writeJson(block_, file, ".CurveParams.ExponentialMintCurve");
 
@@ -496,7 +496,7 @@ contract DeployScriptTest is Test {
         vm.serializeUint(o, "Top", 9_000e18);
         vm.serializeUint(o, "Exponent", ExponentialTable.EXPONENT);
         vm.serializeUint(o, "Prices", shorter);
-        string memory block_ = vm.serializeUint(o, "Target", 9_000e18);
+        string memory block_ = vm.serializeUint(o, "Target", ExponentialTable.TARGET);
         vm.writeJson(block_, file, ".CurveParams.ExponentialMintCurve");
 
         _IAIScript().deployCurve("ExponentialMintCurve");

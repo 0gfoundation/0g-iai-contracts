@@ -21,11 +21,11 @@ import {IMintCurve} from "../interfaces/IMintCurve.sol";
  *
  *      Cap: `top` is the supply ceiling, `maxSafeSupply()`. It is a constructor argument,
  *      not derived from the table, so it need not be a multiple of `bucketWidth`. The table
- *      must cover it (`top <= bucketCount * bucketWidth`) and not run more than one bucket
- *      past it. `cost` reverts past `top`; `quoteForValue` saturates at it.
+ *      must cover it (`top <= bucketCount * bucketWidth`) and may run less than one whole
+ *      bucket past it. `cost` reverts past `top`; `quoteForValue` saturates at it.
  *
  *      `base`, `exponent` and `target` record how the table was derived. Nothing here reads
- *      them.
+ *      them and nothing constrains them; lowering `top` does not require touching them.
  */
 contract ExponentialMintCurve is IMintCurve {
     uint256 private constant WAD = 1e18;
@@ -62,8 +62,6 @@ contract ExponentialMintCurve is IMintCurve {
     error CeilingBeyondTable(uint256 top, uint256 tableEnd);
     /// @notice The table runs a whole bucket or more past `top`: buckets nothing can ever reach.
     error TableLongerThanCeiling(uint256 top, uint256 tableEnd);
-    /// @notice The provenance `target` lies beyond `top`.
-    error TargetBeyondCeiling(uint256 target, uint256 top);
     /// @notice The requested slice ends past `top`.
     error SupplyOutOfDomain(uint256 supplyAfter, uint256 top);
     /// @notice The requested bucket lies past the last one in the table.
@@ -76,7 +74,7 @@ contract ExponentialMintCurve is IMintCurve {
      *                     `tableEnd - bucketWidth < top <= tableEnd`, `tableEnd = prices.length * bucketWidth`.
      * @param base_        Formula `base`. Provenance.
      * @param exponent_    Formula `exponent`, scaled by 1e18. Provenance.
-     * @param target_      Formula `target`, in wei-iAI. Provenance; must not exceed `top`.
+     * @param target_      Formula `target`, in wei-iAI. Provenance.
      */
     constructor(
         uint256 bucketWidth_,
@@ -99,7 +97,6 @@ contract ExponentialMintCurve is IMintCurve {
         uint256 tableEnd = prices_.length * bucketWidth_;
         if (top_ > tableEnd) revert CeilingBeyondTable(top_, tableEnd);
         if (tableEnd - top_ >= bucketWidth_) revert TableLongerThanCeiling(top_, tableEnd);
-        if (target_ > top_) revert TargetBeyondCeiling(target_, top_);
 
         bucketWidth = bucketWidth_;
         bucketCount = prices_.length;
@@ -185,8 +182,9 @@ contract ExponentialMintCurve is IMintCurve {
     }
 
     /// @dev Walks buckets from `supply`, taking whole buckets while the budget covers them and
-    ///      flooring inside the first it does not. Saturates at `top`; the last bucket is
-    ///      clipped to `top` so a large budget never buys past the ceiling.
+    ///      flooring inside the first it does not -- rounding against the buyer, so the quote is
+    ///      always affordable. Saturates at `top`; the last bucket is clipped to `top` so a
+    ///      large budget never buys past the ceiling.
     function _quote(uint256 supply, uint256 delta0G) private view returns (uint256 amount) {
         if (supply >= top || delta0G == 0) return 0;
         if (delta0G > type(uint256).max / WAD) return top - supply;

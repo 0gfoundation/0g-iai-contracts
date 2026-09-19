@@ -106,6 +106,10 @@ def save(path: str, record: dict) -> None:
 def parameters(record: dict, args: argparse.Namespace) -> dict:
     """Flags win; otherwise the block already in the record; otherwise the shipped defaults."""
     block = record.get("CurveParams", {}).get(BLOCK, {})
+    if "Budget" in block and "Top" not in block and args.top is None:
+        # The pre-`Top` record format sized the table by a 0G budget. That key is dropped, and
+        # the ceiling comes from the default unless given; say so rather than rewrite silently.
+        print(f"note: {BLOCK} block carries the old Budget key and no Top; using the default Top and dropping Budget")
     out = {}
     for flag, key in KEYS.items():
         given = getattr(args, flag)
@@ -210,9 +214,6 @@ def main() -> None:
     for key, value in params.items():
         if value <= 0:
             sys.exit(f"{key} must be positive")
-    if params["Target"] > params["Top"]:
-        # The constructor rejects this (`TargetBeyondCeiling`).
-        sys.exit(f"{args.record}: Target {params['Target']} lies beyond Top {params['Top']}")
 
     prices = price_table(params["Base"], params["Exponent"], params["Target"], params["BucketWidth"], params["Top"])
     total = cost_to_top(prices, params["BucketWidth"], params["Top"])

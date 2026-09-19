@@ -312,8 +312,7 @@ contract ExponentialMintCurveTest is CurveConformanceTest {
 
     /// @dev The ceiling has to be a real number the table prices: non-zero, within the vault's
     ///      absolute bound, covered by the table, and not so far below the table's end that a
-    ///      whole bucket could never be reached. And `target`, provenance though it is, may
-    ///      not point past it.
+    ///      whole bucket could never be reached.
     function test_Constructor_RejectsACeilingTheTableDoesNotFit() public {
         uint128[] memory two = new uint128[](2);
         two[0] = uint128(P0);
@@ -331,14 +330,12 @@ contract ExponentialMintCurveTest is CurveConformanceTest {
         // A ceiling of exactly one bucket leaves the second bucket unreachable in full.
         vm.expectRevert(abi.encodeWithSelector(ExponentialMintCurve.TableLongerThanCeiling.selector, W, 2 * W));
         new ExponentialMintCurve(W, two, W, BASE, EXPONENT, 0);
-
-        vm.expectRevert(abi.encodeWithSelector(ExponentialMintCurve.TargetBeyondCeiling.selector, W + 2, W + 1));
-        new ExponentialMintCurve(W, two, W + 1, BASE, EXPONENT, W + 2);
     }
 
     /// @dev Every ceiling inside the last bucket is accepted -- the bucket's end included, and
     ///      a single wei past its start -- and it is the ceiling, not the table's end, that
-    ///      every function answers to.
+    ///      every function answers to. `target` is provenance: the production 9,270 goes in
+    ///      unchanged however low the ceiling is, so lowering a ceiling never reprices a bucket.
     function test_Constructor_AcceptsAnyCeilingInsideTheLastBucket() public {
         uint128[] memory two = new uint128[](2);
         two[0] = uint128(P0);
@@ -346,8 +343,9 @@ contract ExponentialMintCurveTest is CurveConformanceTest {
 
         uint256[3] memory tops = [W + 1, W + 7e18, 2 * W];
         for (uint256 i = 0; i < tops.length; i++) {
-            ExponentialMintCurve c = new ExponentialMintCurve(W, two, tops[i], BASE, EXPONENT, tops[i]);
+            ExponentialMintCurve c = new ExponentialMintCurve(W, two, tops[i], BASE, EXPONENT, TARGET);
             assertEq(c.maxSafeSupply(), tops[i]);
+            assertEq(c.target(), TARGET, "provenance, not a bound");
             assertEq(c.bucketCount(), 2, "the table is unchanged by where the ceiling sits");
             assertEq(c.cost(0, tops[i]), _ceilDiv(P0 * W + P1 * (tops[i] - W), 1e18), "priced up to the ceiling");
             assertEq(c.quoteForValue(0, 1e40), tops[i], "and quoted up to it");
