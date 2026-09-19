@@ -210,7 +210,7 @@ contract IAIScript is Script, JsonUtils, Constants, IAIDeployer {
      *
      * @dev Shared by `deployCurve` and `checkDeployment`, so the two cannot read the table
      *      differently. The record stores every integer as a decimal string and forge coerces
-     *      those when parsing, the same way `Cap` is read; a value that does not fit the
+     *      those when parsing, like every other integer in the file; a value that does not fit the
      *      contract's `uint128` entries is refused here rather than truncated.
      */
     function _exponentialParamsOf(
@@ -226,6 +226,7 @@ contract IAIScript is Script, JsonUtils, Constants, IAIDeployer {
         p = ExponentialCurveParams({
             bucketWidth: vm.parseJsonUint(json, string.concat(at, "BucketWidth")),
             prices: prices,
+            top: vm.parseJsonUint(json, string.concat(at, "Top")),
             base: vm.parseJsonUint(json, string.concat(at, "Base")),
             exponent: vm.parseJsonUint(json, string.concat(at, "Exponent")),
             target: vm.parseJsonUint(json, string.concat(at, "Target"))

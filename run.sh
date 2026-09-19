@@ -13,7 +13,7 @@
 #                          old token; only for when the mock itself must change shape
 #   ./run.sh genCurve [flags]     (re)generate the ExponentialMintCurve price table into the
 #                                 record from its parameters (see script/curve/gen_exponential_table.py);
-#                                 --budget <0G> sizes the table and so the supply ceiling
+#                                 --top <iAI> sets the supply ceiling; the table is sized to cover it
 #   ./run.sh deployCurve <Kind>   deploy a curve and record it under its kind name
 #   ./run.sh setCurve <Kind>      point the vault at a previously deployed curve -- this is
 #                                 also how the supply ceiling moves; the vault has no cap of

@@ -437,7 +437,7 @@ contract RandomSimTest is BaseTest {
      *      operation exercises the case that guard would have blocked.
      *
      *      The shadow does not read the ceiling back off the curve. For a table it is
-     *      `buckets * width` by construction; for the linear curve it is the anchor the
+     *      the declared top, inside the last bucket; for the linear curve it is the anchor the
      *      constructor was handed. Both are asserted against the deployed curve, so a curve
      *      that reported something else would be caught here rather than mirrored.
      */
@@ -479,9 +479,11 @@ contract RandomSimTest is BaseTest {
                 p[i] = p[i - 1] + uint128(rng.range(0, 3e21));
             }
 
-            uint256 top = buckets * SIM_WIDTH;
-            ExponentialMintCurve c = new ExponentialMintCurve(SIM_WIDTH, p, p[0], 0, top);
-            assertEq(c.maxSafeSupply(), top, "the table's ceiling is its top");
+            // The ceiling is declared, not derived: anywhere in the last bucket, so it is
+            // usually not a multiple of the width and the clipped last bucket is exercised.
+            uint256 top = buckets * SIM_WIDTH - rng.range(0, SIM_WIDTH / 2);
+            ExponentialMintCurve c = new ExponentialMintCurve(SIM_WIDTH, p, top, p[0], 0, top);
+            assertEq(c.maxSafeSupply(), top, "the curve's ceiling is the top it was given");
             if (!narrow) assertGe(top, 2 * CAP, "a wide table reaches past twice the anchor");
 
             vault.setCurve(IMintCurve(address(c)));

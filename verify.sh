@@ -65,14 +65,15 @@ verify_curve() {
       # the *next* curve (after `genCurve` + `deployCurve`, before `setCurve`) while `MintCurve`
       # still names the one in service. `cast call` annotates large numbers for humans
       # (`123 [1.23e2]`); the annotations are stripped before re-encoding.
-      local width base exponent target prices
+      local width top base exponent target prices
       width=$(cast call "$address" "bucketWidth()(uint256)" --rpc-url "$RPC" | awk "{print \$1}")
+      top=$(cast call "$address" "top()(uint256)" --rpc-url "$RPC" | awk "{print \$1}")
       base=$(cast call "$address" "base()(uint256)" --rpc-url "$RPC" | awk "{print \$1}")
       exponent=$(cast call "$address" "exponent()(uint256)" --rpc-url "$RPC" | awk "{print \$1}")
       target=$(cast call "$address" "target()(uint256)" --rpc-url "$RPC" | awk "{print \$1}")
       prices=$(cast call "$address" "prices()(uint128[])" --rpc-url "$RPC" | sed -E 's/ \[[^]]*\]//g')
-      args=$(cast abi-encode "constructor(uint256,uint128[],uint256,uint256,uint256)" \
-        "$width" "$prices" "$base" "$exponent" "$target")
+      args=$(cast abi-encode "constructor(uint256,uint128[],uint256,uint256,uint256,uint256)" \
+        "$width" "$prices" "$top" "$base" "$exponent" "$target")
       ;;
     *) echo "skip MintCurve (unknown kind $kind)"; return ;;
   esac

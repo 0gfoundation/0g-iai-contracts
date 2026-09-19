@@ -63,6 +63,7 @@ contract CurveSwapTest is BaseTest {
         exponential = new ExponentialMintCurve(
             ExponentialTable.BUCKET_WIDTH,
             ExponentialTable.prices(),
+            ExponentialTable.TOP,
             ExponentialTable.BASE,
             ExponentialTable.EXPONENT,
             ExponentialTable.TARGET
@@ -361,23 +362,43 @@ contract CurveSwapTest is BaseTest {
         _assertSolvent();
     }
 
-    /// @dev The table has a top, and while the table is in force that top is the ceiling: the
-    ///      production table ends at 14,675 iAI, the supply two billion 0G buys. Swapping back
-    ///      to the linear curve brings its own ceiling, the anchor, with it.
+    /// @dev While the exponential curve is in force its `top` is the ceiling. The production
+    ///      ceiling happens to equal the linear fixture's anchor, so the swap is also made to a
+    ///      copy of the table with a lower ceiling -- one that is not a multiple of the bucket
+    ///      width -- to see the number actually move. Swapping back to the linear curve brings
+    ///      its own ceiling, the anchor, with it.
     function test_Swap_ToTheExponentialCurve_MovesTheCeilingToItsTop() public {
         uint256 top = exponential.maxSafeSupply();
-        assertEq(top, 14_675e18, "587 buckets of 25 iAI");
+        assertEq(top, 9_270e18, "the ceiling the curve was constructed with");
+        assertEq(exponential.bucketCount() * exponential.bucketWidth(), 9_275e18, "the table runs 5 iAI past it");
 
         vault.setCurve(IMintCurve(address(exponential)));
-        assertEq(vault.cap(), top, "the ceiling is the table's top");
+        assertEq(vault.cap(), top, "the ceiling is the curve's top");
         assertEq(vault.remainingCap(), top - vault.supply());
 
-        // One wei past the top is refused by the vault, with the table's top as the ceiling,
+        // One wei past the top is refused by the vault, with the curve's top as the ceiling,
         // before the curve is ever asked to price it.
         uint256 supply = vault.supply();
         vm.expectRevert(abi.encodeWithSelector(IIAIVault.CapExceeded.selector, top + 1, top));
         vm.prank(carol);
         vault.mint(top - supply + 1, type(uint256).max, block.timestamp);
+
+        // The same table, ceiling 9,257: inside the last bucket, not on a bucket edge.
+        ExponentialMintCurve lower = new ExponentialMintCurve(
+            ExponentialTable.BUCKET_WIDTH,
+            ExponentialTable.prices(),
+            9_257e18,
+            ExponentialTable.BASE,
+            ExponentialTable.EXPONENT,
+            9_257e18
+        );
+        vault.setCurve(IMintCurve(address(lower)));
+        assertEq(vault.cap(), 9_257e18, "the ceiling moved to the new curve's top");
+        vm.expectRevert(abi.encodeWithSelector(IIAIVault.CapExceeded.selector, 9_257e18 + 1, 9_257e18));
+        vm.prank(carol);
+        vault.mint(9_257e18 - supply + 1, type(uint256).max, block.timestamp);
+        (uint256 quoted,) = vault.quoteMint(9_257e18 - supply);
+        assertEq(quoted, lower.cost(supply, 9_257e18 - supply), "everything up to the ceiling is priceable");
 
         vault.setCurve(IMintCurve(address(mintCurve)));
         assertEq(vault.cap(), CAP, "and the linear curve's ceiling is its anchor");

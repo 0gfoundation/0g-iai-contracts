@@ -141,12 +141,10 @@ the sweep into an accrual whose result depends on how often someone advances it.
 `LinearMintCurve.target` is not an exception to this, and neither are `ExponentialMintCurve.base`,
 `.exponent` and `.target`. They are `immutable`, so they cannot drift from anything — nothing reads
 them to make a decision, and they enforce nothing. They record how the slope, or the table, was
-derived, which is the only way the published parameters stay readable on chain. (`anchorCap` is
-different: it is the linear curve's `maxSafeSupply()`, and so the vault's ceiling while that curve
-is in force. The exponential curve's ceiling is `top`, which is `bucketCount * bucketWidth` and
-holds no information the table does not.) The 0G budget the table was sized to is recorded only in
-the deployment record, never on chain — the contract is configured by the table it is given, and a
-`budget` immutable would be a number nothing reads.
+derived, which is the only way the published parameters stay readable on chain. (`anchorCap` and
+`top` are different: each is its curve's `maxSafeSupply()`, and so the vault's ceiling while that
+curve is in force. The exponential curve's `top` is a constructor argument that the table must
+cover and may exceed by less than a bucket, so a ceiling need not fall on a bucket edge.)
 
 `ExponentialMintCurve`'s table is storage, and that is not redundant state either: it *is* the
 curve. It is written once by the constructor and there is no function that writes it again — no

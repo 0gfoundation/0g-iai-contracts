@@ -238,11 +238,12 @@ step is 1.28% on the current table, wider than 50 bps. The remedy is the same on
 recommended — re-quote right before sending — and, if you want the tolerance to be exact, size it
 from the next bucket's price: `priceAt(bucketOf(supply) + 1)` against `priceAt(bucketOf(supply))`
 (§4) tells you precisely how much one step costs at the current supply. Guard it in two steps:
-first `supply >= maxSafeSupply()` means the supply is at or past the table's top — which is the
-ceiling, so this means minting is closed: either the table is minted out, or the supply was left
-above the top of a narrower table governance has since swapped in — where `bucketOf` and `rateAt`
-themselves revert; then `bucketOf(supply) + 1 == bucketCount()` means the supply is in the last
-bucket and there is no next price. In either case show no step.
+first `supply >= maxSafeSupply()` means the supply is at or past the curve's ceiling (`top()`, which
+may sit inside the last bucket rather than on its edge), so minting is closed: either the curve is
+minted out, or the supply was left above the ceiling of a narrower curve governance has since
+swapped in — where `bucketOf` and `rateAt` themselves revert; then `bucketOf(supply) + 1 ==
+bucketCount()` means the supply is in the last bucket and there is no next price. In either case
+show no step.
 
 ```ts
 const TOLERANCE_BPS = 50n;                                   // 0.5%
@@ -295,7 +296,7 @@ IAIVault.harvestShare() view returns (uint256)   // the foundation's cut of appr
 ```
 
 **The ceiling belongs to the curve.** The vault stores no cap of its own: `cap()` is whatever the
-curve in force reports as `maxSafeSupply()` (for the table, its top), and it changes when, and only
+curve in force reports as `maxSafeSupply()` (for the table, its `top()`), and it changes when, and only
 when, governance swaps the curve. There is no `CapUpdated` event to index; `CurveUpdated` is the
 record of every time the ceiling moved, so re-read `cap()` whenever `curve()` changes.
 
@@ -304,7 +305,8 @@ hints. These are on the curve contract (the address `IAIVault.curve()` returns),
 
 ```solidity
 ExponentialMintCurve.bucketWidth()   view returns (uint256)    // 25e18: iAI per bucket
-ExponentialMintCurve.bucketCount()   view returns (uint256)    // 587
+ExponentialMintCurve.bucketCount()   view returns (uint256)    // 371
+ExponentialMintCurve.top()           view returns (uint256)    // 9270e18: the supply ceiling, = maxSafeSupply()
 ExponentialMintCurve.priceAt(i)      view returns (uint256)    // 0G per iAI in bucket i, 1e18-scaled
 ExponentialMintCurve.prices()        view returns (uint128[])  // the whole table, one call
 ExponentialMintCurve.bucketOf(s)     view returns (uint256)    // which bucket supply s is in
@@ -318,7 +320,7 @@ quotes, which every curve supports. `bucketOf` and `rateAt` revert with `SupplyO
 `maxSafeSupply()` first and treat anything at or above it as "no bucket, minting is closed here".
 
 **Read these; never hard-code them.** The pricing curve can be replaced by governance without an
-upgrade, and the ceiling moves with it in either direction. A UI that bakes in "14,675 iAI", "587
+upgrade, and the ceiling moves with it in either direction. A UI that bakes in "9,270 iAI", "371
 buckets" or the curve's table will silently show wrong numbers after a swap. Always use
 `remainingCap()` rather than subtracting: the supply is allowed to be *above* the ceiling, so
 `cap() - totalSupply()` underflows and throws in JS `bigint`. `remainingCap()` saturates at `0`.

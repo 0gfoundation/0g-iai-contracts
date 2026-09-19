@@ -11,30 +11,18 @@ for i in 0 .. N-1. Pricing at the upper bound means the table never sits below t
 anywhere in a bucket, and rounding each price up to the wei keeps that true after quantisation.
 Both roundings favour the vault.
 
-The table's length is where the supply ceiling comes from. The vault has no cap of its own: it
-refuses any mint past the curve's `maxSafeSupply()`, and for this curve that is the table's top,
-`N * BucketWidth`. N is derived from `Budget`, the total 0G the curve is allowed to absorb: it is
-the smallest N for which the whole table -- the exact sum of `price_i * BucketWidth` over every
-bucket, divided by 1e18 once and rounded up, exactly as the contract's `cost(0, top)` computes
-it -- reaches `Budget`. So the top is the supply `Budget` 0G buys, rounded up to a whole bucket,
-and a budget that could never be spent (twice 0G's total supply, in the shipped parameters) makes
-the ceiling a real number that is never reached in practice.
-
-`Budget` is a parameter of the *table*, not of the contract. The constructor takes the width,
-the prices, `Base`, `Exponent` and `Target` and nothing else; it records the last three for
-provenance and enforces only what the vault relies on (a positive, monotone table inside its
-hard bound). The budget lives here and in the deployment record, where `--check` re-derives the
-table -- length included -- from the five recorded parameters. Raising the ceiling is therefore
-`genCurve --budget ...`, `deployCurve`, `setCurve`; there is no cap to move afterwards.
+`Top` is the supply ceiling: the curve's `maxSafeSupply()`, and so the vault's cap while the
+curve is in force. It is a constructor argument, so it need not be a multiple of the bucket
+width. The table is exactly long enough to cover it, `N = ceil(Top / BucketWidth)`; the last
+bucket may be partially used and is priced like any other, at its own upper bound.
 
 Encodings, all 18-decimal fixed point ("WAD"): `Base` is wei-0G per iAI, `Exponent` is the
-dimensionless coefficient scaled by 1e18, `Target` (the supply the exponent is normalised
-against) and `BucketWidth` are wei-iAI, `Budget` is wei-0G. Prices are wei-0G per iAI, stored
-as decimal strings like every other integer in the record.
+dimensionless coefficient scaled by 1e18, `Target`, `BucketWidth` and `Top` are wei-iAI. Prices
+are wei-0G per iAI, stored as decimal strings like every other integer in the record.
 
-The contract holds only the table. Nothing on chain evaluates `exp`, so this script is the
-single definition of how the table is derived. It is deliberately dependency-free (standard
-library `decimal` at 60 significant digits) so anyone can rerun it and compare:
+The contract holds only the table and `Top`. Nothing on chain evaluates `exp`, so this script
+is the single definition of how the table is derived. It is deliberately dependency-free
+(standard library `decimal` at 60 significant digits) so anyone can rerun it and compare:
 
     python3 script/curve/gen_exponential_table.py deployments/iai-<chainId>.json
         writes CurveParams.ExponentialMintCurve into the record (parameters from the flags,
@@ -55,41 +43,42 @@ from decimal import ROUND_CEILING, Decimal, getcontext
 
 WAD = 10**18
 BLOCK = "ExponentialMintCurve"
-# Everything the table is derived from. The first four are also the constructor's arguments;
-# `Budget` fixes the table's length and goes no further than the record.
-KEYS = {"base": "Base", "exponent": "Exponent", "target": "Target", "width": "BucketWidth", "budget": "Budget"}
+# Everything the table is derived from. All five are also constructor arguments.
+KEYS = {"base": "Base", "exponent": "Exponent", "target": "Target", "width": "BucketWidth", "top": "Top"}
 
 # Every Decimal operation in this file, flag parsing included, runs at 60 significant digits.
 getcontext().prec = 60
 
 # The shipped constants: 586 0G at zero supply, e^4.711 = 111x at the normalising supply of
-# 9,270 iAI, 25 iAI per bucket, and a table long enough to absorb 2,000,000,000 0G -- twice the
-# total supply of 0G, so the ceiling exists without ever being reachable.
-DEFAULTS = {"base": "586", "exponent": "4.711", "target": "9270", "width": "25", "budget": "2000000000"}
+# 9,270 iAI, 25 iAI per bucket, and a supply ceiling of 9,270 iAI.
+DEFAULTS = {"base": "586", "exponent": "4.711", "target": "9270", "width": "25", "top": "9270"}
 
 
-def price_table(base_wei: int, exponent_wad: int, target_wei: int, width_wei: int, budget_wei: int) -> list[int]:
-    """The whole derivation. Everything else in this file is plumbing.
+def bucket_count(top_wei: int, width_wei: int) -> int:
+    """`ceil(Top / BucketWidth)`: the smallest table that covers the ceiling."""
+    return -(-top_wei // width_wei)
 
-    Buckets are appended until the table's total -- computed the way the contract computes
-    `cost(0, top)`: the exact sum of `price * width`, divided by WAD once, rounded up -- reaches
-    the budget. The loop always terminates because every price is at least one wei."""
+
+def price_table(base_wei: int, exponent_wad: int, target_wei: int, width_wei: int, top_wei: int) -> list[int]:
+    """The whole derivation. Everything else in this file is plumbing."""
     base = Decimal(base_wei)
     k = Decimal(exponent_wad) / WAD
     target = Decimal(target_wei)
     prices = []
-    exact_sum = 0  # sum of price_i * width_i, in wei-0G times WAD; exact integer arithmetic
-    while -(-exact_sum // WAD) < budget_wei:  # ceil(exact_sum / WAD) < budget
-        upper = Decimal((len(prices) + 1) * width_wei)
-        price = int((base * (k * upper / target).exp()).to_integral_value(rounding=ROUND_CEILING))
-        prices.append(price)
-        exact_sum += price * width_wei
+    for i in range(bucket_count(top_wei, width_wei)):
+        upper = Decimal((i + 1) * width_wei)
+        prices.append(int((base * (k * upper / target).exp()).to_integral_value(rounding=ROUND_CEILING)))
     return prices
 
 
-def table_total(prices: list[int], width_wei: int) -> int:
-    """`cost(0, top)` as the contract computes it: one ceiling over the exact sum."""
-    exact_sum = sum(p * width_wei for p in prices)
+def cost_to_top(prices: list[int], width_wei: int, top_wei: int) -> int:
+    """`cost(0, top)` as the contract computes it: the exact bucket sum, one ceiling."""
+    exact_sum = 0
+    cursor = 0
+    for i, price in enumerate(prices):
+        stop = min((i + 1) * width_wei, top_wei)
+        exact_sum += price * (stop - cursor)
+        cursor = stop
     return -(-exact_sum // WAD)
 
 
@@ -156,16 +145,15 @@ pragma solidity 0.8.25;
  *          --solidity test/unit/curves/ExponentialTable.sol
  *
  *      Unit tests may not read files, so the table the deployment record carries is mirrored
- *      here; `test/script/Deploy.t.sol` asserts the two are identical, which is what keeps
- *      this copy honest. Each price is 16 bytes, big-endian, in bucket order. `BUDGET` is the
- *      0G the table was sized to absorb; it is not a constructor argument.
+ *      here; `test/script/Deploy.t.sol` asserts the two are identical. Each price is 16 bytes,
+ *      big-endian, in bucket order.
  */
 library ExponentialTable {{
     uint256 internal constant BUCKET_WIDTH = {params['BucketWidth']};
+    uint256 internal constant TOP = {params['Top']};
     uint256 internal constant BASE = {params['Base']};
     uint256 internal constant EXPONENT = {params['Exponent']};
     uint256 internal constant TARGET = {params['Target']};
-    uint256 internal constant BUDGET = {params['Budget']};
 
     bytes internal constant PACKED =
 {body};
@@ -193,7 +181,7 @@ def main() -> None:
     ap.add_argument("--exponent", help="exponent coefficient, e.g. 4.711")
     ap.add_argument("--target", help="supply the exponent is normalised against, in iAI, e.g. 9270")
     ap.add_argument("--width", help="bucket width in iAI, e.g. 25")
-    ap.add_argument("--budget", help="0G the table must absorb before it ends, e.g. 2000000000")
+    ap.add_argument("--top", help="supply ceiling in iAI, e.g. 9270; the table is sized to cover it")
     ap.add_argument("--check", action="store_true", help="verify the stored table instead of writing it")
     ap.add_argument(
         "--require",
@@ -222,16 +210,12 @@ def main() -> None:
     for key, value in params.items():
         if value <= 0:
             sys.exit(f"{key} must be positive")
+    if params["Target"] > params["Top"]:
+        # The constructor rejects this (`TargetBeyondCeiling`).
+        sys.exit(f"{args.record}: Target {params['Target']} lies beyond Top {params['Top']}")
 
-    prices = price_table(
-        params["Base"], params["Exponent"], params["Target"], params["BucketWidth"], params["Budget"]
-    )
-    top = len(prices) * params["BucketWidth"]
-    total = table_total(prices, params["BucketWidth"])
-    if params["Target"] > top:
-        # The constructor rejects this (`TargetBeyondTable`): a table that ends below the
-        # supply its own exponent is normalised against cannot be the one derived for it.
-        sys.exit(f"{args.record}: the budget ends the table at {top} wei-iAI, below Target {params['Target']}")
+    prices = price_table(params["Base"], params["Exponent"], params["Target"], params["BucketWidth"], params["Top"])
+    total = cost_to_top(prices, params["BucketWidth"], params["Top"])
 
     if args.check:
         stored = [int(p) for p in record["CurveParams"][BLOCK].get("Prices", [])]
@@ -242,20 +226,20 @@ def main() -> None:
                 f"(first difference at bucket {first}; stored {len(stored)} entries, derived {len(prices)}). "
                 f"Run without --check to regenerate."
             )
-        print(f"{args.record}: {len(prices)} prices match their parameters (top {top}, total {total} wei-0G)")
+        print(f"{args.record}: {len(prices)} prices match their parameters (top {params['Top']}, cost to top {total} wei-0G)")
     else:
         record.setdefault("CurveParams", {})[BLOCK] = {
             "Base": str(params["Base"]),
             "BucketWidth": str(params["BucketWidth"]),
-            "Budget": str(params["Budget"]),
             "Exponent": str(params["Exponent"]),
             "Prices": [str(p) for p in prices],
             "Target": str(params["Target"]),
+            "Top": str(params["Top"]),
         }
         save(args.record, record)
         print(
-            f"{args.record}: wrote {len(prices)} prices, width {params['BucketWidth']}, top {top}, "
-            f"total {total} wei-0G for a budget of {params['Budget']}, first {prices[0]}, last {prices[-1]}"
+            f"{args.record}: wrote {len(prices)} prices, width {params['BucketWidth']}, top {params['Top']}, "
+            f"cost to top {total} wei-0G, first {prices[0]}, last {prices[-1]}"
         )
 
     if args.solidity:
