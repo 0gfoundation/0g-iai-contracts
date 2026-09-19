@@ -76,18 +76,19 @@ abstract contract IAIDeployer {
     /// @param bucketWidth Width of every bucket, wei-iAI.
     /// @param prices      One price per bucket, wei-0G per iAI, in supply order. **Generated,
     ///                    never hand-written**: `script/curve/gen_exponential_table.py` derives
-    ///                    them from `bucketWidth` and the three parameters below, and
-    ///                    `run.sh check` re-derives them and compares. Nothing about the vault's
-    ///                    cap enters into it.
+    ///                    them from `bucketWidth`, `top` and the three formula parameters, and
+    ///                    `run.sh check` re-derives them and compares.
+    /// @param top         The supply ceiling, wei-iAI: the curve's `maxSafeSupply()` and so the
+    ///                    vault's cap while this curve is in force. The table covers it.
     /// @param base        Marginal price at zero supply the table was derived from. Provenance.
     /// @param exponent    Exponent coefficient the table was derived from, scaled by 1e18. Provenance.
-    /// @param target      Supply the exponent is normalised against, wei-iAI. Provenance -- the
-    ///                    vault's cap is its own number, and the table's top is what bounds it.
+    /// @param target      Supply the exponent is normalised against, wei-iAI. Provenance.
     ///
     /// @dev `ExponentialMintCurve`'s own parameters, kept apart from the linear curve's.
     struct ExponentialCurveParams {
         uint256 bucketWidth;
         uint128[] prices;
+        uint256 top;
         uint256 base;
         uint256 exponent;
         uint256 target;
@@ -329,7 +330,7 @@ abstract contract IAIDeployer {
      * @return The deployed curve.
      */
     function _deployExponentialCurve(ExponentialCurveParams memory p) internal returns (IMintCurve) {
-        return new ExponentialMintCurve(p.bucketWidth, p.prices, p.base, p.exponent, p.target);
+        return new ExponentialMintCurve(p.bucketWidth, p.prices, p.top, p.base, p.exponent, p.target);
     }
 
     /**
@@ -356,6 +357,7 @@ abstract contract IAIDeployer {
         ExponentialMintCurve c = ExponentialMintCurve(curve);
         if (c.bucketWidth() != p.bucketWidth) return "curve bucket width differs from the record";
         if (c.bucketCount() != p.prices.length) return "curve bucket count differs from the record";
+        if (c.top() != p.top) return "curve top differs from the record";
         if (c.base() != p.base) return "curve base differs from the record";
         if (c.exponent() != p.exponent) return "curve exponent differs from the record";
         if (c.target() != p.target) return "curve target differs from the record";

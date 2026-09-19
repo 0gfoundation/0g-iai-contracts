@@ -58,8 +58,8 @@ so the answer if it ever happens is an upgrade.
 bound.** A redeemer releases 0G at their own average rate while the freed supply is resold at the
 marginal rate, so churn ratchets the total upward. The old figure of "roughly 213.9M 0G" was
 derived from a fixed `(r0, cap, target)` and is no longer a bound of any kind: the curve can be
-replaced with a longer or dearer one without limit, and the table's two-billion-0G budget is a
-sizing choice, not a bound on custody. **Never write `require(totalLocked0G <= target)`**,
+replaced with a taller or dearer one without limit, and the curve's `top` bounds issuance, not
+custody. **Never write `require(totalLocked0G <= target)`**,
 and do not reintroduce a numeric ceiling in its place.
 
 **R5 — a falling exchange rate leaves late redeemers short, and the fall itself can be
@@ -111,9 +111,9 @@ no on-chain restriction on the direction of a swap, and no record of the price d
 
 **R7 — the supply ceiling moves with the curve, without limit.** The ceiling is the curve's
 `maxSafeSupply()`, and `setCurve` accepts any curve, so governance can raise it as far as a table
-can be made long (the vault clamps at 2^127) or drop it to zero in one swap. The shipped table's
-top is the supply two billion 0G buys, which nobody can reach; but that is a property of one
-deployed table, not of the system, and a swap removes the ceiling every other figure here was
+can be made long (the vault clamps at 2^127) or drop it to zero in one swap. The shipped curve's
+ceiling is 9,270 iAI, about 127.8M 0G locked if it is reached; but that is a property of one
+deployed curve, not of the system, and a swap removes the ceiling every other figure here was
 quoted against, R1 and R4 included.
 
 **R8 — a curve can be discriminatory or mutable; the vault cannot tell.** `IMintCurve`'s functions

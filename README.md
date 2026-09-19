@@ -27,7 +27,7 @@ swept to the foundation. The split is a governance parameter — currently **50/
 | `src/EpochMath.sol` | The bookkeeping behind that split: how a claim is held in two denominations, and why changing the split costs a constant however many times it has changed before. |
 | `src/CreditRegistry.sol` | Staking with a cooldown. Records who has how much iAI earning; the allowance itself is metered off-chain. |
 | `src/interfaces/IMintCurve.sol` | The pricing surface the vault calls. Three `view` functions, so a curve reaches the vault by `STATICCALL` and can neither write state nor reenter. |
-| `src/curves/ExponentialMintCurve.sol` | The curve in force: the exponential curve as a table of 587 bucket prices, 25 iAI per bucket, whose top is the supply ceiling. The table is storage written once by the constructor and nothing can write it again — no setter, no owner, no proxy — so a curve is still a value, and replacing one means deploying another and repointing the vault. |
+| `src/curves/ExponentialMintCurve.sol` | The curve in force: the exponential curve as a table of bucket prices, 25 iAI per bucket, with the supply ceiling `top` a constructor argument the table covers. The table is storage written once by the constructor and nothing can write it again — no setter, no owner, no proxy — so a curve is still a value, and replacing one means deploying another and repointing the vault. |
 | `script/curve/gen_exponential_table.py` | The one definition of how that table is derived from the formula. Standard-library Python; `run.sh check` re-derives and compares. |
 | `src/curves/LinearMintCurve.sol` | The original curve, still deployable. Every parameter `immutable`, zero storage. |
 | `src/curves/LinearCurveMath.sol` | The linear curve's closed form. A library: no storage, no state. |
@@ -50,36 +50,35 @@ and makes splitting a mint never cheaper.
 
 The table is produced off chain by `script/curve/gen_exponential_table.py` (standard-library
 Python, 60 significant digits), written into the deployment record beside the parameters it came
-from, and re-derived and compared entry by entry by `run.sh check`. **Its length is where the
-supply ceiling comes from**: the generator adds buckets until the whole table would absorb a 0G
-`budget` — two billion, twice 0G's total supply — so the top is the supply that budget buys,
-rounded up to a whole bucket. With the shipped parameters:
+from, and re-derived and compared entry by entry by `run.sh check`. **The supply ceiling, `top`,
+is a parameter of its own** — a constructor argument, not something derived from the table — and
+the table is sized to cover it: `ceil(top / bucketWidth)` buckets, the last of which may be only
+partly issuable. With the shipped parameters:
 
 | | |
 | --- | --- |
 | `base` (price at zero supply) | 586 0G / iAI |
 | `exponent` | 4.711 |
 | `target` (the supply the exponent is normalised against) | 9,270 iAI |
-| `budget` (the 0G the table must absorb; sizes the table, not a constructor argument) | 2,000,000,000 0G |
-| `bucketWidth` | 25 iAI, 587 buckets, table top **14,675 iAI** |
+| `top` (the supply ceiling, `maxSafeSupply()`) | **9,270 iAI** |
+| `bucketWidth` | 25 iAI, 371 buckets covering 9,275 iAI; the last 5 are priced but not issuable |
 | price of the first bucket | 593.49 0G / iAI |
 | price at 2,000 iAI (the first public mint after the pre-mint) | 1,639.95 0G / iAI (the smooth curve says 1,619) |
 | price at 9,270 iAI | 65,142 0G / iAI on the smooth curve, 111× the base |
-| price of the last bucket | 1,015,745 0G / iAI, 1,711× the first |
+| price of the last bucket, [9,250, 9,275) | 65,307 0G / iAI, 110× the first |
 | 0G locked by the first 2,000 iAI | 2,046,100 0G |
-| 0G locked at 9,270 iAI | 127,838,783 0G (the smooth integral is 127.03M) |
-| 0G locked by the whole table | 2,010,279,809 0G; one bucket fewer is 1,984,886,191, under the budget |
+| 0G locked at the ceiling, 9,270 iAI | 127,838,783 0G (the smooth integral is 127.03M) |
 | step between adjacent buckets | 1.28%, everywhere — a pure exponential rises by a constant factor per bucket |
 
 `cost()` is the only pricing primitive. `lockedAt()` floors and exists for charts and reconciliation
 only. `priceAt(i)`, `prices()`, `bucketOf(s)` and `rateAt(s)` expose the table for tooling.
 
-**The table's top is the supply ceiling.** The vault has no cap of its own: `mint` and every quote
-refuse anything past the curve in force's `maxSafeSupply()`, 14,675 iAI here. Raising it means
-generating a longer table with a larger `budget`, deploying it and repointing the vault — three
-commands, and the ceiling moves at the last one. That is deliberate: a supply the table does not
-price is a supply nobody has decided a price for. `base`, `exponent` and `target` are provenance
-and enforce nothing.
+**The curve's `top` is the supply ceiling.** The vault has no cap of its own: `mint` and every
+quote refuse anything past the curve in force's `maxSafeSupply()`, 9,270 iAI here. `top` is
+immutable, so moving it means generating a table that covers the new ceiling, deploying it with the
+new `top` and repointing the vault — three commands, and the ceiling moves at the last one. The
+constructor refuses a `top` the table does not reach, and a table that runs a whole bucket or more
+past it. `base`, `exponent` and `target` are provenance and enforce nothing.
 
 Governance can replace the whole curve, and the ceiling comes with it, so no figure on this page is
 a permanent bound — read them from the chain rather than hard-coding them.

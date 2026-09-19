@@ -85,11 +85,12 @@ only one definition of `WAD`.
 
 **A curve's parameters belong to the curve, and the record says so.** Everything a curve needs to
 be constructed sits under `CurveParams.<Kind>` — for the linear curve, `R0`, `AnchorCap` and
-`Target`; for the exponential curve, `Base`, `Exponent`, `Target`, `BucketWidth`, `Budget` and the
-587-entry `Prices` array. This is the one nested object in an otherwise flat file, and it earns the
+`Target`; for the exponential curve, `Base`, `Exponent`, `Target`, `BucketWidth`, `Top` and the
+371-entry `Prices` array. This is the one nested object in an otherwise flat file, and it earns the
 exception: those keys are meaningless to any other curve, and each kind has its own block rather
-than piling more top-level keys into a shared namespace. There is no `Cap` key anywhere: the vault
-has no ceiling of its own, and the curve's is a function of its block. `HarvestShare` stays at the
+than piling more top-level keys into a shared namespace. There is no top-level `Cap` key: the vault
+has no ceiling of its own. Each curve's ceiling is in its own block -- `Top` for the exponential
+curve, `AnchorCap` for the linear one. `HarvestShare` stays at the
 top level because it governs how the collateral's yield is divided, which has nothing to do with
 what any curve charges to issue.
 
@@ -99,18 +100,15 @@ a position settled under an older split is restated on chain rather than reconst
 then reads the chain back.
 
 **`Prices` is derived, never edited.** `./run.sh genCurve` runs `script/curve/gen_exponential_table.py`,
-which derives the table from `Base`, `Exponent`, `Target`, `BucketWidth` and `Budget` alone --
-60-digit `decimal`, each price rounded up to the wei, each bucket priced at its upper bound, and as
-many buckets as it takes for the whole table's cost (the exact sum of price times width, one ceiling
-over it, exactly as `cost(0, top)` computes it) to reach `Budget` -- and writes the block. **The
-table's length is the supply ceiling, and `Budget` is what fixes it.** `Budget` goes no further than
-the record: the constructor takes the width, the prices, `Base`, `Exponent` and `Target`, and the
-contract is configured by the table it is given. Do not add a `budget` argument to it -- nothing on
-chain would read it, and the record already says what the table was sized to. `./run.sh check` and
-`./run.sh deployCurve` run the same script in `--check` mode first, so a table that disagrees with
-the parameters beside it -- in any entry, or in its length -- cannot be deployed or pass a check;
-`checkDeployment` then compares the deployed curve under the kind key against the record's table
-entry by entry.
+which derives the table from `Base`, `Exponent`, `Target`, `BucketWidth` and `Top` alone -- 60-digit
+`decimal`, each price rounded up to the wei, each bucket priced at its upper bound, and
+`ceil(Top / BucketWidth)` buckets, the smallest table that covers the ceiling -- and writes the
+block. **`Top` is the supply ceiling.** It goes into the constructor beside the table, and the
+contract refuses a table that ends below it or runs a whole bucket or more past it. `./run.sh check`
+and `./run.sh deployCurve` run the same script in `--check` mode first, so a table that disagrees
+with the parameters beside it -- in any entry, or in its length -- cannot be deployed or pass a
+check; `checkDeployment` then compares the deployed curve under the kind key against the record's
+`Top` and table, entry by entry.
 
 **That second comparison is only fatal while the exponential curve is in force.** `genCurve`
 deliberately leaves the record ahead of the chain until `deployCurve` catches it up, so a record
@@ -119,8 +117,7 @@ that runs ahead is the documented procedure, not a fault. When some other curve 
 exponential curve *is* pricing, the record no longer describes the table every mint is charged
 against and the check fails, as do a missing parameter block and a missing address. `setCurve`
 refuses either way: it is about to make that curve price things. Every integer in the block is WAD-scaled and stored as a decimal string like the
-rest of the file — `Exponent` is `4711000000000000000` for 4.711, `Budget` is 2,000,000,000 0G in
-wei. The unit tests cannot read the record, so `--solidity` also emits
+rest of the file — `Exponent` is `4711000000000000000` for 4.711, `Top` is 9,270 iAI in wei. The unit tests cannot read the record, so `--solidity` also emits
 `test/unit/curves/ExponentialTable.sol` as a mirror of **`iai-example.json`** -- the shipped
 parameters, which is what the unit tests pin -- and `test/script/Deploy.t.sol` asserts the two
 agree. Regenerate the mirror only when the *example's* parameters change. A network record's
@@ -129,13 +126,13 @@ are guarded by `run.sh check`, not by `forge test`, exactly as their addresses a
 `test/unit/curves/ExponentialMintCurve.t.sol` were computed with `mpmath`, independently of the
 generator, and may not be edited to follow it.
 
-**The exponential curve's domain is its table, and its top is the supply ceiling.**
-`maxSafeSupply()` is `bucketCount * bucketWidth` (14,675 iAI for the shipped parameters: 587
-buckets, the smallest number whose total reaches two billion 0G), and the vault issues nothing past
-it. Raising the ceiling is therefore always `genCurve --budget ...` → `deployCurve` → `setCurve`, in
-that order, and the ceiling moves at the last step; a shorter table is put in force the same way and
-brings the ceiling down with it, into burn-only mode if its top is below the live supply. Both paths
-are exercised in `test/script/Deploy.t.sol`. `run.sh setCurve ExponentialMintCurve` pre-flights the
+**The exponential curve's ceiling is its `top`, a constructor argument.** `maxSafeSupply()` is
+`top` (9,270 iAI for the shipped parameters, covered by 371 buckets of 25 iAI that run 5 iAI past
+it), and the vault issues nothing past it. `top` need not be a multiple of the bucket width; the last
+bucket is simply cut off at the ceiling. Moving the ceiling is therefore always `genCurve --top ...`
+→ `deployCurve` → `setCurve`, in that order, and the ceiling moves at the last step; a lower ceiling
+is put in force the same way and brings the ceiling down with it, into burn-only mode if it is below
+the live supply. Both paths are exercised in `test/script/Deploy.t.sol`. `run.sh setCurve ExponentialMintCurve` pre-flights the
 kind key against the record's table before broadcasting, so a `genCurve` without `deployCurve` is
 caught before a governance transaction is spent. The test fixture stays on the linear curve: its
 closed form keeps the fuzz and split tests fast, and its anchor gives the fixture a ceiling of 9,270
@@ -190,8 +187,8 @@ cp config.example.sh config.sh        # CHAIN_ID and RPC; gitignored
                                       # (needs python3 >= 3.9 for the curve table; standard library only)
 $EDITOR deployments/iai-<chainid>.json   # start from iai-example.json
 ./run.sh genCurve     # derive the exponential curve's table from the parameters in the record
-                      # (pass --base/--exponent/--target/--width to change them; the table is
-                      # never edited by hand, and `check` re-derives and compares it)
+                      # (pass --base/--exponent/--target/--width/--top to change them; the
+                      # table is never edited by hand, and `check` re-derives and compares it)
 
 ./run.sh              # mock collateral (off mainnet), then the system
 ./run.sh accounts     # testnet: derive and fund the account set
@@ -205,10 +202,10 @@ $EDITOR deployments/iai-<chainid>.json   # start from iai-example.json
 from stranding the rest of a deployment.
 
 Changing the curve on a live network is three commands, in this order: `./run.sh genCurve ...`
-rewrites the table in the record (`--budget` sizes it, and so the ceiling), `./run.sh deployCurve
+rewrites the table in the record (`--top` sets the ceiling and sizes the table to cover it), `./run.sh deployCurve
 ExponentialMintCurve` deploys it and records the address under its kind, and `./run.sh setCurve
 ExponentialMintCurve` puts it in service. Nothing already minted is repriced, and the supply ceiling
-becomes the new table's top at the last step — there is no separate cap to move before or after.
+becomes the new curve's `top` at the last step — there is no separate cap to move before or after.
 
 Running `forge script` by hand works too, but set **`FOUNDRY_PROFILE=deploy`**: under the default
 profile `deployments/` is read-only, so that a test which forgets to redirect a script fails with a

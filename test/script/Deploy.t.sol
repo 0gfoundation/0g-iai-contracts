@@ -35,9 +35,9 @@ contract DeployScriptTest is Test {
 
     /// @dev The linear curve's anchor, and so the ceiling while it is in force.
     uint256 internal constant CAP = 9_270e18;
-    /// @dev The production table's top: the supply 2,000,000,000 0G buys, rounded up to a
-    ///      whole bucket. The ceiling while the exponential curve is in force.
-    uint256 internal constant TOP = 14_675e18;
+    /// @dev The production curve's ceiling, a constructor argument: 9,270 iAI. Its table -- 371
+    ///      buckets of 25 iAI -- runs 5 iAI past it.
+    uint256 internal constant TOP = 9_270e18;
 
     string internal dir;
     string internal file;
@@ -102,17 +102,17 @@ contract DeployScriptTest is Test {
         // record around them without flattening or dropping them. Worth an assertion because
         // every other key in this file is a single flat level, so a future `serializeJson`
         // change would take the nesting out silently and `deployCurve` would stop resolving.
-        // The exponential block carries a 587-entry array, which is the shape most at risk.
+        // The exponential block carries a 371-entry array, which is the shape most at risk.
         string memory at = string.concat(".CurveParams.", vm.parseJsonString(json, ".MintCurveKind"), ".");
         assertEq(vm.parseJsonUint(json, string.concat(at, "BucketWidth")), 25e18);
         assertEq(vm.parseJsonUint(json, string.concat(at, "Base")), 586e18);
         assertEq(vm.parseJsonUint(json, string.concat(at, "Exponent")), 4.711e18);
         assertEq(vm.parseJsonUint(json, string.concat(at, "Target")), 9_270e18);
-        assertEq(vm.parseJsonUint(json, string.concat(at, "Budget")), 2_000_000_000e18, "the budget the table was sized to");
+        assertEq(vm.parseJsonUint(json, string.concat(at, "Top")), TOP, "the ceiling the table was sized to cover");
         uint256[] memory prices = vm.parseJsonUintArray(json, string.concat(at, "Prices"));
-        assertEq(prices.length, 587, "the whole table survived the rewrite");
+        assertEq(prices.length, 371, "the whole table survived the rewrite");
         assertEq(prices[0], 593_492_603_713_227_388_873, "and so did its entries");
-        assertEq(prices[586], 1_015_744_731_151_825_140_869_680);
+        assertEq(prices[370], 65_307_409_799_884_647_803_034);
 
         // The other kind's block is carried along too, so `deployCurve("LinearMintCurve")`
         // keeps resolving on a record whose default is the exponential curve.
@@ -123,9 +123,9 @@ contract DeployScriptTest is Test {
         // And the deployed curve is the table the record describes, entry for entry -- which
         // is also what `checkDeployment` re-verifies on every run.
         ExponentialMintCurve deployedCurve = ExponentialMintCurve(recordedCurve);
-        assertEq(deployedCurve.bucketCount(), 587);
+        assertEq(deployedCurve.bucketCount(), 371);
         assertEq(deployedCurve.priceAt(80), prices[80]);
-        assertEq(deployedCurve.maxSafeSupply(), TOP, "the table's top: what two billion 0G buys");
+        assertEq(deployedCurve.maxSafeSupply(), TOP, "the ceiling the record declares");
         assertEq(vault.cap(), TOP, "which is the vault's ceiling, read off the curve");
 
         // A deployment that arrives open would be a launch incident.
@@ -358,9 +358,10 @@ contract DeployScriptTest is Test {
 
     /**
      * @dev The consequence operators will meet first: the ceiling is whichever curve is in
-     *      force, so a swap moves it. The exponential table ends at 14,675 iAI, the linear
-     *      curve at its anchor of 9,270; switching between them switches the ceiling, and the
-     *      check passes on both sides.
+     *      force, so a swap moves it. The exponential curve's ceiling is 9,270 iAI and the
+     *      linear curve's is its anchor, also 9,270; a copy of the exponential curve with a
+     *      lower ceiling is deployed as well so the number is actually seen to move. The check
+     *      passes on every side.
      */
     function test_SetCurve_MovesTheCeilingWithTheCurve() public {
         _bootstrap("curve-domain");
@@ -368,7 +369,7 @@ contract DeployScriptTest is Test {
         _IAIScript().run();
 
         IAIVault vault = IAIVault(vm.parseJsonAddress(vm.readFile(file), ".IAIVault"));
-        assertEq(vault.cap(), TOP, "the table's top while the table is in force");
+        assertEq(vault.cap(), TOP, "the curve's ceiling while the table is in force");
 
         _IAIScript().deployCurve("LinearMintCurve");
         _IAIScript().setCurve("LinearMintCurve");
@@ -377,6 +378,25 @@ contract DeployScriptTest is Test {
 
         _IAIScript().setCurve("ExponentialMintCurve");
         assertEq(vault.cap(), TOP, "and back");
+        _IAIScript().checkDeployment();
+
+        // The same table with a ceiling 7 iAI lower: not a multiple of the bucket width, and
+        // still inside the last bucket, so the table needs no change.
+        string memory json = vm.readFile(file);
+        string memory at = ".CurveParams.ExponentialMintCurve.";
+        uint256[] memory prices = vm.parseJsonUintArray(json, string.concat(at, "Prices"));
+        string memory o = "exp";
+        vm.serializeUint(o, "Base", vm.parseJsonUint(json, string.concat(at, "Base")));
+        vm.serializeUint(o, "BucketWidth", 25e18);
+        vm.serializeUint(o, "Exponent", vm.parseJsonUint(json, string.concat(at, "Exponent")));
+        vm.serializeUint(o, "Prices", prices);
+        vm.serializeUint(o, "Target", vm.parseJsonUint(json, string.concat(at, "Target")));
+        string memory block_ = vm.serializeUint(o, "Top", TOP - 7e18);
+        vm.writeJson(block_, file, ".CurveParams.ExponentialMintCurve");
+
+        _IAIScript().deployCurve("ExponentialMintCurve");
+        _IAIScript().setCurve("ExponentialMintCurve");
+        assertEq(vault.cap(), TOP - 7e18, "the ceiling is the number the record declares, not the table's end");
         _IAIScript().checkDeployment();
     }
 
@@ -397,12 +417,12 @@ contract DeployScriptTest is Test {
         assertEq(ExponentialTable.BASE, vm.parseJsonUint(template, string.concat(at, "Base")));
         assertEq(ExponentialTable.EXPONENT, vm.parseJsonUint(template, string.concat(at, "Exponent")));
         assertEq(ExponentialTable.TARGET, vm.parseJsonUint(template, string.concat(at, "Target")));
-        assertEq(ExponentialTable.BUDGET, vm.parseJsonUint(template, string.concat(at, "Budget")));
+        assertEq(ExponentialTable.TOP, vm.parseJsonUint(template, string.concat(at, "Top")));
     }
 
     /**
      * @dev The documented way to raise the ceiling, end to end on the Solidity side: a longer
-     *      table lands in the record (what `genCurve --budget` writes; synthesised here because
+     *      table lands in the record (what `genCurve --top` writes; synthesised here because
      *      tests cannot run the generator), then `deployCurve`, then `setCurve` -- and the
      *      ceiling moves at that last step, with nothing left to do afterwards.
      */
@@ -411,8 +431,9 @@ contract DeployScriptTest is Test {
         _MockScript().run();
         _IAIScript().run();
 
-        // A table four buckets longer, as the generator would produce for a larger budget:
-        // 591 buckets, top 14,775. The extra prices only need to keep the table monotone.
+        // A table four buckets longer, as the generator would produce for a ceiling 100 iAI
+        // higher: 375 buckets covering 9,375, ceiling 9,370. The extra prices only need to
+        // keep the table monotone.
         uint128[] memory current = ExponentialTable.prices();
         uint256[] memory longer = new uint256[](current.length + 4);
         for (uint256 i = 0; i < current.length; i++) {
@@ -424,7 +445,7 @@ contract DeployScriptTest is Test {
         string memory o = "exp";
         vm.serializeUint(o, "Base", ExponentialTable.BASE);
         vm.serializeUint(o, "BucketWidth", 25e18);
-        vm.serializeUint(o, "Budget", 2_100_000_000e18);
+        vm.serializeUint(o, "Top", TOP + 100e18);
         vm.serializeUint(o, "Exponent", ExponentialTable.EXPONENT);
         vm.serializeUint(o, "Prices", longer);
         string memory block_ = vm.serializeUint(o, "Target", ExponentialTable.TARGET);
@@ -462,8 +483,8 @@ contract DeployScriptTest is Test {
         _MockScript().run();
         _IAIScript().run();
 
-        // A shorter table, as `genCurve` with a smaller budget would produce: 360 buckets,
-        // top 9,000.
+        // A shorter table, as `genCurve` with a lower ceiling would produce: 360 buckets,
+        // ceiling 9,000.
         uint128[] memory current = ExponentialTable.prices();
         uint256[] memory shorter = new uint256[](360);
         for (uint256 i = 0; i < shorter.length; i++) {
@@ -472,10 +493,10 @@ contract DeployScriptTest is Test {
         string memory o = "exp";
         vm.serializeUint(o, "Base", ExponentialTable.BASE);
         vm.serializeUint(o, "BucketWidth", 25e18);
-        vm.serializeUint(o, "Budget", 100_000_000e18);
+        vm.serializeUint(o, "Top", 9_000e18);
         vm.serializeUint(o, "Exponent", ExponentialTable.EXPONENT);
         vm.serializeUint(o, "Prices", shorter);
-        string memory block_ = vm.serializeUint(o, "Target", 9_000e18);
+        string memory block_ = vm.serializeUint(o, "Target", ExponentialTable.TARGET);
         vm.writeJson(block_, file, ".CurveParams.ExponentialMintCurve");
 
         _IAIScript().deployCurve("ExponentialMintCurve");
@@ -539,7 +560,7 @@ contract DeployScriptTest is Test {
         string memory json = vm.readFile(file);
         address second = vm.parseJsonAddress(json, ".MintCurve");
         assertTrue(second != first, "a new curve is in force");
-        assertEq(vm.parseJsonUintArray(json, ".CurveParams.ExponentialMintCurve.Prices").length, 587);
+        assertEq(vm.parseJsonUintArray(json, ".CurveParams.ExponentialMintCurve.Prices").length, 371);
         assertEq(ExponentialMintCurve(second).maxSafeSupply(), TOP, "the same table");
         assertEq(IAIVault(vm.parseJsonAddress(json, ".IAIVault")).cap(), TOP, "and the same ceiling");
     }
