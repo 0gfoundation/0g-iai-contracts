@@ -267,6 +267,35 @@ contract HandoverTest is BaseTest, RoleHandover {
         assertTrue(vault.paused(), "the guardian is the deployer, and it works");
     }
 
+    /// @dev The same refusal for the admin target. Without it the run renounces admin and
+    ///      then fails on `_assertGovernanceHeld`, blaming the address in `Admin` rather than
+    ///      the list that failed to name it -- nothing is broadcast either way, since a script
+    ///      simulates before it sends, but the operator is told the wrong thing.
+    function test_Renounce_RefusesWhenTheDeployerIsAlsoTheAdminTarget() public {
+        Governance memory selfAdmin = g;
+        selfAdmin.admin = admin;
+        _grantGovernance(c, selfAdmin);
+
+        vm.expectRevert(bytes("admin is the deployer: keep iai-admin"));
+        this.renounceExternal(c, selfAdmin, admin, _nothing());
+
+        assertTrue(vault.hasRole(0x00, admin), "nothing moved");
+    }
+
+    /// @dev `Retained` has no field for beacon ownership, so "the deployer holds nothing
+    ///      beyond what it kept" is a claim about the upgrade key too. A record naming the
+    ///      deployer as its own `BeaconOwner` passes every role check while leaving that key
+    ///      exactly where the handover was run to move it from.
+    function test_HandoverComplete_RefusesWhileTheDeployerStillOwnsABeacon() public {
+        Governance memory selfOwned = g;
+        selfOwned.beaconOwner = admin; // the beacons never move
+        _grantGovernance(c, selfOwned);
+        _renounceDeployer(c, selfOwned, admin, _nothing());
+
+        vm.expectRevert(bytes("deployer still owns the iAI beacon"));
+        this.assertCompleteExternal(c, selfOwned, admin, _nothing());
+    }
+
     /// @dev The completion check reads both ways. Renouncing cannot be undone, so a retention
     ///      that silently did not happen has to fail as loudly as one that was not wanted.
     function test_HandoverComplete_CatchesARetainedRoleThatWentAnyway() public {

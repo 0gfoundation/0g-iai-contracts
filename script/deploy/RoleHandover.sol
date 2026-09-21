@@ -188,9 +188,11 @@ abstract contract RoleHandover {
      *
      *      - Keeping a role the deployer does not hold is a typo or a misreading of `status`,
      *        and the completion check would report it as a role that went missing.
-     *      - Naming the deployer as the guardian and then not keeping its pausers leaves
-     *        nobody able to pause, which `_assertGovernanceHeld` would catch at the end while
-     *        blaming the guardian rather than the list.
+     *      - Naming the deployer as a target and then not keeping the matching roles leaves
+     *        nobody holding them, which `_assertGovernanceHeld` would catch at the end while
+     *        blaming the target address rather than the list. The deployer being its own
+     *        `Admin` or `Guardian` is a staging record or a copy-paste, not a handover, but it
+     *        should be said in those words rather than as "admin does not hold iAI admin".
      */
     function _assertRetainable(
         Contracts memory c,
@@ -224,6 +226,11 @@ abstract contract RoleHandover {
         if (g.guardian == deployer) {
             require(keep.vaultPauser, "guardian is the deployer: keep vault-pauser");
             require(keep.registryPauser, "guardian is the deployer: keep registry-pauser");
+        }
+        if (g.admin == deployer) {
+            require(keep.iaiAdmin, "admin is the deployer: keep iai-admin");
+            require(keep.vaultAdmin, "admin is the deployer: keep vault-admin");
+            require(keep.registryAdmin, "admin is the deployer: keep registry-admin");
         }
     }
 
@@ -264,6 +271,12 @@ abstract contract RoleHandover {
      *      retention that silently did not take is caught here as loudly as one that was
      *      supposed to be given up and was not.
      *
+     *      Beacon ownership is checked too, although nothing here moves it. `Retained` has no
+     *      field for it, so "the deployer holds nothing beyond `keep`" is a claim about the
+     *      upgrade key as much as about the roles -- and a record naming the deployer as its
+     *      own `BeaconOwner` satisfies every other check here while leaving that key exactly
+     *      where the handover was run to move it from.
+     *
      *      Also checks that the vault kept `MINTER_BURNER_ROLE` on iAI. Nothing here touches
      *      it, but it is the one role whose loss would stop the system dead, so it is worth a
      *      line in the check that says the handover is finished.
@@ -293,6 +306,15 @@ abstract contract RoleHandover {
         require(
             !vault.hasRole(vault.PAUSE_EXEMPT_MINTER_ROLE(), deployer),
             "deployer can still mint while paused"
+        );
+
+        require(UpgradeableBeacon(c.iaiBeacon).owner() != deployer, "deployer still owns the iAI beacon");
+        require(
+            UpgradeableBeacon(c.vaultBeacon).owner() != deployer, "deployer still owns the vault beacon"
+        );
+        require(
+            UpgradeableBeacon(c.registryBeacon).owner() != deployer,
+            "deployer still owns the registry beacon"
         );
 
         require(iai.hasRole(iai.MINTER_BURNER_ROLE(), c.vault), "the vault lost its minter role");

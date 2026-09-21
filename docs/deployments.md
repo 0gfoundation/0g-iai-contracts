@@ -263,14 +263,29 @@ the thing a handover exists to rule out.
 The retention worth making is the two pausers: closing the entrance has to be fast and a multisig is
 not, and a pauser cannot grant, reprice or move a beacon, so keeping one gives up nothing
 irreversible. Keeping an admin is a different matter — on the vault it is the upgrade-grade key the
-handover is for.
+handover is for, and on iAI it grants `MINTER_BURNER_ROLE`, so it mints without limit (R9).
 
-Two things the command checks before it touches anything, both of which would otherwise fail
-confusingly *after* the renouncing rather than clearly before it: that the deployer actually holds
-each role named, and that `Guardian` being the deployer is matched by keeping its pausers, since
-otherwise the run would end with nobody able to pause. The completion check then reads every role in
-both directions, so a retention that silently did not take fails as loudly as one that was not
-wanted.
+**A retained pauser is only half of what R1 and R5 ask for.** Both responses are `pause()` *and*
+revoking `PAUSE_EXEMPT_MINTER_ROLE`, and the second needs `DEFAULT_ADMIN_ROLE`, which a pauser does
+not have. That is survivable only because in steady state nobody holds the exemption: it is granted
+for one operation and revoked at the end of it. Leave it granted and the fast key can no longer
+complete the response on its own — closing the entrance would still leave that holder minting.
+Revoke it as part of the operation that needed it, not as a follow-up.
+
+What the command checks before it touches anything, all of which would otherwise fail confusingly
+*after* the renouncing rather than clearly before it: that the deployer actually holds each role
+named, and that naming the deployer as `Guardian` or `Admin` is matched by keeping the matching
+roles — otherwise the run ends with nobody holding them, reported as the target address's fault
+rather than the list's. The completion check then reads every role in both directions, so a
+retention that silently did not take fails as loudly as one that was not wanted, and checks that
+the beacons did not stay with the deployer: `--keep` has no name for the upgrade key, so a record
+naming the deployer as its own `BeaconOwner` would otherwise pass every other check while leaving
+that key exactly where the handover was run to move it from.
+
+Two spellings of the flag are refused rather than resolved: an empty list (`--keep=`), and a second
+`--keep`. Both have a quiet reading that gives up roles the operator wrote the flag to save — "keep
+nothing" and "the last one wins" — and a complete stand-down is already available by leaving the
+flag off.
 
 Renouncing only what is held, so a later run gives up what an earlier one kept:
 `./handover.sh renounce` after a `--keep` finishes the job without disturbing anything else.

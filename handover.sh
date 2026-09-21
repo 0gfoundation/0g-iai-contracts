@@ -15,9 +15,10 @@
 # Targets come from deployments/iai-$CHAIN_ID.json: Admin, Guardian, BeaconOwner.
 # They ship as zero addresses and have to be filled in by hand.
 #
-# Do not run `renounce` in the same sitting as `grant`. Between them, confirm the targets
-# actually respond -- execute something from the Safe. Beacon ownership is one-step, and the
-# admin role is the only thing that can hand it back.
+# Confirm the Safe responds -- execute something from it and watch it land -- *before* `grant`,
+# and read `status` back between the two steps. `grant` is where the upgrade key stops being
+# recoverable: beacon ownership is one-step `Ownable` with no acceptance step, and admin has no
+# power over a beacon, so nothing hands it back. Do not run `renounce` in the same sitting.
 set -euo pipefail
 # IAI_CONFIG / IAI_ENV point the script at another config.sh and .env -- how a rehearsal against a
 # local anvil runs from a scratch directory. Resolved to absolute paths *before* the cd below;
@@ -27,6 +28,10 @@ _abs() { case "$1" in /*) printf '%s' "$1" ;; *) printf '%s/%s' "$PWD" "$1" ;; e
 if [ -n "${IAI_CONFIG:-}" ]; then IAI_CONFIG=$(_abs "$IAI_CONFIG"); fi
 if [ -n "${IAI_ENV:-}" ]; then IAI_ENV=$(_abs "$IAI_ENV"); fi
 cd "$(dirname "$0")"
+
+# The comment header, printed on a usage error. Read off the file rather than by line number,
+# which went stale the first time the header grew and took the safety notice with it.
+usage() { awk 'NR > 1 && /^#/ { print; next } NR > 1 { exit }' "$0"; }
 
 source "${IAI_CONFIG:-./config.sh}"
 set -a; source "${IAI_ENV:-.env}"; set +a
@@ -39,13 +44,29 @@ case "${1:-status}" in
   renounce)
     shift
     KEEP=""
+    KEEP_GIVEN=""
     while [ $# -gt 0 ]; do
       case "$1" in
         # Spaces are stripped so that a quoted "a, b" is the same list as "a,b"; every other
         # difference is left to the script, which rejects a name it does not know.
-        --keep)   KEEP=$(printf '%s' "${2:?--keep needs a comma-separated list}" | tr -d '[:space:]'); shift 2 ;;
-        --keep=*) KEEP=$(printf '%s' "${1#--keep=}" | tr -d '[:space:]'); shift ;;
-        *) echo "unknown option: $1"; sed -n '2,16p' "$0"; exit 1 ;;
+        #
+        # An empty list and a second --keep are both refused here rather than resolved. Every
+        # way of misreading this flag has to fail loudly, and the two quiet readings -- "" as
+        # "keep nothing" and a repeat as "the last one wins" -- are the destructive ones: each
+        # gives up roles the operator wrote the flag to save. A full stand-down is available by
+        # leaving --keep off, which nobody does by accident.
+        --keep|--keep=*)
+          [ -z "$KEEP_GIVEN" ] || { echo "--keep given twice; put every role in one list"; exit 1; }
+          case "$1" in
+            --keep=*) KEEP=${1#--keep=}; shift ;;
+            *)        [ $# -ge 2 ] || { echo "--keep needs a comma-separated list"; exit 1; }
+                      KEEP=$2; shift 2 ;;
+          esac
+          KEEP=$(printf '%s' "$KEEP" | tr -d '[:space:]')
+          [ -n "$KEEP" ] || { echo "--keep needs a comma-separated list"; exit 1; }
+          KEEP_GIVEN=1
+          ;;
+        *) echo "unknown option: $1"; usage; exit 1 ;;
       esac
     done
 
@@ -66,5 +87,5 @@ case "${1:-status}" in
       forge script script/Handover.s.sol --sig "renounce()" --rpc-url "$RPC" --broadcast $GAS_FLAGS
     fi
     ;;
-  *) echo "unknown command: $1"; sed -n '2,16p' "$0"; exit 1 ;;
+  *) echo "unknown command: $1"; usage; exit 1 ;;
 esac

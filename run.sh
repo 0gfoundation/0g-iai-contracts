@@ -41,6 +41,10 @@ if [ -n "${IAI_CONFIG:-}" ]; then IAI_CONFIG=$(_abs "$IAI_CONFIG"); fi
 if [ -n "${IAI_ENV:-}" ]; then IAI_ENV=$(_abs "$IAI_ENV"); fi
 cd "$(dirname "$0")"
 
+# The comment header, printed on a usage error. Read off the file rather than by line number,
+# which silently stops covering the header the first time the header grows.
+usage() { awk 'NR > 1 && /^#/ { print; next } NR > 1 { exit }' "$0"; }
+
 source "${IAI_CONFIG:-./config.sh}"
 set -a; source "${IAI_ENV:-.env}"; set +a
 
@@ -145,5 +149,5 @@ case "${1:-deploy}" in
     send script/deploy/IAI.s.sol --sig "revokePausedMintExemption(address)" "$2"
     read_only script/deploy/IAI.s.sol --sig "pausedMintExemption(address)" "$2"
     ;;
-  *) echo "unknown command: $1"; sed -n '2,31p' "$0"; exit 1 ;;
+  *) echo "unknown command: $1"; usage; exit 1 ;;
 esac

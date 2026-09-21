@@ -162,7 +162,8 @@ contract HandoverScript is Script, JsonUtils, Constants, RoleHandover {
         }
     }
 
-    /// @param deployer The account that has just stood down. @param keep What it kept.
+    /// @param deployer The account that has just stood down.
+    /// @param keep     What it kept.
     function _reportRetained(address deployer, Retained memory keep) private pure {
         if (!keep.iaiAdmin && !keep.vaultAdmin && !keep.registryAdmin && !keep.vaultPauser
             && !keep.registryPauser) {
@@ -200,7 +201,8 @@ contract HandoverScript is Script, JsonUtils, Constants, RoleHandover {
         g.beaconOwner = vm.parseJsonAddress(json, ".BeaconOwner");
     }
 
-    /// @param c Deployed addresses. @param g Intended holders.
+    /// @param c Deployed addresses.
+    /// @param g Intended holders.
     function _report(Contracts memory c, Governance memory g) private pure {
         console.log("  admin       ", g.admin);
         console.log("  guardian    ", g.guardian);
