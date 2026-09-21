@@ -2,7 +2,8 @@
 # Moves governance off the deploying account, in two deliberate transactions.
 #
 #   ./handover.sh status     who holds what right now (read-only, run it between the steps)
-#   ./handover.sh grant      put every role and beacon on its target; deployer keeps its own
+#   ./handover.sh grant      put every role and beacon on its target. The deployer keeps its
+#                            own roles; the beacons move, and take the upgrade key with them
 #   ./handover.sh renounce   stand the deployer down; refuses unless grant is fully in place
 #
 #   ./handover.sh renounce --keep vault-pauser,registry-pauser

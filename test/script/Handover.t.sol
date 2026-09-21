@@ -88,7 +88,7 @@ contract HandoverScriptTest is Test {
             timelock,
             "beacon owner came from .BeaconOwner"
         );
-        assertTrue(vault.hasRole(0x00, deployer), "grant leaves the deployer in place");
+        assertTrue(vault.hasRole(0x00, deployer), "grant leaves the deployer's roles in place");
 
         h.renounce();
 

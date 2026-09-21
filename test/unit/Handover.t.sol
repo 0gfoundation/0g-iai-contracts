@@ -67,9 +67,11 @@ contract HandoverTest is BaseTest, RoleHandover {
         assertEq(registryBeacon.owner(), timelock, "registry beacon");
     }
 
-    /// @dev The deployer keeps its keys through step 1. That overlap is what makes it possible
-    ///      to check the multisig actually responds before the only working key is given up.
-    function test_Grant_LeavesTheDeployerInPlace() public {
+    /// @dev The deployer keeps its *roles* through step 1, and that overlap is what makes it
+    ///      possible to check the multisig responds before the last key that could put one
+    ///      back is given up. Its beacons are a different matter -- `Ownable` has one owner,
+    ///      so step 1 is where the upgrade key goes, and it does not come back.
+    function test_Grant_LeavesTheDeployersRolesInPlaceButTakesItsBeacons() public {
         _grantGovernance(c, g);
 
         assertTrue(vault.hasRole(0x00, admin), "deployer still admin");
@@ -77,6 +79,14 @@ contract HandoverTest is BaseTest, RoleHandover {
 
         vault.setFoundation(makeAddr("elsewhere"));
         assertEq(vault.foundation(), makeAddr("elsewhere"), "and can still act");
+
+        assertEq(iaiBeacon.owner(), timelock, "but the iAI beacon has gone");
+        assertEq(vaultBeacon.owner(), timelock, "and the vault's");
+        assertEq(registryBeacon.owner(), timelock, "and the registry's");
+
+        address newImpl = address(new IAIVault());
+        vm.expectRevert(); // Ownable: the deployer is not the owner any more
+        vaultBeacon.upgradeTo(newImpl);
     }
 
     function test_Grant_IsRepeatableAfterAPartialRun() public {

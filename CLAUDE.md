@@ -90,7 +90,8 @@ of collateral yield, which is the same economic power an upgrade has. Treating a
 because it once was is the mistake this paragraph exists to prevent.
 
 `./handover.sh grant` then `./handover.sh renounce` moves them, in two transactions on purpose:
-`grant` leaves the deployer in place so the targets can be confirmed to respond, and `renounce`
+`grant` leaves the deployer's own roles in place so the targets can be confirmed to respond (the
+beacons it moves outright -- `Ownable` has one owner), and `renounce`
 re-reads governance from the chain and refuses unless they already hold everything. Beacon
 ownership is one-step `Ownable` with no acceptance step, so that precondition is its only safety
 net. Never collapse the two steps. Note where the unrecoverable moment actually is: a wrong `Admin`

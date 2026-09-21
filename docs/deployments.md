@@ -227,20 +227,23 @@ nowhere earlier. Check them against the chain before running it.
 ```bash
 ./handover.sh status      # who holds what right now
                           # — execute something from the Safe, and see it land —
-./handover.sh grant       # every role and beacon to its target; deployer keeps its own
+./handover.sh grant       # every role and beacon to its target; the deployer keeps its roles
 ./handover.sh status      # confirm
 ./handover.sh renounce    # stand the deployer down
 ```
 
-Two transactions, deliberately. `grant` leaves the deployer in place, so the targets can be read
-back before the only key that still works is given up. `renounce` re-reads governance from the
-chain and refuses unless the targets already hold everything — a mistyped address stops there, with
-the deployer still in control, rather than after, with nobody in control.
+Two transactions, deliberately — but only the roles are split across them. `grantRole` adds a
+holder, so after `grant` each role is held by both the target and the deployer, and the targets can
+be read back before the last key that could put one back is given up. `renounce` re-reads
+governance from the chain and refuses unless the targets already hold everything — a mistyped
+address stops there, with the deployer still in control, rather than after, with nobody in control.
 
-**Confirm the Safe responds before `grant`, not only between the two steps.** Roles are recoverable
-from a wrong `Admin` while the deployer still holds admin, but beacon ownership is one-step
-`Ownable` with no acceptance step and no admin override: `grant` is where the upgrade key becomes
-unrecoverable, not `renounce`.
+**The beacons are not split across the two steps: `grant` moves them.** `Ownable` has a single
+owner, no acceptance step and no admin override, so the deployer loses the upgrade key the moment
+`grant` returns and a wrong `BeaconOwner` is already beyond recovery — `renounce`'s precondition can
+only report it. **So confirm the Safe responds before `grant`, not only between the two steps.** A
+wrong `Admin` is survivable while the deployer still holds admin; a wrong `BeaconOwner` is not
+survivable at all.
 
 ### Keeping a role on the deployer
 

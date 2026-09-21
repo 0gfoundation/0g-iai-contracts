@@ -15,19 +15,22 @@ import {CreditRegistry} from "../../src/CreditRegistry.sol";
  *      which is the right thing during a deployment and the wrong thing afterwards. This moves
  *      them in **two separate transactions**:
  *
- *        1. `_grantGovernance` puts every role and every beacon on its target. The deployer
- *           keeps everything it had, so the system is briefly held by both.
+ *        1. `_grantGovernance` puts every role and every beacon on its target. The roles are
+ *           additive -- the deployer keeps its own, so each is briefly held by both -- but a
+ *           beacon has exactly one owner, so the upgrade key moves here and not in step 2.
  *        2. `_renounceDeployer` gives up the deployer's own roles — all of them by default,
  *           or all but a named few — and refuses to run unless the targets already hold
  *           everything, so a mistyped address cannot strand the system with nobody in
  *           control.
  *
- *      The gap between the two is the point: governance can be read back, and a Safe can be
- *      confirmed to actually respond, before the only key that still works is given up. Doing
- *      both in one transaction would make a typo unrecoverable.
+ *      The gap between the two is the point for the roles: they can be read back, and a Safe
+ *      can be confirmed to actually respond, before the last key that could put one back is
+ *      given up. Doing both in one transaction would make a typo unrecoverable.
  *
- *      Beacon ownership is one-step `Ownable`, so there is no pending-acceptance safety net
- *      there at all; that is exactly what step 2's precondition substitutes for.
+ *      The gap does not cover the beacons. `Ownable` is one-step, with no acceptance and no
+ *      admin override, so a wrong `beaconOwner` is already beyond recovery when step 1
+ *      returns, and step 2's precondition can only report it. The target has to be confirmed
+ *      to respond *before* step 1, not only between the two.
  */
 abstract contract RoleHandover {
     /// @param admin       Holds `DEFAULT_ADMIN_ROLE` on all three contracts: grants and revokes
@@ -95,8 +98,11 @@ abstract contract RoleHandover {
      * @param c Deployed addresses.
      * @param g Intended holders.
      *
-     * @dev Deliberately does not touch the deployer's own roles. Both hold the system after
-     *      this, which is what makes the result verifiable before step 2.
+     * @dev Deliberately does not touch the deployer's own roles, so each is held by both
+     *      until step 2 -- which is what makes the result verifiable before any of them is
+     *      given up. The beacons are not like that: `Ownable` has a single owner, so this is
+     *      where the upgrade key leaves the deployer, and nothing here or later hands it
+     *      back.
      *
      *      Safe to re-run: granting a role twice is a no-op, and the beacon transfers are
      *      skipped once ownership has already moved, so a run that failed partway can simply

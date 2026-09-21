@@ -245,7 +245,7 @@ $EDITOR deployments/iai-<chainid>.json   # start from iai-example.json
 ./upgrade.sh rehearse vault   # fork, upgrade there, compare state -- never skipped
 ./upgrade.sh vault            # only after the rehearsal passes
 
-./handover.sh grant           # governance to its targets, deployer still in place
+./handover.sh grant           # roles and beacons to their targets; deployer keeps its roles
 ./handover.sh renounce        # stand the deployer down, once the targets answer
 ./handover.sh renounce --keep vault-pauser,registry-pauser
                               # ...or leave it able to close the entrance and nothing else
