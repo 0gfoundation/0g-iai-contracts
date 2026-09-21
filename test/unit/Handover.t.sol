@@ -67,9 +67,11 @@ contract HandoverTest is BaseTest, RoleHandover {
         assertEq(registryBeacon.owner(), timelock, "registry beacon");
     }
 
-    /// @dev The deployer keeps its keys through step 1. That overlap is what makes it possible
-    ///      to check the multisig actually responds before the only working key is given up.
-    function test_Grant_LeavesTheDeployerInPlace() public {
+    /// @dev The deployer keeps its *roles* through step 1, and that overlap is what makes it
+    ///      possible to check the multisig responds before the last key that could put one
+    ///      back is given up. Its beacons are a different matter -- `Ownable` has one owner,
+    ///      so step 1 is where the upgrade key goes, and it does not come back.
+    function test_Grant_LeavesTheDeployersRolesInPlaceButTakesItsBeacons() public {
         _grantGovernance(c, g);
 
         assertTrue(vault.hasRole(0x00, admin), "deployer still admin");
@@ -77,6 +79,14 @@ contract HandoverTest is BaseTest, RoleHandover {
 
         vault.setFoundation(makeAddr("elsewhere"));
         assertEq(vault.foundation(), makeAddr("elsewhere"), "and can still act");
+
+        assertEq(iaiBeacon.owner(), timelock, "but the iAI beacon has gone");
+        assertEq(vaultBeacon.owner(), timelock, "and the vault's");
+        assertEq(registryBeacon.owner(), timelock, "and the registry's");
+
+        address newImpl = address(new IAIVault());
+        vm.expectRevert(); // Ownable: the deployer is not the owner any more
+        vaultBeacon.upgradeTo(newImpl);
     }
 
     function test_Grant_IsRepeatableAfterAPartialRun() public {
@@ -97,9 +107,9 @@ contract HandoverTest is BaseTest, RoleHandover {
 
     function test_Renounce_LeavesTheDeployerWithNothing() public {
         _grantGovernance(c, g);
-        _renounceDeployer(c, g, admin);
+        _renounceDeployer(c, g, admin, _nothing());
 
-        _assertHandoverComplete(c, g, admin);
+        _assertHandoverComplete(c, g, admin, _nothing());
 
         assertFalse(vault.hasRole(0x00, admin));
         assertFalse(vault.hasRole(vault.PAUSER_ROLE(), admin));
@@ -116,7 +126,7 @@ contract HandoverTest is BaseTest, RoleHandover {
     /// @dev The precondition that stops a mistyped address from stranding the system.
     function test_Renounce_RefusesBeforeTheRolesHaveMoved() public {
         vm.expectRevert(bytes("admin does not hold iAI admin"));
-        this.renounceExternal(c, g, admin);
+        this.renounceExternal(c, g, admin, _nothing());
 
         // ...and the deployer is untouched, so there is a way back.
         assertTrue(vault.hasRole(0x00, admin));
@@ -131,7 +141,7 @@ contract HandoverTest is BaseTest, RoleHandover {
         registryBeacon.transferOwnership(admin);
 
         vm.expectRevert(bytes("registry beacon not transferred"));
-        this.renounceExternal(c, g, admin);
+        this.renounceExternal(c, g, admin, _nothing());
 
         assertTrue(vault.hasRole(0x00, admin), "the deployer is still in control");
     }
@@ -142,7 +152,7 @@ contract HandoverTest is BaseTest, RoleHandover {
         registry.revokeRole(registry.PAUSER_ROLE(), ops);
 
         vm.expectRevert(bytes("guardian cannot pause the registry"));
-        this.renounceExternal(c, g, admin);
+        this.renounceExternal(c, g, admin, _nothing());
     }
 
     /// @dev Reading governance from the chain rather than trusting that step 1 ran is what
@@ -154,14 +164,194 @@ contract HandoverTest is BaseTest, RoleHandover {
         different.admin = makeAddr("someone else");
 
         vm.expectRevert(bytes("admin does not hold iAI admin"));
-        this.renounceExternal(c, different, admin);
+        this.renounceExternal(c, different, admin, _nothing());
+    }
+
+    // --- step 2, keeping named roles ---
+
+    /**
+     * @dev The retention this deployment is aimed at: governance on the multisig, and the
+     *      deploying key left able to close the entrance and nothing else. Closing has to be
+     *      fast and a multisig is not, and what the hot key gives up is everything
+     *      irreversible -- it can no longer grant, reprice or move a beacon.
+     */
+    function test_Renounce_KeepsTheRolesItWasToldToKeep() public {
+        _grantGovernance(c, g);
+        _renounceDeployer(c, g, admin, _pausers());
+        _assertHandoverComplete(c, g, admin, _pausers());
+
+        assertFalse(iai.hasRole(0x00, admin), "iAI admin gone");
+        assertFalse(vault.hasRole(0x00, admin), "vault admin gone");
+        assertFalse(registry.hasRole(0x00, admin), "registry admin gone");
+
+        vault.pause();
+        assertTrue(vault.paused(), "the deployer can still close issuance");
+        vault.unpause();
+        registry.pause();
+        assertTrue(registry.paused(), "...and staking");
+        registry.unpause();
+    }
+
+    /// @dev A kept pauser is not a way back in. It cannot grant, so it cannot restore the
+    ///      admin that was just given up, which is what makes keeping it a small decision.
+    function test_Renounce_AKeptPauserCannotClawAnythingBack() public {
+        _grantGovernance(c, g);
+        _renounceDeployer(c, g, admin, _pausers());
+
+        vm.expectRevert(
+            abi.encodeWithSelector(
+                IAccessControl.AccessControlUnauthorizedAccount.selector, admin, bytes32(0)
+            )
+        );
+        vault.grantRole(PAUSER, admin);
+
+        vm.expectRevert(
+            abi.encodeWithSelector(
+                IAccessControl.AccessControlUnauthorizedAccount.selector, admin, bytes32(0)
+            )
+        );
+        vault.setFoundation(makeAddr("nope"));
+    }
+
+    /// @dev `Retained` has no field for the exemption and this is why: a key that can still
+    ///      mint through the pause it just applied is the one thing a handover has to rule
+    ///      out, whatever else it leaves behind.
+    function test_Renounce_GivesUpTheExemptionEvenWhileKeepingThePausers() public {
+        vault.grantRole(EXEMPTION, admin);
+
+        _grantGovernance(c, g);
+        _renounceDeployer(c, g, admin, _pausers());
+
+        assertFalse(vault.hasRole(EXEMPTION, admin), "the exemption is never retained");
+        _assertHandoverComplete(c, g, admin, _pausers());
+    }
+
+    /// @dev Renouncing only what is held is what makes a staged handover work: keep a role
+    ///      now, give it up in a later run without disturbing anything else.
+    function test_Renounce_CanBeRunAgainLaterToGiveUpWhatItKept() public {
+        _grantGovernance(c, g);
+        _renounceDeployer(c, g, admin, _pausers());
+
+        _renounceDeployer(c, g, admin, _nothing());
+        _assertHandoverComplete(c, g, admin, _nothing());
+    }
+
+    /// @dev Keeping something the deployer does not have is a typo or a misread `status`.
+    ///      Caught before anything is given up, rather than reported afterwards as a role
+    ///      that went missing.
+    function test_Renounce_RefusesToKeepARoleTheDeployerDoesNotHold() public {
+        _grantGovernance(c, g);
+        vault.renounceRole(PAUSER, admin); // already gone, by hand
+
+        vm.expectRevert(bytes("deployer does not hold vault-pauser"));
+        this.renounceExternal(c, g, admin, _pausers());
+
+        assertTrue(vault.hasRole(0x00, admin), "and nothing else was given up");
+    }
+
+    /// @dev Naming the deployer as the guardian and then not keeping its pausers would leave
+    ///      nobody able to close. `_assertGovernanceHeld` would catch it at the end while
+    ///      blaming the guardian; this stops first and names the list, which is what is wrong.
+    function test_Renounce_RefusesWhenTheDeployerIsTheGuardianAndKeepsNoPauser() public {
+        Governance memory selfGuarded = g;
+        selfGuarded.guardian = admin;
+        _grantGovernance(c, selfGuarded);
+
+        vm.expectRevert(bytes("guardian is the deployer: keep vault-pauser"));
+        this.renounceExternal(c, selfGuarded, admin, _nothing());
+
+        assertTrue(vault.hasRole(PAUSER, admin), "nothing moved");
+    }
+
+    /// @dev ...and with the pausers kept, that same configuration is the intended end state:
+    ///      the deploying key stays on as the guardian and gives up everything else.
+    function test_Renounce_TheDeployerCanStayOnAsTheGuardian() public {
+        Governance memory selfGuarded = g;
+        selfGuarded.guardian = admin;
+        _grantGovernance(c, selfGuarded);
+
+        _renounceDeployer(c, selfGuarded, admin, _pausers());
+        _assertHandoverComplete(c, selfGuarded, admin, _pausers());
+
+        vault.pause();
+        assertTrue(vault.paused(), "the guardian is the deployer, and it works");
+    }
+
+    /// @dev The same refusal for the admin target. Without it the run renounces admin and
+    ///      then fails on `_assertGovernanceHeld`, blaming the address in `Admin` rather than
+    ///      the list that failed to name it -- nothing is broadcast either way, since a script
+    ///      simulates before it sends, but the operator is told the wrong thing.
+    function test_Renounce_RefusesWhenTheDeployerIsAlsoTheAdminTarget() public {
+        Governance memory selfAdmin = g;
+        selfAdmin.admin = admin;
+        _grantGovernance(c, selfAdmin);
+
+        vm.expectRevert(bytes("admin is the deployer: keep iai-admin"));
+        this.renounceExternal(c, selfAdmin, admin, _nothing());
+
+        assertTrue(vault.hasRole(0x00, admin), "nothing moved");
+    }
+
+    /// @dev The third target that can be the deployer, and the one `--keep` has no name for.
+    ///      Refused up front like the other two, rather than after everything is renounced --
+    ///      where it reads as "grant did not land the beacons" and sends the operator back to
+    ///      `grant`, which transfers a beacon to its current owner and does nothing.
+    function test_Renounce_RefusesWhenTheDeployerIsAlsoTheBeaconOwner() public {
+        Governance memory selfOwned = g;
+        selfOwned.beaconOwner = admin; // the beacons never move
+        _grantGovernance(c, selfOwned);
+
+        vm.expectRevert(
+            bytes("beaconOwner is the deployer: the upgrade key has no name in --keep")
+        );
+        this.renounceExternal(c, selfOwned, admin, _nothing());
+
+        assertTrue(vault.hasRole(0x00, admin), "nothing moved");
+    }
+
+    /// @dev And the completion check says the same thing independently, because that is where
+    ///      "the deployer holds nothing beyond what it kept" is actually claimed -- a claim
+    ///      about the upgrade key as much as about the roles. Reached here by standing the
+    ///      deployer down by hand, since the precondition above stops the script from getting
+    ///      into this state at all.
+    function test_HandoverComplete_RefusesWhileTheDeployerStillOwnsABeacon() public {
+        Governance memory selfOwned = g;
+        selfOwned.beaconOwner = admin; // the beacons never move
+        _grantGovernance(c, selfOwned);
+
+        iai.renounceRole(0x00, admin);
+        vault.renounceRole(0x00, admin);
+        registry.renounceRole(0x00, admin);
+        vault.renounceRole(PAUSER, admin);
+        registry.renounceRole(registry.PAUSER_ROLE(), admin);
+
+        vm.expectRevert(bytes("deployer still owns the iAI beacon"));
+        this.assertCompleteExternal(c, selfOwned, admin, _nothing());
+    }
+
+    /// @dev The completion check reads both ways. Renouncing cannot be undone, so a retention
+    ///      that silently did not happen has to fail as loudly as one that was not wanted.
+    function test_HandoverComplete_CatchesARetainedRoleThatWentAnyway() public {
+        _grantGovernance(c, g);
+        _renounceDeployer(c, g, admin, _nothing());
+
+        vm.expectRevert(bytes("deployer lost a role it was told to keep: vault-pauser"));
+        this.assertCompleteExternal(c, g, admin, _pausers());
+    }
+
+    function test_HandoverComplete_CatchesARoleThatWasNotGivenUp() public {
+        _grantGovernance(c, g);
+        _renounceDeployer(c, g, admin, _pausers());
+
+        vm.expectRevert(bytes("deployer still holds: vault-pauser"));
+        this.assertCompleteExternal(c, g, admin, _nothing());
     }
 
     // --- the system after the handover ---
 
     function test_TheNewHoldersCanActuallyOperate() public {
         _grantGovernance(c, g);
-        _renounceDeployer(c, g, admin);
+        _renounceDeployer(c, g, admin, _nothing());
 
         vm.prank(ops);
         vault.pause();
@@ -215,17 +405,17 @@ contract HandoverTest is BaseTest, RoleHandover {
         vault.grantRole(EXEMPTION, admin);
 
         _grantGovernance(c, g);
-        _renounceDeployer(c, g, admin);
+        _renounceDeployer(c, g, admin, _nothing());
 
         assertFalse(vault.hasRole(EXEMPTION, admin), "the deployer stood down from it too");
-        _assertHandoverComplete(c, g, admin);
+        _assertHandoverComplete(c, g, admin, _nothing());
     }
 
     /// @dev Nothing in the handover touches the vault's minter role, but losing it would stop
     ///      the system dead, so the completion check asserts it and so does this.
     function test_UsersAreUnaffected() public {
         _grantGovernance(c, g);
-        _renounceDeployer(c, g, admin);
+        _renounceDeployer(c, g, admin, _nothing());
 
         _mintFor(bob, 2e18);
         assertEq(iai.balanceOf(bob), 2e18, "minting still works");
@@ -243,7 +433,7 @@ contract HandoverTest is BaseTest, RoleHandover {
     /// @dev The old key must not be able to undo any of it.
     function test_TheDeployerCannotClawAnythingBack() public {
         _grantGovernance(c, g);
-        _renounceDeployer(c, g, admin);
+        _renounceDeployer(c, g, admin, _nothing());
 
         vm.expectRevert(
             abi.encodeWithSelector(
@@ -270,7 +460,30 @@ contract HandoverTest is BaseTest, RoleHandover {
         _grantGovernance(c_, g_);
     }
 
-    function renounceExternal(Contracts memory c_, Governance memory g_, address deployer) external {
-        _renounceDeployer(c_, g_, deployer);
+    function assertCompleteExternal(
+        Contracts memory c_,
+        Governance memory g_,
+        address deployer,
+        Retained memory keep
+    ) external view {
+        _assertHandoverComplete(c_, g_, deployer, keep);
+    }
+
+    function renounceExternal(
+        Contracts memory c_,
+        Governance memory g_,
+        address deployer,
+        Retained memory keep
+    ) external {
+        _renounceDeployer(c_, g_, deployer, keep);
+    }
+
+    /// @dev The complete handover: every field false. Named so the call sites read as intent.
+    function _nothing() internal pure returns (Retained memory keep) {}
+
+    /// @dev The one retention this deployment actually plans on: a hot key that can still close.
+    function _pausers() internal pure returns (Retained memory keep) {
+        keep.vaultPauser = true;
+        keep.registryPauser = true;
     }
 }

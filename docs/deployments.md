@@ -220,21 +220,86 @@ and never handed over, since it is not a seat. Its cost to `pause()` is R10 in
 
 ## Handing over governance
 
-Fill in `Admin`, `Guardian` and `BeaconOwner` in the deployment file, then:
+Fill in `Admin`, `Guardian` and `BeaconOwner` in the deployment file. None of the three is read
+during a deployment — they are read only here — so a wrong address in them surfaces at `grant` and
+nowhere earlier. Check them against the chain before running it.
 
 ```bash
 ./handover.sh status      # who holds what right now
-./handover.sh grant       # every role and beacon to its target; deployer keeps its own
-./handover.sh status      # confirm — and execute something from the Safe
+                          # — execute something from the Safe, and see it land —
+./handover.sh grant       # every role and beacon to its target; the deployer keeps its roles
+./handover.sh status      # confirm
 ./handover.sh renounce    # stand the deployer down
 ```
 
-Two transactions, deliberately. `grant` leaves the deployer in place, so the targets can be read
-back and a Safe confirmed to actually respond before the only key that still works is given up.
-`renounce` re-reads governance from the chain and refuses unless the targets already hold
-everything — a mistyped address stops there, with the deployer still in control, rather than after,
-with nobody in control. Beacon ownership is one-step `Ownable` with no acceptance step, so that
-precondition is the only safety net it has.
+Two transactions, deliberately — but only the roles are split across them. `grantRole` adds a
+holder, so after `grant` each role is held by both the target and the deployer, and the targets can
+be read back before the last key that could put one back is given up. `renounce` re-reads
+governance from the chain and refuses unless the targets already hold everything — a mistyped
+address stops there, with the deployer still in control, rather than after, with nobody in control.
+
+**The beacons are not split across the two steps: `grant` moves them.** `Ownable` has a single
+owner, no acceptance step and no admin override, so the deployer loses the upgrade key the moment
+`grant` returns and a wrong `BeaconOwner` is already beyond recovery — `renounce`'s precondition can
+only report it. **So confirm the Safe responds before `grant`, not only between the two steps.** A
+wrong `Admin` is survivable while the deployer still holds admin; a wrong `BeaconOwner` is not
+survivable at all.
+
+### Keeping a role on the deployer
+
+`renounce` stands the deployer down completely by default. `--keep` leaves named roles behind:
+
+```bash
+./handover.sh renounce --keep vault-pauser,registry-pauser
+```
+
+The names are `iai-admin`, `vault-admin`, `registry-admin`, `vault-pauser` and `registry-pauser`.
+Anything else is an error rather than a skipped word — the list is typed once, by hand, to drive a
+transaction that cannot be undone, and `--keep vault-pausers` quietly renouncing the pauser it was
+written to save is not a failure mode this gets to have. Spaces are stripped, so a quoted
+`"a, b"` is the same list as `a,b`.
+
+`PAUSE_EXEMPT_MINTER_ROLE` cannot be named and is always given up. It is not a seat but a permission
+granted per operation, and a stood-down key that can still mint through the pause it just applied is
+the thing a handover exists to rule out.
+
+The retention worth making is the two pausers: closing the entrance has to be fast and a multisig is
+not, and a pauser cannot grant, reprice or move a beacon, so keeping one gives up nothing
+irreversible. Keeping an admin is a different matter — on the vault it is the upgrade-grade key the
+handover is for, and on iAI it grants `MINTER_BURNER_ROLE`, so it mints without limit (R9).
+
+**A retained pauser is only half of what R1 and R5 ask for.** Both responses are `pause()` *and*
+revoking `PAUSE_EXEMPT_MINTER_ROLE`, and the second needs `DEFAULT_ADMIN_ROLE`, which a pauser does
+not have. That is survivable only because in steady state nobody holds the exemption: it is granted
+for one operation and revoked at the end of it. Leave it granted and the fast key can no longer
+complete the response on its own — closing the entrance would still leave that holder minting.
+Revoke it as part of the operation that needed it, not as a follow-up.
+
+What the command checks before it touches anything, all of which would otherwise fail confusingly
+*after* the renouncing rather than clearly before it: that the deployer actually holds each role
+named; that naming the deployer as `Guardian` or `Admin` is matched by keeping the matching roles,
+since otherwise the run ends with nobody holding them, reported as the target address's fault rather
+than the list's; and that the deployer is not its own `BeaconOwner`. The completion check then reads
+every role in both directions — so a retention that silently did not take fails as loudly as one
+that was not wanted — and says the same thing about the beacons independently, because that is where
+"the deployer holds nothing beyond what it kept" is actually claimed, and the upgrade key is
+something it can hold.
+
+**A deployer that keeps the beacons is deliberately not expressible.** `--keep` has no name for the
+upgrade key and the handover refuses a record that leaves it behind, so "roles to the multisig now,
+beacons to the timelock later" is not a staging this supports. That is on purpose: admin and beacon
+ownership have to land on the same multisig, since between `setCurve` and `setHarvestShare` admin
+already carries the economic power an upgrade has. Staging the *roles* is supported — that is what
+`--keep` is for.
+
+Three spellings of the flag are refused rather than resolved: an empty list, a list of nothing but
+separators, and a second `--keep`. Each has a quiet reading that gives up roles the operator wrote
+the flag to save, and a complete stand-down is already available by leaving the flag off. The empty
+case is refused in the script as well as in `handover.sh`, because an unset variable expands to `""`
+and reaches `forge script` directly.
+
+Renouncing only what is held, so a later run gives up what an earlier one kept:
+`./handover.sh renounce` after a `--keep` finishes the job without disturbing anything else.
 
 Other operator entrypoints: `./run.sh setHarvestShare <wad>`, `./run.sh harvestShare`,
 `./run.sh pause`, `./run.sh harvest`, `./run.sh quote <amount>`,

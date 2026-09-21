@@ -88,7 +88,7 @@ contract HandoverScriptTest is Test {
             timelock,
             "beacon owner came from .BeaconOwner"
         );
-        assertTrue(vault.hasRole(0x00, deployer), "grant leaves the deployer in place");
+        assertTrue(vault.hasRole(0x00, deployer), "grant leaves the deployer's roles in place");
 
         h.renounce();
 
@@ -111,6 +111,130 @@ contract HandoverScriptTest is Test {
         assertTrue(vault.hasRole(0x00, deployer), "nothing moved");
     }
 
+    /// @dev The retention list is the one part of the handover that is typed on the command
+    ///      line rather than read from the file, so the names have to be wired through to the
+    ///      right roles. `--keep vault-pauser,registry-pauser` is what this deployment plans
+    ///      on: governance to the multisig, the deploying key left able to close and nothing
+    ///      else.
+    function test_KeepsTheRolesNamedOnTheCommandLine() public {
+        _bootstrap("keep");
+        _writeTargets();
+
+        HandoverScript h = _handover();
+        h.grant();
+        h.renounce("vault-pauser,registry-pauser");
+
+        assertFalse(vault.hasRole(0x00, deployer), "vault admin given up");
+        assertFalse(token.hasRole(0x00, deployer), "iAI admin given up");
+        assertFalse(registry.hasRole(0x00, deployer), "registry admin given up");
+        assertTrue(vault.hasRole(vault.PAUSER_ROLE(), deployer), "vault pauser kept");
+        assertTrue(registry.hasRole(registry.PAUSER_ROLE(), deployer), "registry pauser kept");
+
+        h.status(); // must not revert against a partially handed-over deployment
+    }
+
+    /// @dev Five names, five flags, five roles. The wiring is three parallel lists -- parse,
+    ///      renounce, check -- and a transposition between any two of them would ship green
+    ///      against a suite that only ever passes the pausers. Each name is run on its own and
+    ///      has to leave exactly its own role behind.
+    function test_EachNameKeepsExactlyItsOwnRole() public {
+        string[5] memory names =
+            ["iai-admin", "vault-admin", "registry-admin", "vault-pauser", "registry-pauser"];
+
+        for (uint256 i = 0; i < names.length; i++) {
+            _bootstrap(string.concat("one-name-", vm.toString(i)));
+            _writeTargets();
+
+            HandoverScript h = _handover();
+            h.grant();
+            h.renounce(names[i]);
+
+            assertEq(token.hasRole(0x00, deployer), i == 0, "iai-admin");
+            assertEq(vault.hasRole(0x00, deployer), i == 1, "vault-admin");
+            assertEq(registry.hasRole(0x00, deployer), i == 2, "registry-admin");
+            assertEq(vault.hasRole(vault.PAUSER_ROLE(), deployer), i == 3, "vault-pauser");
+            assertEq(registry.hasRole(registry.PAUSER_ROLE(), deployer), i == 4, "registry-pauser");
+        }
+    }
+
+    /// @dev A trailing comma, a doubled comma and a wrong case all produce a name the parser
+    ///      does not know. Each one stops the run rather than quietly keeping less than was
+    ///      asked for -- `vault-pauser,` renouncing the pauser it names would be the worst
+    ///      reading available, and it is the one a lenient parser would pick.
+    function test_RefusesAMalformedKeepList() public {
+        _bootstrap("malformed-keep");
+        _writeTargets();
+
+        HandoverScript h = _handover();
+        h.grant();
+
+        vm.expectRevert(bytes(_unknown("")));
+        h.renounce("vault-pauser,");
+
+        vm.expectRevert(bytes(_unknown("")));
+        h.renounce("vault-pauser,,registry-pauser");
+
+        vm.expectRevert(bytes(_unknown("Vault-Pauser")));
+        h.renounce("Vault-Pauser");
+
+        assertTrue(vault.hasRole(0x00, deployer), "the deployer is still in control");
+    }
+
+    /// @dev Naming one role twice is not worth refusing: it sets the same flag twice and says
+    ///      the same thing. Only a name that means nothing is an error.
+    function test_ARepeatedNameIsHarmless() public {
+        _bootstrap("repeated-name");
+        _writeTargets();
+
+        HandoverScript h = _handover();
+        h.grant();
+        h.renounce("vault-pauser,vault-pauser,registry-pauser");
+
+        assertTrue(vault.hasRole(vault.PAUSER_ROLE(), deployer), "vault pauser kept");
+        assertTrue(registry.hasRole(registry.PAUSER_ROLE(), deployer), "registry pauser kept");
+        assertFalse(vault.hasRole(0x00, deployer), "and the admins still went");
+    }
+
+    /// @dev The shell refuses an empty list as well, but this is the guard that counts. An
+    ///      unset variable expands to `""` and reaches `renounce(string)` without passing
+    ///      through `handover.sh` at all -- a wrapper, a CI step, a hand-typed `forge script`
+    ///      with an extra flag. "Keep nothing" is the most destructive reading there is, so it
+    ///      has to be refused in the half the irreversible transaction goes through.
+    function test_RefusesAnEmptyKeepList() public {
+        _bootstrap("empty-keep");
+        _writeTargets();
+
+        HandoverScript h = _handover();
+        h.grant();
+
+        vm.expectRevert(bytes("--keep is empty; call renounce() for a complete stand-down"));
+        h.renounce("");
+
+        assertTrue(vault.hasRole(0x00, deployer), "the deployer is still in control");
+        assertTrue(vault.hasRole(vault.PAUSER_ROLE(), deployer), "including what it named");
+    }
+
+    /// @dev A name the script does not recognise has to stop the run. The list is typed once,
+    ///      by hand, for a transaction that cannot be undone -- `--keep vault-pausers`
+    ///      quietly renouncing the pauser it was written to save is not a failure mode this
+    ///      gets to have.
+    function test_RefusesAnUnknownNameInTheKeepList() public {
+        _bootstrap("unknown-keep");
+        _writeTargets();
+
+        HandoverScript h = _handover();
+        h.grant();
+
+        vm.expectRevert(
+            bytes(
+                "unknown role in --keep: 'vault-pausers' (iai-admin, vault-admin, registry-admin, vault-pauser, registry-pauser)"
+            )
+        );
+        h.renounce("vault-pausers");
+
+        assertTrue(vault.hasRole(0x00, deployer), "the deployer is still in control");
+    }
+
     /// @dev The precondition holds when the script is driven from the file too: renouncing
     ///      before granting must leave the deployer in control.
     function test_RenounceRefusesBeforeGrant() public {
@@ -122,6 +246,16 @@ contract HandoverScriptTest is Test {
         h.renounce();
 
         assertTrue(vault.hasRole(0x00, deployer), "the deployer is still in control");
+    }
+
+    /// @param name The unrecognised name, as the parser echoes it back.
+    /// @return The revert string `_parseRetained` produces for it.
+    function _unknown(string memory name) internal pure returns (string memory) {
+        return string.concat(
+            "unknown role in --keep: '",
+            name,
+            "' (iai-admin, vault-admin, registry-admin, vault-pauser, registry-pauser)"
+        );
     }
 
     function _handover() internal returns (HandoverScript h) {
