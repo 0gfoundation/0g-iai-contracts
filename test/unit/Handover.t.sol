@@ -282,15 +282,38 @@ contract HandoverTest is BaseTest, RoleHandover {
         assertTrue(vault.hasRole(0x00, admin), "nothing moved");
     }
 
-    /// @dev `Retained` has no field for beacon ownership, so "the deployer holds nothing
-    ///      beyond what it kept" is a claim about the upgrade key too. A record naming the
-    ///      deployer as its own `BeaconOwner` passes every role check while leaving that key
-    ///      exactly where the handover was run to move it from.
+    /// @dev The third target that can be the deployer, and the one `--keep` has no name for.
+    ///      Refused up front like the other two, rather than after everything is renounced --
+    ///      where it reads as "grant did not land the beacons" and sends the operator back to
+    ///      `grant`, which transfers a beacon to its current owner and does nothing.
+    function test_Renounce_RefusesWhenTheDeployerIsAlsoTheBeaconOwner() public {
+        Governance memory selfOwned = g;
+        selfOwned.beaconOwner = admin; // the beacons never move
+        _grantGovernance(c, selfOwned);
+
+        vm.expectRevert(
+            bytes("beaconOwner is the deployer: the upgrade key has no name in --keep")
+        );
+        this.renounceExternal(c, selfOwned, admin, _nothing());
+
+        assertTrue(vault.hasRole(0x00, admin), "nothing moved");
+    }
+
+    /// @dev And the completion check says the same thing independently, because that is where
+    ///      "the deployer holds nothing beyond what it kept" is actually claimed -- a claim
+    ///      about the upgrade key as much as about the roles. Reached here by standing the
+    ///      deployer down by hand, since the precondition above stops the script from getting
+    ///      into this state at all.
     function test_HandoverComplete_RefusesWhileTheDeployerStillOwnsABeacon() public {
         Governance memory selfOwned = g;
         selfOwned.beaconOwner = admin; // the beacons never move
         _grantGovernance(c, selfOwned);
-        _renounceDeployer(c, selfOwned, admin, _nothing());
+
+        iai.renounceRole(0x00, admin);
+        vault.renounceRole(0x00, admin);
+        registry.renounceRole(0x00, admin);
+        vault.renounceRole(PAUSER, admin);
+        registry.renounceRole(registry.PAUSER_ROLE(), admin);
 
         vm.expectRevert(bytes("deployer still owns the iAI beacon"));
         this.assertCompleteExternal(c, selfOwned, admin, _nothing());

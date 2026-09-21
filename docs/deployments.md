@@ -274,18 +274,26 @@ Revoke it as part of the operation that needed it, not as a follow-up.
 
 What the command checks before it touches anything, all of which would otherwise fail confusingly
 *after* the renouncing rather than clearly before it: that the deployer actually holds each role
-named, and that naming the deployer as `Guardian` or `Admin` is matched by keeping the matching
-roles — otherwise the run ends with nobody holding them, reported as the target address's fault
-rather than the list's. The completion check then reads every role in both directions, so a
-retention that silently did not take fails as loudly as one that was not wanted, and checks that
-the beacons did not stay with the deployer: `--keep` has no name for the upgrade key, so a record
-naming the deployer as its own `BeaconOwner` would otherwise pass every other check while leaving
-that key exactly where the handover was run to move it from.
+named; that naming the deployer as `Guardian` or `Admin` is matched by keeping the matching roles,
+since otherwise the run ends with nobody holding them, reported as the target address's fault rather
+than the list's; and that the deployer is not its own `BeaconOwner`. The completion check then reads
+every role in both directions — so a retention that silently did not take fails as loudly as one
+that was not wanted — and says the same thing about the beacons independently, because that is where
+"the deployer holds nothing beyond what it kept" is actually claimed, and the upgrade key is
+something it can hold.
 
-Two spellings of the flag are refused rather than resolved: an empty list (`--keep=`), and a second
-`--keep`. Both have a quiet reading that gives up roles the operator wrote the flag to save — "keep
-nothing" and "the last one wins" — and a complete stand-down is already available by leaving the
-flag off.
+**A deployer that keeps the beacons is deliberately not expressible.** `--keep` has no name for the
+upgrade key and the handover refuses a record that leaves it behind, so "roles to the multisig now,
+beacons to the timelock later" is not a staging this supports. That is on purpose: admin and beacon
+ownership have to land on the same multisig, since between `setCurve` and `setHarvestShare` admin
+already carries the economic power an upgrade has. Staging the *roles* is supported — that is what
+`--keep` is for.
+
+Three spellings of the flag are refused rather than resolved: an empty list, a list of nothing but
+separators, and a second `--keep`. Each has a quiet reading that gives up roles the operator wrote
+the flag to save, and a complete stand-down is already available by leaving the flag off. The empty
+case is refused in the script as well as in `handover.sh`, because an unset variable expands to `""`
+and reaches `forge script` directly.
 
 Renouncing only what is held, so a later run gives up what an earlier one kept:
 `./handover.sh renounce` after a `--keep` finishes the job without disturbing anything else.

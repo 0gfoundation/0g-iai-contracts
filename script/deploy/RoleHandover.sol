@@ -51,7 +51,7 @@ abstract contract RoleHandover {
         address beaconOwner;
     }
 
-    /// @param d Addresses of the deployed system.
+    /// The deployed system: the three proxies, and the beacon behind each of them.
     struct Contracts {
         address iai;
         address vault;
@@ -232,6 +232,14 @@ abstract contract RoleHandover {
             require(keep.vaultAdmin, "admin is the deployer: keep vault-admin");
             require(keep.registryAdmin, "admin is the deployer: keep registry-admin");
         }
+        // The third of the same shape, and the one with no way to say yes: `Retained` has no
+        // name for the upgrade key. Without this the run renounces everything, fails at the
+        // end on a beacon the deployer still owns, and reads as "grant did not land" -- which
+        // sends the operator back to `grant`, where transferring a beacon to its current owner
+        // is a no-op, and round the loop again.
+        require(
+            g.beaconOwner != deployer, "beaconOwner is the deployer: the upgrade key has no name in --keep"
+        );
     }
 
     /**

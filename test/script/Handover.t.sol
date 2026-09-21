@@ -195,6 +195,25 @@ contract HandoverScriptTest is Test {
         assertFalse(vault.hasRole(0x00, deployer), "and the admins still went");
     }
 
+    /// @dev The shell refuses an empty list as well, but this is the guard that counts. An
+    ///      unset variable expands to `""` and reaches `renounce(string)` without passing
+    ///      through `handover.sh` at all -- a wrapper, a CI step, a hand-typed `forge script`
+    ///      with an extra flag. "Keep nothing" is the most destructive reading there is, so it
+    ///      has to be refused in the half the irreversible transaction goes through.
+    function test_RefusesAnEmptyKeepList() public {
+        _bootstrap("empty-keep");
+        _writeTargets();
+
+        HandoverScript h = _handover();
+        h.grant();
+
+        vm.expectRevert(bytes("--keep is empty; call renounce() for a complete stand-down"));
+        h.renounce("");
+
+        assertTrue(vault.hasRole(0x00, deployer), "the deployer is still in control");
+        assertTrue(vault.hasRole(vault.PAUSER_ROLE(), deployer), "including what it named");
+    }
+
     /// @dev A name the script does not recognise has to stop the run. The list is typed once,
     ///      by hand, for a transaction that cannot be undone -- `--keep vault-pausers`
     ///      quietly renouncing the pauser it was written to save is not a failure mode this

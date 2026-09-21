@@ -138,9 +138,16 @@ contract HandoverScript is Script, JsonUtils, Constants, RoleHandover {
      *      once, by hand, to drive a transaction that cannot be undone: `--keep vault-pausers`
      *      quietly renouncing the pausers it was written to save is not a failure mode this
      *      gets to have.
+     *
+     *      An empty list is refused for the same reason, and refused *here* rather than only
+     *      in `handover.sh`. "Keep nothing" is the most destructive reading available and it is
+     *      what an unset variable expands to, so the guard has to sit in the half that the
+     *      irreversible transaction actually goes through -- a wrapper, a CI step or an
+     *      operator adding a flag by hand all reach `renounce(string)` without the shell.
+     *      A complete stand-down has its own entry point and says so in the error.
      */
     function _parseRetained(string memory keep) private pure returns (Retained memory r) {
-        if (bytes(keep).length == 0) return r;
+        require(bytes(keep).length != 0, "--keep is empty; call renounce() for a complete stand-down");
 
         string[] memory names = vm.split(keep, ",");
         for (uint256 i = 0; i < names.length; i++) {

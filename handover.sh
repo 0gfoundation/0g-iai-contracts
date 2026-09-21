@@ -27,11 +27,16 @@ set -euo pipefail
 _abs() { case "$1" in /*) printf '%s' "$1" ;; *) printf '%s/%s' "$PWD" "$1" ;; esac; }
 if [ -n "${IAI_CONFIG:-}" ]; then IAI_CONFIG=$(_abs "$IAI_CONFIG"); fi
 if [ -n "${IAI_ENV:-}" ]; then IAI_ENV=$(_abs "$IAI_ENV"); fi
+# ...and this script's own path, for the same reason: `usage` reads the file back, and after
+# the cd a relative $0 no longer points at it.
+SELF=$(_abs "$0")
 cd "$(dirname "$0")"
 
 # The comment header, printed on a usage error. Read off the file rather than by line number,
 # which went stale the first time the header grew and took the safety notice with it.
-usage() { awk 'NR > 1 && /^#/ { print; next } NR > 1 { exit }' "$0"; }
+# A blank line inside the header is part of it, not the end of it -- treating it as the end is
+# how the line range this replaced lost the safety notice, one rewrite removed.
+usage() { awk 'NR > 1 { if ($0 !~ /^#/ && $0 != "") exit; print }' "$SELF"; }
 
 source "${IAI_CONFIG:-./config.sh}"
 set -a; source "${IAI_ENV:-.env}"; set +a
@@ -63,7 +68,11 @@ case "${1:-status}" in
                       KEEP=$2; shift 2 ;;
           esac
           KEEP=$(printf '%s' "$KEEP" | tr -d '[:space:]')
-          [ -n "$KEEP" ] || { echo "--keep needs a comma-separated list"; exit 1; }
+          # Separators alone are not a list. It would be caught in the script either way, but
+          # only after the "this cannot be undone" prompt has shown the operator a list that
+          # means nothing, which is the wrong moment to be reading one.
+          [ -n "$(printf '%s' "$KEEP" | tr -d ',')" ] \
+            || { echo "--keep needs a comma-separated list"; exit 1; }
           KEEP_GIVEN=1
           ;;
         *) echo "unknown option: $1"; usage; exit 1 ;;
