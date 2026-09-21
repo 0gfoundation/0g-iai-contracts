@@ -93,7 +93,15 @@ because it once was is the mistake this paragraph exists to prevent.
 `grant` leaves the deployer in place so the targets can be confirmed to respond, and `renounce`
 re-reads governance from the chain and refuses unless they already hold everything. Beacon
 ownership is one-step `Ownable` with no acceptance step, so that precondition is its only safety
-net. Never collapse the two steps.
+net. Never collapse the two steps. Note where the unrecoverable moment actually is: a wrong `Admin`
+is fixable while the deployer still holds admin, but a wrong `BeaconOwner` is not fixable at all, so
+the Safe has to be confirmed to respond **before** `grant`, not only between the steps.
+
+`renounce` stands the deployer down completely by default; `--keep vault-pauser,registry-pauser`
+(or any of `iai-admin`, `vault-admin`, `registry-admin`) leaves those behind, and an unrecognised
+name is an error rather than a skipped word. The retention that is actually wanted is the pausers --
+a pauser cannot grant, reprice or move a beacon, and closing has to be faster than a multisig.
+`PAUSE_EXEMPT_MINTER_ROLE` has no spelling in that list and is always given up.
 
 **6. `SafeERC20` for every external token.**
 

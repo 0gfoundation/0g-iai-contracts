@@ -247,6 +247,8 @@ $EDITOR deployments/iai-<chainid>.json   # start from iai-example.json
 
 ./handover.sh grant           # governance to its targets, deployer still in place
 ./handover.sh renounce        # stand the deployer down, once the targets answer
+./handover.sh renounce --keep vault-pauser,registry-pauser
+                              # ...or leave it able to close the entrance and nothing else
 ```
 
 **The vault deploys paused.** Opening issuance is a separate, explicit transaction — the only
@@ -257,7 +259,7 @@ beacon ownership to the deploying account, and `PAUSE_EXEMPT_MINTER_ROLE` to nob
 | Role | Intended holder | Can do |
 | --- | --- | --- |
 | `DEFAULT_ADMIN_ROLE` | multisig | grant and revoke roles, `setFoundation`, and — this is what makes it upgrade-grade — `setCurve` (which also moves the ceiling) and `setHarvestShare` |
-| `PAUSER_ROLE` | guardian | close and open issuance and staking; `harvest` is pause-gated too, so it can also withhold the sweep. It cannot move funds, reprice or grant — a lighter key, because speed matters more than ceremony |
+| `PAUSER_ROLE` | guardian | close and open issuance and staking; `harvest` is pause-gated too, so it can also withhold the sweep. It cannot move funds, reprice or grant — a lighter key, because speed matters more than ceremony, and the one the handover can leave on a hot key with `--keep` |
 | `PAUSE_EXEMPT_MINTER_ROLE` | nobody by default | `mint` while issuance is paused — same price, same ceiling, same slippage bound, same recipient. Granted per operation and revoked after; not part of the handover |
 | beacon owner | multisig + timelock | upgrade one contract; each has its own beacon |
 

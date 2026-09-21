@@ -111,6 +111,49 @@ contract HandoverScriptTest is Test {
         assertTrue(vault.hasRole(0x00, deployer), "nothing moved");
     }
 
+    /// @dev The retention list is the one part of the handover that is typed on the command
+    ///      line rather than read from the file, so the names have to be wired through to the
+    ///      right roles. `--keep vault-pauser,registry-pauser` is what this deployment plans
+    ///      on: governance to the multisig, the deploying key left able to close and nothing
+    ///      else.
+    function test_KeepsTheRolesNamedOnTheCommandLine() public {
+        _bootstrap("keep");
+        _writeTargets();
+
+        HandoverScript h = _handover();
+        h.grant();
+        h.renounce("vault-pauser,registry-pauser");
+
+        assertFalse(vault.hasRole(0x00, deployer), "vault admin given up");
+        assertFalse(token.hasRole(0x00, deployer), "iAI admin given up");
+        assertFalse(registry.hasRole(0x00, deployer), "registry admin given up");
+        assertTrue(vault.hasRole(vault.PAUSER_ROLE(), deployer), "vault pauser kept");
+        assertTrue(registry.hasRole(registry.PAUSER_ROLE(), deployer), "registry pauser kept");
+
+        h.status(); // must not revert against a partially handed-over deployment
+    }
+
+    /// @dev A name the script does not recognise has to stop the run. The list is typed once,
+    ///      by hand, for a transaction that cannot be undone -- `--keep vault-pausers`
+    ///      quietly renouncing the pauser it was written to save is not a failure mode this
+    ///      gets to have.
+    function test_RefusesAnUnknownNameInTheKeepList() public {
+        _bootstrap("unknown-keep");
+        _writeTargets();
+
+        HandoverScript h = _handover();
+        h.grant();
+
+        vm.expectRevert(
+            bytes(
+                "unknown role in --keep: 'vault-pausers' (iai-admin, vault-admin, registry-admin, vault-pauser, registry-pauser)"
+            )
+        );
+        h.renounce("vault-pausers");
+
+        assertTrue(vault.hasRole(0x00, deployer), "the deployer is still in control");
+    }
+
     /// @dev The precondition holds when the script is driven from the file too: renouncing
     ///      before granting must leave the deployer in control.
     function test_RenounceRefusesBeforeGrant() public {

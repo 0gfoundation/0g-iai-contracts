@@ -5,10 +5,17 @@
 #   ./faucet.sh 0xRecipient            1,000,000 a0G
 #   ./faucet.sh 0xRecipient 5000       5,000 a0G
 set -euo pipefail
+# IAI_CONFIG / IAI_ENV point the script at another config.sh and .env -- how a rehearsal against a
+# local anvil runs from a scratch directory. Resolved to absolute paths *before* the cd below;
+# resolved after it, a relative path would be looked up inside the repository, and one that
+# happened to be named config.sh or .env would silently source the real files, real key included.
+_abs() { case "$1" in /*) printf '%s' "$1" ;; *) printf '%s/%s' "$PWD" "$1" ;; esac; }
+if [ -n "${IAI_CONFIG:-}" ]; then IAI_CONFIG=$(_abs "$IAI_CONFIG"); fi
+if [ -n "${IAI_ENV:-}" ]; then IAI_ENV=$(_abs "$IAI_ENV"); fi
 cd "$(dirname "$0")"
 
-source ./config.sh
-set -a; source .env; set +a
+source "${IAI_CONFIG:-./config.sh}"
+set -a; source "${IAI_ENV:-.env}"; set +a
 
 [ "$CHAIN_ID" = "16661" ] && { echo "there is no faucet on mainnet"; exit 1; }
 
