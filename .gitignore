@@ -39,3 +39,6 @@ __pycache__/
 
 # Local review notes
 findings.md
+
+# Local record of a specific deployment run
+DEPLOYMENT-LOG-mainnet-16661.md
