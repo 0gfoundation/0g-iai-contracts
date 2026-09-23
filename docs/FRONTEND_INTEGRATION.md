@@ -47,8 +47,8 @@ cannot be re-displayed in the other later, and neither of them stays constant.
 
 ### Where the addresses come from
 
-Every deployed address lives in this repository — **`0gfoundation/0g-iai-contracts`** (private; ask
-the contracts team for access if you cannot open it) — one JSON file per network:
+Every deployed address lives in this repository — **`upsteak/0g-iai-contracts`** — one JSON
+file per network:
 
 | Network | chainId | RPC | Explorer | Address file |
 | --- | --- | --- | --- | --- |
@@ -56,7 +56,7 @@ the contracts team for access if you cannot open it) — one JSON file per netwo
 | 0G Galileo testnet | `16602` | `https://evmrpc-testnet.0g.ai` | `https://chainscan-galileo.0g.ai` | `deployments/iai-16602.json` |
 
 ```bash
-git clone git@github.com:0gfoundation/0g-iai-contracts.git
+git clone git@github.com:upsteak/0g-iai-contracts.git
 jq . 0g-iai-contracts/deployments/iai-16602.json
 ```
 
