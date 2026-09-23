@@ -3,6 +3,9 @@
   "Admin": "0xecf08409A5e35aA58A887Cf892c6Af6648727281",
   "BeaconOwner": "0xecf08409A5e35aA58A887Cf892c6Af6648727281",
   "CooldownDuration": "86400",
+  "CreditRegistry": "0xf15354ADb2AC3EDB40D6A7D9a139D30Be314c48F",
+  "CreditRegistryBeacon": "0xc69023DD42a9CBda1aa44010F472ad100000e4D0",
+  "CreditRegistryImpl": "0x757f58449c33C3BbA95D7D299CAdfe6bffF82CCb",
   "CurveParams": {
     "ExponentialMintCurve": {
       "Base": "586000000000000000000",
@@ -390,9 +393,20 @@
       "Target": "127000000000000000000000000"
     }
   },
+  "ExponentialMintCurve": "0xB0426e9beBb44dc3dDF915DaE9A2880C57d2187A",
   "Foundation": "0x383452DC859f87D5197C03d8E11Fc9D38e714fF2",
   "Guardian": "0xecf08409A5e35aA58A887Cf892c6Af6648727281",
   "HarvestShare": "500000000000000000",
+  "IAI": "0xc77FBd3824cc68e612b26114D176879aDdc29463",
+  "IAIBeacon": "0x404a0eA209B782EC7fd436Fa42AAb7fCff1dC189",
+  "IAIImpl": "0xe3255C9d464039e5E88365900eA02EEC34Bbf451",
+  "IAIVault": "0x94A5D41dfAE4f2ee7C61A80F33a5085C8c252c70",
+  "IAIVaultBeacon": "0x7bFc40D104D6BFaf1Db66431c6EAd00F27e5758C",
+  "IAIVaultImpl": "0xD86E78459687f7f58Da6d1CEA20809BD0c7281a0",
+  "MintCurve": "0xB0426e9beBb44dc3dDF915DaE9A2880C57d2187A",
+  "MintCurveHistory": [
+    "0xB0426e9beBb44dc3dDF915DaE9A2880C57d2187A"
+  ],
   "MintCurveKind": "ExponentialMintCurve",
   "Name": "Infinite AI",
   "Symbol": "iAI"
